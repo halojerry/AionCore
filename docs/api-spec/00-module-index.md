@@ -31,7 +31,7 @@
 | # | 模块 | 文档 | 源码位置 | 状态 |
 |---|------|------|---------|------|
 | 1 | 公共类型与 Trait | 01-common-types.md | （从所有模块提炼） | ⬜ 待提炼（所有模块完成后） |
-| 2 | 数据模型与存储 | 02-database.md | `src/process/services/database/` | ⬜ 未开始 |
+| 2 | 数据模型与存储 | 02-database.md | `src/process/services/database/` | ✅ 已完成 |
 | 3 | 认证与用户管理 | 03-auth.md | `src/process/webserver/auth/`, `src/process/bridge/authBridge.ts` | ⬜ 未开始 |
 | 4 | 系统设置 | 04-system-settings.md | `src/process/bridge/systemSettingsBridge.ts` | ⬜ 未开始 |
 | 5 | 会话与消息管理 | 05-conversation.md | `src/process/bridge/conversationBridge.ts`, `src/process/task/` | ⬜ 未开始 |
@@ -45,6 +45,19 @@
 | 13 | 扩展系统 | 13-extension.md | `src/process/extensions/` | ⬜ 未开始 |
 | 14 | 应用生命周期 | 14-app-lifecycle.md | `src/process/bridge/updateBridge.ts`, `src/process/bridge/applicationBridge.ts` | ⬜ 未开始 |
 | 99 | Rust Crate 映射 | 99-rust-crate-mapping.md | （从所有模块推导） | ⬜ 待推导（所有模块完成后） |
+
+## 工作流
+
+每个模块的梳理流程：
+
+1. 读取本文件，找到下一个待梳理模块
+2. 读取 AionUi-Bak 对应模块的源码，分析接口
+3. 参考已完成的模块文档保持格式一致，产出文档
+4. **等待用户 review 确认**（或根据反馈修改）
+5. 用户确认后提交 commit
+6. 询问用户是否继续下一个模块
+
+> 每个模块通常在独立会话中完成。新会话从第 1 步开始。
 
 ## 梳理顺序
 
