@@ -119,8 +119,15 @@ impl WebSocketManager {
             }
         };
 
+        self.send_raw_to(conn_id, WsOutbound::Text(text));
+    }
+
+    /// Send a raw outbound message to a specific connection.
+    ///
+    /// Used for non-`WebSocketMessage` payloads (e.g. error responses).
+    pub fn send_raw_to(&self, conn_id: ConnectionId, outbound: WsOutbound) {
         if let Some(client) = self.connections.get(&conn_id) {
-            match client.tx.try_send(WsOutbound::Text(text)) {
+            match client.tx.try_send(outbound) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     warn!(%conn_id, "outbound channel full, message dropped");
