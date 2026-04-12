@@ -162,6 +162,21 @@ async fn t2_9_set_system_user_credentials_updates_username_and_hash() {
     assert_eq!(user.password_hash, "secure_hash");
 }
 
+#[tokio::test]
+async fn t2_9_set_system_user_credentials_conflict_with_existing_username() {
+    let r = repo().await;
+    r.create_user("existing", "h").await.unwrap();
+
+    let err = r
+        .set_system_user_credentials("existing", "hash")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DbError::Conflict(_)),
+        "expected Conflict, got: {err:?}"
+    );
+}
+
 // -- T2.10 Update password --
 
 #[tokio::test]

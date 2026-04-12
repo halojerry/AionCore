@@ -68,7 +68,13 @@ impl IUserRepository for SqliteUserRepository {
         .bind(password_hash)
         .bind(now)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(db_err) if is_unique_violation(db_err.as_ref()) => {
+                DbError::Conflict(format!("Username '{username}' already exists"))
+            }
+            _ => DbError::Query(e),
+        })?;
 
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound(
@@ -492,6 +498,18 @@ mod tests {
 
         let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
         assert_eq!(updated.jwt_secret.as_deref(), Some("secret123"));
+    }
+
+    #[tokio::test]
+    async fn set_system_user_credentials_conflict_with_existing_username() {
+        let (repo, _db) = setup().await;
+        repo.create_user("taken", "h").await.unwrap();
+
+        let err = repo
+            .set_system_user_credentials("taken", "hash")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DbError::Conflict(_)));
     }
 
     #[tokio::test]

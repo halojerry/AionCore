@@ -67,6 +67,29 @@ pub struct RefreshTokenRequest {
     pub token: String,
 }
 
+/// User info response for `GET /api/auth/user`.
+#[derive(Debug, Serialize)]
+pub struct UserInfoResponse {
+    pub success: bool,
+    pub user: PublicUser,
+}
+
+/// Refresh token response for `POST /api/auth/refresh`.
+#[derive(Debug, Serialize)]
+pub struct RefreshResponse {
+    pub success: bool,
+    pub token: String,
+}
+
+/// WebSocket token response for `GET /api/ws-token`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WsTokenResponse {
+    pub success: bool,
+    pub ws_token: String,
+    pub expires_in: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

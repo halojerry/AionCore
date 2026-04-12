@@ -5,7 +5,9 @@ mod extract;
 mod jwt;
 pub mod middleware;
 mod password;
+pub mod qr_token;
 mod rate_limit;
+mod routes;
 mod security;
 mod validation;
 
@@ -47,3 +49,9 @@ pub use csrf::csrf_middleware;
 
 // Auth middleware
 pub use middleware::{auth_middleware, AuthState, CurrentUser};
+
+// QR token store
+pub use qr_token::QrTokenStore;
+
+// Routes
+pub use routes::{auth_routes, AuthRouterState};

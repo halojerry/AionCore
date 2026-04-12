@@ -4,7 +4,7 @@ mod websocket;
 
 pub use auth::{
     AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser,
-    QrLoginRequest, RefreshTokenRequest,
+    QrLoginRequest, RefreshResponse, RefreshTokenRequest, UserInfoResponse, WsTokenResponse,
 };
 pub use response::{ApiResponse, ErrorResponse};
 pub use websocket::WebSocketMessage;
