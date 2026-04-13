@@ -6,7 +6,10 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 use wiremock::MockServer;
 
-use aionui_app::{AppServices, build_system_state, create_router, create_router_with_system_state};
+use aionui_app::{
+    AppServices, build_conversation_state, build_system_state, create_router,
+    create_router_with_system_state,
+};
 use aionui_system::VersionCheckService;
 
 pub async fn build_app() -> (axum::Router, AppServices) {
@@ -28,7 +31,8 @@ pub async fn build_app_with_mock_version(
         current_version.to_owned(),
         mock_server.uri(),
     );
-    let router = create_router_with_system_state(&services, system_state);
+    let conversation_state = build_conversation_state(&services);
+    let router = create_router_with_system_state(&services, system_state, conversation_state);
     (router, services)
 }
 

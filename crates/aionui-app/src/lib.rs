@@ -11,11 +11,14 @@ use aionui_auth::{
     auth_routes, csrf_middleware, extract_token_from_ws_headers, resolve_jwt_secret,
     security_headers_middleware,
 };
+use aionui_conversation::{ConversationRouterState, ConversationService, conversation_routes};
 use aionui_db::{
-    Database, IUserRepository, SqliteClientPreferenceRepository, SqliteProviderRepository,
-    SqliteSettingsRepository, SqliteUserRepository,
+    Database, IUserRepository, SqliteClientPreferenceRepository, SqliteConversationRepository,
+    SqliteProviderRepository, SqliteSettingsRepository, SqliteUserRepository,
 };
-use aionui_realtime::{NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler};
+use aionui_realtime::{
+    BroadcastEventBus, NoopMessageRouter, WebSocketManager, WsHandlerState, ws_upgrade_handler,
+};
 use aionui_system::{
     ClientPrefService, ModelFetchService, ProtocolDetectionService, ProviderService,
     SettingsService, SystemRouterState, VersionCheckService, system_routes,
@@ -59,6 +62,7 @@ pub struct AppServices {
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
+    pub event_bus: Arc<BroadcastEventBus>,
     /// Raw JWT secret string, used to derive encryption keys.
     pub jwt_secret_raw: String,
 }
@@ -104,6 +108,7 @@ impl AppServices {
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
+            event_bus: Arc::new(BroadcastEventBus::new(256)),
             jwt_secret_raw: secret,
         })
     }
@@ -162,10 +167,20 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
 /// Middleware stack (outermost → innermost):
 /// 1. Security response headers (X-Frame-Options, etc.)
 /// 2. CSRF protection (Double Submit Cookie)
-/// 3. Route handlers (auth routes + system routes + health check)
+/// 3. Route handlers (auth routes + system routes + conversation routes + health check)
 pub fn create_router(services: &AppServices) -> Router {
     let system_state = build_system_state(services);
-    create_router_with_system_state(services, system_state)
+    let conversation_state = build_conversation_state(services);
+    create_router_with_system_state(services, system_state, conversation_state)
+}
+
+/// Build the default `ConversationRouterState` from application services.
+pub fn build_conversation_state(services: &AppServices) -> ConversationRouterState {
+    let pool = services.database.pool().clone();
+    let repo = Arc::new(SqliteConversationRepository::new(pool));
+    ConversationRouterState {
+        conversation_service: ConversationService::new(repo, services.event_bus.clone()),
+    }
 }
 
 /// Build the default `WsHandlerState` from application services.
@@ -195,18 +210,20 @@ pub fn build_ws_state(services: &AppServices) -> WsHandlerState {
 pub fn create_router_with_system_state(
     services: &AppServices,
     system_state: SystemRouterState,
+    conversation_state: ConversationRouterState,
 ) -> Router {
     let ws_state = build_ws_state(services);
-    create_router_with_all_state(services, system_state, ws_state)
+    create_router_with_all_state(services, system_state, conversation_state, ws_state)
 }
 
-/// Create the application router with custom system and WebSocket state.
+/// Create the application router with custom system, conversation, and WebSocket state.
 ///
-/// Full-control variant used by tests that need to override both
-/// system services and WebSocket behaviour.
+/// Full-control variant used by tests that need to override
+/// system services, conversation services, and WebSocket behaviour.
 pub fn create_router_with_all_state(
     services: &AppServices,
     system_state: SystemRouterState,
+    conversation_state: ConversationRouterState,
     ws_state: WsHandlerState,
 ) -> Router {
     let auth_state = AuthRouterState {
@@ -223,6 +240,10 @@ pub fn create_router_with_all_state(
 
     // System routes protected by auth middleware
     let system_authenticated = system_routes(system_state)
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Conversation routes protected by auth middleware
+    let conversation_authenticated = conversation_routes(conversation_state)
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
 
     // WebSocket upgrade route — exempt from CSRF (no cookie-based
@@ -235,6 +256,7 @@ pub fn create_router_with_all_state(
         .route("/health", get(health_check))
         .merge(auth_routes(auth_state))
         .merge(system_authenticated)
+        .merge(conversation_authenticated)
         .layer(middleware::from_fn_with_state(
             services.cookie_config.clone(),
             csrf_middleware,
