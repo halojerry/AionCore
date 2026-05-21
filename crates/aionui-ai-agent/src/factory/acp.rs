@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::agent_task::AgentInstance;
@@ -9,6 +11,44 @@ use crate::types::BuildTaskOptions;
 use aionui_api_types::AcpBuildExtra;
 use aionui_common::{AppError, CommandSpec};
 use tracing::{debug, info};
+
+fn ensure_managed_claude_wrapper(data_dir: &Path, claude_path: &Path) -> Result<String, AppError> {
+    let wrapper_dir = data_dir.join("managed-runtime").join("claude");
+    fs::create_dir_all(&wrapper_dir)
+        .map_err(|e| AppError::Internal(format!("Failed to create Claude wrapper dir: {e}")))?;
+
+    let wrapper_path = if cfg!(windows) {
+        wrapper_dir.join("claude-bare-wrapper.cmd")
+    } else {
+        wrapper_dir.join("claude-bare-wrapper.sh")
+    };
+
+    let script = if cfg!(windows) {
+        format!("@echo off\r\n\"{}\" --bare %*\r\n", claude_path.display())
+    } else {
+        format!("#!/bin/sh\nexec {} --bare \"$@\"\n", shell_escape_path(claude_path))
+    };
+
+    fs::write(&wrapper_path, script).map_err(|e| AppError::Internal(format!("Failed to write Claude wrapper: {e}")))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&wrapper_path)
+            .map_err(|e| AppError::Internal(format!("Failed to stat Claude wrapper: {e}")))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&wrapper_path, perms)
+            .map_err(|e| AppError::Internal(format!("Failed to chmod Claude wrapper: {e}")))?;
+    }
+
+    Ok(wrapper_path.to_string_lossy().into_owned())
+}
+
+fn shell_escape_path(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    format!("'{}'", raw.replace('\'', "'\''"))
+}
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -102,6 +142,14 @@ pub(super) async fn build(
                 });
             }
             tracing::info!(?keys, "cc-switch: env vars injected");
+
+            if let Ok(wrapper) = ensure_managed_claude_wrapper(&deps.data_dir, &command) {
+                env.push(aionui_common::EnvVar {
+                    name: "CLAUDE_CODE_EXECUTABLE".into(),
+                    value: wrapper,
+                });
+                tracing::info!("cc-switch: managed Claude wrapper injected");
+            }
         }
     }
 
@@ -165,4 +213,23 @@ pub(super) async fn build(
     deps.acp_agent_service.attach(ctx.conversation_id, domain_rx).await;
 
     Ok(instance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn ensure_managed_claude_wrapper_writes_bare_wrapper_script() {
+        let dir = tempdir().unwrap();
+        let claude_path = dir.path().join("claude's-bin");
+        let wrapper = ensure_managed_claude_wrapper(dir.path(), &claude_path).unwrap();
+        let content = fs::read_to_string(&wrapper).unwrap();
+
+        assert_eq!(
+            content,
+            format!("#!/bin/sh\nexec {} --bare \"$@\"\n", shell_escape_path(&claude_path)),
+        );
+    }
 }

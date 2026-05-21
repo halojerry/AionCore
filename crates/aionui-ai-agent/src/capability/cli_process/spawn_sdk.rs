@@ -1,5 +1,6 @@
 use aionui_common::{AppError, CommandSpec, ErrorChain};
 use aionui_runtime::Builder as CmdBuilder;
+use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -135,7 +136,9 @@ impl CliAgentProcess {
         // `aionui_runtime::enhance_process_path` during startup; children
         // inherit it automatically. No per-spawn injection needed.
 
-        if let Some(claude_path) = Self::find_native_claude() {
+        let path_var = std::env::var_os("PATH");
+        let has_explicit_claude_executable = std::env::var_os("CLAUDE_CODE_EXECUTABLE").is_some();
+        if let Some(claude_path) = Self::resolve_native_claude_path(path_var, has_explicit_claude_executable) {
             env.push(("CLAUDE_CODE_EXECUTABLE".into(), claude_path));
         }
 
@@ -149,8 +152,11 @@ impl CliAgentProcess {
     /// to `aionui_runtime::resolve_command_in`, which honours `PATHEXT` on
     /// Windows and adds the `.cmd / .ps1 / .bat` shim fallback for
     /// npm-installed CLIs.
-    fn find_native_claude() -> Option<String> {
-        let path_var = std::env::var_os("PATH")?;
+    fn resolve_native_claude_path(path_var: Option<OsString>, has_explicit_claude_executable: bool) -> Option<String> {
+        if has_explicit_claude_executable {
+            return None;
+        }
+        let path_var = path_var?;
         for dir in std::env::split_paths(&path_var) {
             if dir.as_os_str().is_empty() {
                 continue;
@@ -167,6 +173,9 @@ impl CliAgentProcess {
 mod tests {
     use super::super::tests::simple_script_config;
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
     use std::time::Duration;
 
     // ── SDK mode tests ───────────────────────────────────────────────
@@ -184,5 +193,32 @@ mod tests {
         assert!(stdio_again.is_none(), "Second take_stdio should return None");
 
         proc.kill(Duration::from_millis(100)).await.unwrap();
+    }
+
+    #[test]
+    fn agent_spawn_env_adds_bun_paths() {
+        let dir = tempdir().unwrap();
+        let env = CliAgentProcess::agent_spawn_env(dir.path());
+
+        assert!(env.iter().any(|(name, value)| {
+            name == "BUN_INSTALL_CACHE_DIR" && value == &dir.path().join("bun-cache").to_string_lossy()
+        }));
+        assert!(env.iter().any(|(name, value)| name == "BUN_TMPDIR" && value == &dir.path().join("bun-tmp").to_string_lossy()));
+    }
+
+    #[test]
+    fn resolve_native_claude_path_respects_explicit_executable() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&claude).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&claude, perms).unwrap();
+
+        let resolved = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), false);
+        assert_eq!(resolved.as_deref(), Some(claude.to_string_lossy().as_ref()));
+
+        let skipped = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), true);
+        assert!(skipped.is_none());
     }
 }
