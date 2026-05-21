@@ -34,8 +34,8 @@ use aionui_office::{
 use aionui_realtime::{NoopMessageRouter, WsHandlerState};
 use aionui_shell::ShellRouterState;
 use aionui_system::{
-    ClientPrefService, ConnectionTestRouterState, ConnectionTestService, ModelFetchService, ProtocolDetectionService,
-    ProviderService, SettingsService, SystemRouterState, VersionCheckService,
+    ClientPrefService, ConnectionTestRouterState, ConnectionTestService, ManagedRuntimeService, ModelFetchService,
+    ProtocolDetectionService, ProviderService, SettingsService, SystemRouterState, VersionCheckService,
 };
 use aionui_team::{TeamRouterState, TeamSessionService};
 
@@ -186,11 +186,13 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
     let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
     let pool = services.database.pool().clone();
     let provider_repo = Arc::new(SqliteProviderRepository::new(pool.clone()));
+    let client_pref_service = ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(pool.clone())));
     let http_client = reqwest::Client::new();
 
     SystemRouterState {
         settings_service: SettingsService::new(Arc::new(SqliteSettingsRepository::new(pool.clone()))),
-        client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(pool))),
+        managed_runtime_service: ManagedRuntimeService::new(Arc::new(client_pref_service.clone())),
+        client_pref_service,
         provider_service: ProviderService::new(provider_repo.clone(), encryption_key),
         model_fetch_service: ModelFetchService::new(provider_repo, encryption_key, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
