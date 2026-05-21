@@ -65,6 +65,76 @@ pub type ClientPreferencesResponse = HashMap<String, Value>;
 /// the key should be deleted. Non-null values are persisted as-is.
 pub type UpdateClientPreferencesRequest = HashMap<String, Value>;
 
+/// Deserialize `Option<Option<T>>`:
+/// - JSON field absent → `None` (keep current value)
+/// - JSON `null` → `Some(None)` (clear the value)
+/// - JSON value → `Some(Some(value))` (set new value)
+fn deserialize_optional_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value: Option<T> = Option::deserialize(deserializer)?;
+    Ok(Some(value))
+}
+
+/// Persisted desktop-account user summary for managed runtime state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ManagedRuntimeUser {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<Value>,
+    pub username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_quota: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_letter: Option<String>,
+}
+
+/// Persisted non-sensitive managed runtime account state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ManagedRuntimeAccountState {
+    pub logged_in: bool,
+    pub base_url: String,
+    pub models: Vec<String>,
+    pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<ManagedRuntimeUser>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_provider_id: Option<String>,
+}
+
+/// Typed response for managed runtime state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ManagedRuntimeStateResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<ManagedRuntimeAccountState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_model_prefs: Option<HashMap<String, String>>,
+}
+
+/// Partial upsert request for managed runtime state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UpdateManagedRuntimeStateRequest {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub account: Option<Option<ManagedRuntimeAccountState>>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cli_model_prefs: Option<Option<HashMap<String, String>>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,8 +15,8 @@ use aionui_db::{
     SqliteClientPreferenceRepository, SqliteProviderRepository, SqliteSettingsRepository, init_database_memory,
 };
 use aionui_system::{
-    ClientPrefService, ModelFetchService, ProtocolDetectionService, ProviderService, SettingsService,
-    SystemRouterState, VersionCheckService, settings_routes,
+    ClientPrefService, ManagedRuntimeService, ModelFetchService, ProtocolDetectionService, ProviderService,
+    SettingsService, SystemRouterState, VersionCheckService, settings_routes,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,10 +27,13 @@ const TEST_ENCRYPTION_KEY: [u8; 32] = [0x42; 32];
 
 fn build_state(db: &aionui_db::Database) -> SystemRouterState {
     let provider_repo = Arc::new(SqliteProviderRepository::new(db.pool().clone()));
+    let client_pref_service =
+        ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone())));
     let http_client = reqwest::Client::new();
     SystemRouterState {
         settings_service: SettingsService::new(Arc::new(SqliteSettingsRepository::new(db.pool().clone()))),
-        client_pref_service: ClientPrefService::new(Arc::new(SqliteClientPreferenceRepository::new(db.pool().clone()))),
+        managed_runtime_service: ManagedRuntimeService::new(Arc::new(client_pref_service.clone())),
+        client_pref_service,
         provider_service: ProviderService::new(provider_repo.clone(), TEST_ENCRYPTION_KEY),
         model_fetch_service: ModelFetchService::new(provider_repo, TEST_ENCRYPTION_KEY, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),

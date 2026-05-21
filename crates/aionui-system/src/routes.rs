@@ -6,13 +6,14 @@ use axum::routing::{delete, get, post};
 
 use aionui_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse,
-    SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest,
+    FetchModelsRequest, FetchModelsResponse, ManagedRuntimeStateResponse, ProtocolDetectionResponse, ProviderResponse,
+    SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
+    UpdateManagedRuntimeStateRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use aionui_common::AppError;
 
 use crate::client_pref::ClientPrefService;
+use crate::managed_runtime::ManagedRuntimeService;
 use crate::model_fetcher::ModelFetchService;
 use crate::protocol::ProtocolDetectionService;
 use crate::provider::ProviderService;
@@ -24,6 +25,7 @@ use crate::version::VersionCheckService;
 pub struct SystemRouterState {
     pub settings_service: SettingsService,
     pub client_pref_service: ClientPrefService,
+    pub managed_runtime_service: ManagedRuntimeService,
     pub provider_service: ProviderService,
     pub model_fetch_service: ModelFetchService,
     pub protocol_detection_service: ProtocolDetectionService,
@@ -54,6 +56,10 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route(
             "/api/settings/client",
             get(get_client_preferences).put(update_client_preferences),
+        )
+        .route(
+            "/api/settings/managed-runtime",
+            get(get_managed_runtime_state).put(update_managed_runtime_state),
         )
         .route("/api/providers", get(list_providers).post(create_provider))
         // Literal-segment routes must register BEFORE the `/{id}` routes so
@@ -126,6 +132,22 @@ async fn update_client_preferences(
     let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
     state.client_pref_service.update_preferences(req).await?;
     Ok(Json(ApiResponse::success()))
+}
+
+async fn get_managed_runtime_state(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<ManagedRuntimeStateResponse>>, AppError> {
+    let managed_runtime = state.managed_runtime_service.get_state().await?;
+    Ok(Json(ApiResponse::ok(managed_runtime)))
+}
+
+async fn update_managed_runtime_state(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<UpdateManagedRuntimeStateRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<ManagedRuntimeStateResponse>>, AppError> {
+    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let managed_runtime = state.managed_runtime_service.update_state(req).await?;
+    Ok(Json(ApiResponse::ok(managed_runtime)))
 }
 
 // ===========================================================================
