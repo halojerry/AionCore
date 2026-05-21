@@ -343,7 +343,7 @@ VALUES
      unixepoch('now','subsec')*1000, unixepoch('now','subsec')*1000),
 
     -- Internal
-    ('632f31d2', '/api/assets/logos/brand/aion.svg', 'Aion CLI',
+    ('632f31d2', '/api/assets/logos/brand/pounding-heart-solid.png', 'POUNDING CLI',
      NULL, 'aionrs', 'internal', '{}',
      1, NULL, '[]', '[]',
      '[".aionrs/skills"]',

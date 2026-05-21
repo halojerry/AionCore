@@ -49,6 +49,26 @@ async fn auth_required_put_client_prefs() {
 }
 
 #[tokio::test]
+async fn auth_required_get_managed_runtime() {
+    let (app, _) = build_app().await;
+    let resp = app.oneshot(get_request("/api/settings/managed-runtime")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn auth_required_put_managed_runtime() {
+    let (app, _) = build_app().await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/api/settings/managed-runtime")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"cli_model_prefs":{"claude":"mimo-v2.5"}}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn auth_required_get_providers() {
     let (app, _) = build_app().await;
     let resp = app.oneshot(get_request("/api/providers")).await.unwrap();
