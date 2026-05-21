@@ -140,3 +140,80 @@ async fn client_prefs_key_filter_with_auth() {
     assert_eq!(data["a"], 1);
     assert_eq!(data["c"], 3);
 }
+
+#[tokio::test]
+async fn managed_runtime_get_and_put_with_auth_and_csrf() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/settings/managed-runtime", &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["data"], json!({}));
+
+    let req = json_with_token(
+        "PUT",
+        "/api/settings/managed-runtime",
+        json!({
+            "account": {
+                "logged_in": true,
+                "base_url": "https://api.mxou.cn",
+                "models": ["mimo-v2.5"],
+                "updated_at": 123
+            },
+            "cli_model_prefs": {
+                "claude": "mimo-v2.5"
+            }
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    assert_eq!(json["data"]["account"]["base_url"], "https://api.mxou.cn");
+    assert_eq!(json["data"]["cli_model_prefs"]["claude"], "mimo-v2.5");
+}
+
+#[tokio::test]
+async fn managed_runtime_put_missing_csrf_rejected() {
+    let (mut app, services) = build_app().await;
+    let (token, _csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let req = axum::http::Request::builder()
+        .method("PUT")
+        .uri("/api/settings/managed-runtime")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .body(axum::body::Body::from(r#"{"cli_model_prefs":{"claude":"mimo-v2.5"}}"#))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn managed_runtime_put_invalid_body_rejected_with_auth() {
+    let (mut app, services) = build_app().await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    let req = json_with_token(
+        "PUT",
+        "/api/settings/managed-runtime",
+        json!({
+            "account": {
+                "logged_in": true,
+                "base_url": 123,
+                "models": ["mimo-v2.5"],
+                "updated_at": 123
+            }
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

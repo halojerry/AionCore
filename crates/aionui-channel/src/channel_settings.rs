@@ -299,7 +299,7 @@ mod tests {
     async fn agent_config_aionrs_has_no_backend() {
         let repo = Arc::new(MockPrefRepo::with_data(vec![(
             "assistant.lark.agent",
-            r#"{"backend":"aionrs","name":"Aion CLI"}"#,
+            r#"{"backend":"aionrs","name":"POUNDING CLI"}"#,
         )]));
         let svc = ChannelSettingsService::new(repo);
 
@@ -327,7 +327,7 @@ mod tests {
     async fn agent_config_reads_new_format_aionrs() {
         let repo = Arc::new(MockPrefRepo::with_data(vec![(
             "assistant.lark.agent",
-            r#"{"agent_type":"aionrs","name":"Aion CLI"}"#,
+            r#"{"agent_type":"aionrs","name":"POUNDING CLI"}"#,
         )]));
         let svc = ChannelSettingsService::new(repo);
 

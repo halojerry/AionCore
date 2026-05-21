@@ -263,7 +263,7 @@ mod tests {
         );
         assert!(
             rows.iter()
-                .any(|r| r.name == "Aion CLI" && r.agent_source == "internal")
+                .any(|r| r.name == "POUNDING CLI" && r.agent_source == "internal")
         );
         // Nanobot and OpenClaw are builtin (not internal).
         assert!(rows.iter().any(|r| r.name == "Nanobot" && r.agent_source == "builtin"));
@@ -289,8 +289,12 @@ mod tests {
         let claude = repo.get("2d23ff1c").await.unwrap().expect("seeded claude row");
         assert_eq!(claude.icon.as_deref(), Some("/api/assets/logos/ai-major/claude.svg"));
 
-        let aionrs = repo.get("632f31d2").await.unwrap().expect("seeded aion cli row");
-        assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/aion.svg"));
+        let aionrs = repo.get("632f31d2").await.unwrap().expect("seeded pounding cli row");
+        assert_eq!(
+            aionrs.icon.as_deref(),
+            Some("/api/assets/logos/brand/pounding-heart-solid.png")
+        );
+        assert_eq!(aionrs.name, "POUNDING CLI");
 
         let kiro = repo.get("e044000d").await.unwrap().expect("seeded kiro row");
         assert!(kiro.icon.is_none());
