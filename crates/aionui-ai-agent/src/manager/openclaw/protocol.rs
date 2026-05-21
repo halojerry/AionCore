@@ -8,7 +8,7 @@ pub const OPENCLAW_MIN_PROTOCOL_VERSION: u32 = 3;
 pub const OPENCLAW_MAX_PROTOCOL_VERSION: u32 = 4;
 
 pub const CLIENT_ID: &str = "gateway-client";
-pub const CLIENT_DISPLAY_NAME: &str = "AionUI-Backend";
+pub const CLIENT_DISPLAY_NAME: &str = "POUNDING-Backend";
 pub const CLIENT_MODE: &str = "backend";
 pub const CLIENT_VERSION: &str = "1.0.0";
 
@@ -437,6 +437,7 @@ mod tests {
         assert_eq!(json["minProtocol"], 3);
         assert_eq!(json["maxProtocol"], 4);
         assert_eq!(json["client"]["id"], "gateway-client");
+        assert_eq!(json["client"]["displayName"], "POUNDING-Backend");
         assert_eq!(json["caps"][0], "tool-events");
     }
 
