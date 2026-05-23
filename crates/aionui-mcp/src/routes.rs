@@ -146,14 +146,12 @@ async fn toggle_server(
         {
             warn!(server_id = %server.id, error = %e, "failed to sync enabled server to agents");
         }
-    } else {
-        if let Err(e) = state
-            .sync_service
-            .remove_from_agents(std::slice::from_ref(&server.name))
-            .await
-        {
-            warn!(server = %server.name, error = %e, "failed to remove disabled server from agents");
-        }
+    } else if let Err(e) = state
+        .sync_service
+        .remove_from_agents(std::slice::from_ref(&server.name))
+        .await
+    {
+        warn!(server = %server.name, error = %e, "failed to remove disabled server from agents");
     }
 
     Ok(Json(ApiResponse::ok(server)))
