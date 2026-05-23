@@ -254,7 +254,10 @@ mod tests {
             "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
             "\u{1b}[1mclaude-sonnet-4-20250514\u{1b}[0m".into(),
         );
-        env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), "Set model to claude-opus-4-7[1m]".into());
+        env.insert(
+            "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+            "Set model to claude-opus-4-7[1m]".into(),
+        );
 
         let info = build_model_info_from_env(&env, &HashMap::new(), Some("Set model to opus[1m]"));
         let payload = info.expect("sanitized model info should exist");

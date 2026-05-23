@@ -55,10 +55,7 @@ fn normalize_requested_model_id_for_backend(backend: Option<&str>, model_id: &st
     model_id.to_owned()
 }
 
-fn normalize_persisted_model_id_for_backend(
-    backend: Option<&str>,
-    model_id: Option<&ModelId>,
-) -> Option<ModelId> {
+fn normalize_persisted_model_id_for_backend(backend: Option<&str>, model_id: Option<&ModelId>) -> Option<ModelId> {
     model_id.map(|value| ModelId::new(normalize_requested_model_id_for_backend(backend, value.as_str())))
 }
 
@@ -266,7 +263,10 @@ impl AcpAgentManager {
                 .map(ModeId::new),
             snapshot
                 .and_then(|s| {
-                    normalize_persisted_model_id_for_backend(params.metadata.backend.as_deref(), s.current_model_id.as_ref())
+                    normalize_persisted_model_id_for_backend(
+                        params.metadata.backend.as_deref(),
+                        s.current_model_id.as_ref(),
+                    )
                 })
                 .or_else(|| {
                     params
@@ -274,7 +274,12 @@ impl AcpAgentManager {
                         .current_model_id
                         .as_ref()
                         .filter(|m| !m.is_empty())
-                        .map(|m| ModelId::new(normalize_requested_model_id_for_backend(params.metadata.backend.as_deref(), m)))
+                        .map(|m| {
+                            ModelId::new(normalize_requested_model_id_for_backend(
+                                params.metadata.backend.as_deref(),
+                                m,
+                            ))
+                        })
                 }),
             snapshot.map(|s| s.config_selections.clone()).unwrap_or_default(),
         );
@@ -409,7 +414,8 @@ impl AcpAgentManager {
     /// CurrentModelUpdate notification after `session/set_model`.
     pub(crate) async fn set_model(&self, model_id: &str) -> Result<(), AppError> {
         let session_id = self.session.read().await.session_id().map(ToOwned::to_owned);
-        let normalized_model_id = normalize_requested_model_id_for_backend(self.params.metadata.backend.as_deref(), model_id);
+        let normalized_model_id =
+            normalize_requested_model_id_for_backend(self.params.metadata.backend.as_deref(), model_id);
 
         {
             let mut session = self.session.write().await;
@@ -889,7 +895,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod managed_claude_model_tests {
     use super::{normalize_persisted_model_id_for_backend, normalize_requested_model_id_for_backend};
@@ -897,23 +902,33 @@ mod managed_claude_model_tests {
 
     #[test]
     fn normalizes_claude_requested_model_to_slot() {
-        assert_eq!(normalize_requested_model_id_for_backend(Some("claude"), "MiniMax-M2.7-highspeed"), "default");
+        assert_eq!(
+            normalize_requested_model_id_for_backend(Some("claude"), "MiniMax-M2.7-highspeed"),
+            "default"
+        );
         assert_eq!(normalize_requested_model_id_for_backend(Some("claude"), "opus"), "opus");
-        assert_eq!(normalize_requested_model_id_for_backend(Some("claude"), "sonnet"), "default");
-        assert_eq!(normalize_requested_model_id_for_backend(Some("claude"), "haiku"), "haiku");
+        assert_eq!(
+            normalize_requested_model_id_for_backend(Some("claude"), "sonnet"),
+            "default"
+        );
+        assert_eq!(
+            normalize_requested_model_id_for_backend(Some("claude"), "haiku"),
+            "haiku"
+        );
     }
 
     #[test]
     fn keeps_non_claude_requested_model_id_unchanged() {
-        assert_eq!(normalize_requested_model_id_for_backend(Some("opencode"), "pounding-provider/mimo-v2.5"), "pounding-provider/mimo-v2.5");
+        assert_eq!(
+            normalize_requested_model_id_for_backend(Some("opencode"), "pounding-provider/mimo-v2.5"),
+            "pounding-provider/mimo-v2.5"
+        );
     }
 
     #[test]
     fn normalizes_claude_persisted_model_to_slot() {
-        let normalized = normalize_persisted_model_id_for_backend(
-            Some("claude"),
-            Some(&ModelId::new("MiniMax-M2.7-highspeed")),
-        );
+        let normalized =
+            normalize_persisted_model_id_for_backend(Some("claude"), Some(&ModelId::new("MiniMax-M2.7-highspeed")));
         assert_eq!(normalized.as_ref().map(ModelId::as_str), Some("default"));
     }
 }

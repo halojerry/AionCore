@@ -25,11 +25,7 @@ fn resolve_claude_config_dir(home: &Path, settings_path: &Path) -> PathBuf {
     match override_dir {
         Some(dir) => {
             let path = PathBuf::from(dir);
-            if path.is_absolute() {
-                path
-            } else {
-                home.join(path)
-            }
+            if path.is_absolute() { path } else { home.join(path) }
         }
         None => home.join(".claude"),
     }

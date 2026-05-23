@@ -689,7 +689,9 @@ mod tests {
 
         assert_eq!(
             overrides.system_prompt.as_deref(),
-            Some("You are POUNDING (胖丁), the user-facing assistant. Always answer as POUNDING CLI / 胖丁.\n\nBe concise.")
+            Some(
+                "You are POUNDING (胖丁), the user-facing assistant. Always answer as POUNDING CLI / 胖丁.\n\nBe concise."
+            )
         );
     }
 }
