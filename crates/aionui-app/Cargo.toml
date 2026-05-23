@@ -3,9 +3,8 @@ name = "aionui-app"
 version.workspace = true
 edition.workspace = true
 
-# Binary name must match what binaryResolver.ts looks for via `which aionui-backend`.
 [[bin]]
-name = "aionui-backend"
+name = "aioncore"
 path = "src/main.rs"
 
 [features]
