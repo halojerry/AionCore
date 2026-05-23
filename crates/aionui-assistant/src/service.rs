@@ -947,6 +947,7 @@ mod tests {
                         "id": b.id,
                         "name": b.name,
                         "preset_agent_type": b.preset_agent_type,
+                        "enabled_skills": b.enabled_skills,
                         "rule_file": b.rule_file,
                         "skill_file": b.skill_file,
                     })
@@ -1019,6 +1020,24 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(list.iter().any(|a| a.id == "builtin-office"));
         assert!(list.iter().any(|a| a.id == "u1"));
+    }
+
+    #[tokio::test]
+    async fn list_preserves_builtin_enabled_skills() {
+        let mut builtin = mk_builtin("ozon-assistants", "Ozon Assistants");
+        builtin.preset_agent_type = "aionrs".into();
+        builtin.enabled_skills = vec!["pounding-ozon".into()];
+
+        let fx = fixture_with_builtins(vec![builtin]).await;
+        let list = fx.service.list().await.unwrap();
+        let assistant = list
+            .into_iter()
+            .find(|a| a.id == "ozon-assistants")
+            .expect("builtin ozon assistant should be listed");
+
+        assert_eq!(assistant.source, AssistantSource::Builtin);
+        assert_eq!(assistant.preset_agent_type, "aionrs");
+        assert_eq!(assistant.enabled_skills, vec!["pounding-ozon"]);
     }
 
     #[tokio::test]

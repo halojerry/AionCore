@@ -1,0 +1,9 @@
+{
+  "name": "pounding-ozon",
+  "version": "0.1.0",
+  "bundle": "pounding-ozon-v0.1.0-lite.zip",
+  "entrypoint": "cli.py",
+  "release_type": "lite",
+  "file_count": 105,
+  "includes_meta_file": true
+}
