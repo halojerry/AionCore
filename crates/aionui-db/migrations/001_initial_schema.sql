@@ -340,7 +340,7 @@ VALUES
      NULL,
      '{}',
      'yolo', 3900,
-     unixepoch('now','subsec')*1000, unixepoch('now','subsec')*1000),
+     unixepoch('now','subsec')*1000, unixepoch('now','subsec')*1000);
 
 ------------------------------------------------------------------------
 -- Remote Agents & MCP
