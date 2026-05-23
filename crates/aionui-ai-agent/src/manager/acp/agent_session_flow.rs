@@ -10,6 +10,7 @@ use agent_client_protocol::schema::{ContentBlock, LoadSessionRequest, PromptRequ
 use aionui_common::AppError;
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
+use tokio::time::{Duration, sleep};
 
 use super::agent::sdk_to_snake_value;
 use tracing::warn;
@@ -24,6 +25,8 @@ use tracing::warn;
 fn is_session_not_found(err: &AppError) -> bool {
     matches!(err, AppError::NotFound(msg) if msg.starts_with("Session not found"))
 }
+
+const ACP_FINISH_GRACE_MS: u64 = 1200;
 
 impl AcpAgentManager {
     /// Establish a fresh ACP session (session/new) and apply desired
@@ -267,6 +270,12 @@ impl AcpAgentManager {
                 code: Some("acp.empty_finish".into()),
             }));
         }
+
+        // Some ACP backends (observed with OpenCode on the 2.0.7 split line)
+        // can deliver a final `session/update` message chunk just after the
+        // `session/prompt` response resolves. Give the stream a brief grace
+        // window before finalizing so the relay can persist the last text.
+        sleep(Duration::from_millis(ACP_FINISH_GRACE_MS)).await;
 
         // Emit Finish event
         self.runtime.emit(AgentStreamEvent::Finish(FinishEventData {

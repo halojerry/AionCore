@@ -167,7 +167,10 @@ impl CliAgentProcess {
 mod tests {
     use super::super::tests::simple_script_config;
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
+    use tempfile::tempdir;
 
     // ── SDK mode tests ───────────────────────────────────────────────
 
@@ -184,5 +187,36 @@ mod tests {
         assert!(stdio_again.is_none(), "Second take_stdio should return None");
 
         proc.kill(Duration::from_millis(100)).await.unwrap();
+    }
+    }
+
+    #[test]
+    fn agent_spawn_env_adds_bun_paths() {
+        let dir = tempdir().unwrap();
+        let env = CliAgentProcess::agent_spawn_env(dir.path());
+
+        assert!(env.iter().any(|(name, value)| {
+            name == "BUN_INSTALL_CACHE_DIR" && value == &dir.path().join("bun-cache").to_string_lossy()
+        }));
+        assert!(
+            env.iter()
+                .any(|(name, value)| name == "BUN_TMPDIR" && value == &dir.path().join("bun-tmp").to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn resolve_native_claude_path_respects_explicit_executable() {
+        let dir = tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut perms = fs::metadata(&claude).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&claude, perms).unwrap();
+
+        let resolved = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), false);
+        assert_eq!(resolved.as_deref(), Some(claude.to_string_lossy().as_ref()));
+
+        let skipped = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), true);
+        assert!(skipped.is_none());
     }
 }
