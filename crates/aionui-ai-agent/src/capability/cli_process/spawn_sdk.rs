@@ -27,8 +27,8 @@ impl CliAgentProcess {
     pub async fn spawn_for_sdk(config: CommandSpec, data_dir: &Path) -> Result<Self, AppError> {
         let mut cmd = CmdBuilder::new(&config.command);
         cmd.args(&config.args)
-            .envs(config.env.iter().map(|e| (&e.name, &e.value)))
             .envs(Self::agent_spawn_env(data_dir))
+            .envs(config.env.iter().map(|e| (&e.name, &e.value)))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
