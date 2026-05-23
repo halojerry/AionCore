@@ -340,7 +340,7 @@ VALUES
      NULL,
      '{}',
      'yolo', 3900,
-     unixepoch('now','subsec')*1000, unixepoch('now','subsec')*1000),
+     unixepoch('now','subsec')*1000, unixepoch('now','subsec')*1000);
 
     -- Internal
     ('632f31d2', '/api/assets/logos/brand/aion.svg', 'Aion CLI',
