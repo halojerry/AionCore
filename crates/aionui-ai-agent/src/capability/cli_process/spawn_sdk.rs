@@ -175,8 +175,8 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use tempfile::tempdir;
     use std::time::Duration;
+    use tempfile::tempdir;
 
     // ── SDK mode tests ───────────────────────────────────────────────
 
@@ -203,7 +203,10 @@ mod tests {
         assert!(env.iter().any(|(name, value)| {
             name == "BUN_INSTALL_CACHE_DIR" && value == &dir.path().join("bun-cache").to_string_lossy()
         }));
-        assert!(env.iter().any(|(name, value)| name == "BUN_TMPDIR" && value == &dir.path().join("bun-tmp").to_string_lossy()));
+        assert!(
+            env.iter()
+                .any(|(name, value)| name == "BUN_TMPDIR" && value == &dir.path().join("bun-tmp").to_string_lossy())
+        );
     }
 
     #[test]

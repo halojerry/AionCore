@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -7,13 +8,43 @@ pub struct CcSwitchPaths {
     pub claude_settings_path: PathBuf,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct CcSwitchSettingsFile {
+    #[serde(rename = "claudeConfigDir")]
+    claude_config_dir: Option<String>,
+}
+
+fn resolve_claude_config_dir(home: &Path, settings_path: &Path) -> PathBuf {
+    let override_dir = fs::read_to_string(settings_path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<CcSwitchSettingsFile>(&content).ok())
+        .and_then(|settings| settings.claude_config_dir)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    match override_dir {
+        Some(dir) => {
+            let path = PathBuf::from(dir);
+            if path.is_absolute() {
+                path
+            } else {
+                home.join(path)
+            }
+        }
+        None => home.join(".claude"),
+    }
+}
+
 impl CcSwitchPaths {
     pub fn from_home(home: &Path) -> Self {
         let base = home.join(".cc-switch");
+        let settings_path = base.join("settings.json");
+        let database_path = base.join("cc-switch.db");
+        let claude_config_dir = resolve_claude_config_dir(home, &settings_path);
         Self {
-            settings_path: base.join("settings.json"),
-            database_path: base.join("cc-switch.db"),
-            claude_settings_path: home.join(".claude").join("settings.json"),
+            settings_path,
+            database_path,
+            claude_settings_path: claude_config_dir.join("settings.json"),
         }
     }
 
