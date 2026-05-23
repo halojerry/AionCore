@@ -100,6 +100,44 @@ fn reads_model_info_from_fixture_db() {
 }
 
 #[test]
+fn respects_claude_config_dir_override_for_model_slot_detection() {
+    let tmp = TempDir::new().unwrap();
+    let cc_switch_dir = tmp.path().join(".cc-switch");
+    fs::create_dir_all(&cc_switch_dir).unwrap();
+
+    let custom_claude_dir = tmp.path().join("custom-claude");
+    fs::create_dir_all(&custom_claude_dir).unwrap();
+
+    let settings = serde_json::json!({
+        "currentProviderClaude": "deepseek-relay",
+        "claudeConfigDir": custom_claude_dir.to_string_lossy(),
+    });
+    fs::write(cc_switch_dir.join("settings.json"), settings.to_string()).unwrap();
+
+    let config = serde_json::json!({
+        "env": {
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-max"
+        },
+        "model": "default"
+    });
+    create_test_db(&cc_switch_dir, "deepseek-relay", &config.to_string());
+
+    fs::write(
+        custom_claude_dir.join("settings.json"),
+        serde_json::json!({ "model": "opus" }).to_string(),
+    )
+    .unwrap();
+
+    let paths = CcSwitchPaths::from_home(tmp.path());
+    assert_eq!(paths.claude_settings_path, custom_claude_dir.join("settings.json"));
+
+    let info = read_claude_model_info_with_paths(&paths).expect("model info should exist");
+    assert_eq!(info.current_model_id.as_deref(), Some("opus"));
+    assert_eq!(info.current_model_label.as_deref(), Some("DeepSeek V4 Max"));
+}
+
+#[test]
 fn gracefully_handles_missing_cc_switch() {
     let tmp = TempDir::new().unwrap();
     let paths = CcSwitchPaths::from_home(tmp.path());

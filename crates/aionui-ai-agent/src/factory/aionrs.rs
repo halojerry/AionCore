@@ -15,6 +15,8 @@ use crate::manager::aionrs::AionrsAgentManager;
 use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig, BuildTaskOptions};
 
 const TEAM_CAPABLE_BACKENDS: &[&str] = &["claude", "codex", "gemini", "aionrs", "codebuddy"];
+const POUNDING_IDENTITY_PROMPT: &str =
+    "You are POUNDING (胖丁), the user-facing assistant. Always answer as POUNDING CLI / 胖丁.";
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -38,6 +40,11 @@ pub(super) async fn build(
             None => rules,
         });
     }
+
+    overrides.system_prompt = Some(match overrides.system_prompt.take() {
+        Some(existing) => format!("{POUNDING_IDENTITY_PROMPT}\n\n{existing}"),
+        None => POUNDING_IDENTITY_PROMPT.to_owned(),
+    });
 
     // Inject Guide MCP config for solo (non-team) sessions, mirroring acp.rs.
     // Skip if the conversation already belongs to a team (extra.teamId set).
@@ -610,5 +617,30 @@ mod tests {
         }
 
         assert_eq!(overrides.system_prompt.as_deref(), Some("Be concise."));
+    }
+
+    #[test]
+    fn pounding_identity_prompt_uses_pounding_branding_only() {
+        assert!(POUNDING_IDENTITY_PROMPT.contains("POUNDING CLI / 胖丁"));
+        assert!(!POUNDING_IDENTITY_PROMPT.contains("AionUI"));
+        assert!(!POUNDING_IDENTITY_PROMPT.contains("AionRS"));
+    }
+
+    #[test]
+    fn pounding_identity_prompt_prepends_existing_system_prompt() {
+        let mut overrides: AionrsBuildExtra = serde_json::from_value(serde_json::json!({
+            "system_prompt": "Be concise.",
+        }))
+        .unwrap();
+
+        overrides.system_prompt = Some(match overrides.system_prompt.take() {
+            Some(existing) => format!("{POUNDING_IDENTITY_PROMPT}\n\n{existing}"),
+            None => POUNDING_IDENTITY_PROMPT.to_owned(),
+        });
+
+        assert_eq!(
+            overrides.system_prompt.as_deref(),
+            Some("You are POUNDING (胖丁), the user-facing assistant. Always answer as POUNDING CLI / 胖丁.\n\nBe concise.")
+        );
     }
 }

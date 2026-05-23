@@ -8,8 +8,31 @@ use tracing::warn;
 
 use super::CcSwitchPaths;
 
+fn sanitize_model_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_ansi = regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]")
+        .ok()?
+        .replace_all(trimmed, "")
+        .to_string();
+    let without_prefix = regex::Regex::new(r"(?i)^set model to\s+")
+        .ok()?
+        .replace(&without_ansi, "")
+        .to_string();
+    let without_suffix = regex::Regex::new(r"\[(?:\d{1,3}(?:;\d{1,3})*)m\]?$")
+        .ok()?
+        .replace(&without_prefix, "")
+        .to_string();
+
+    let normalized = without_suffix.trim();
+    (!normalized.is_empty()).then(|| normalized.to_owned())
+}
+
 pub(crate) fn normalize_claude_model_slot(value: &str) -> Option<&'static str> {
-    match value.trim().to_lowercase().as_str() {
+    match sanitize_model_value(value)?.to_lowercase().as_str() {
         "sonnet" | "default" => Some("default"),
         "opus" => Some("opus"),
         "haiku" => Some("haiku"),
@@ -31,12 +54,14 @@ pub fn build_model_info_from_env(
 ) -> Option<ModelInfoPayload> {
     let default_model = env
         .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| env.get("ANTHROPIC_MODEL").filter(|s| !s.trim().is_empty()));
-    let opus_model = env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").filter(|s| !s.trim().is_empty());
+        .and_then(|s| sanitize_model_value(s))
+        .or_else(|| env.get("ANTHROPIC_MODEL").and_then(|s| sanitize_model_value(s)));
+    let opus_model = env
+        .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+        .and_then(|s| sanitize_model_value(s));
     let haiku_model = env
         .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
-        .filter(|s| !s.trim().is_empty());
+        .and_then(|s| sanitize_model_value(s));
 
     let mut available = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -50,7 +75,7 @@ pub fn build_model_info_from_env(
             let label = labels
                 .get(model_id.as_str())
                 .cloned()
-                .unwrap_or_else(|| (*model_id).clone());
+                .unwrap_or_else(|| model_id.clone());
             available.push(ModelInfoEntry {
                 id: slot.to_string(),
                 label,
@@ -220,5 +245,22 @@ mod tests {
         assert_eq!(normalize_claude_model_slot("haiku"), Some("haiku"));
         assert_eq!(normalize_claude_model_slot("unknown"), None);
         assert_eq!(normalize_claude_model_slot(""), None);
+    }
+
+    #[test]
+    fn sanitizes_ansi_polluted_model_values() {
+        let mut env = HashMap::new();
+        env.insert(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+            "\u{1b}[1mclaude-sonnet-4-20250514\u{1b}[0m".into(),
+        );
+        env.insert("ANTHROPIC_DEFAULT_OPUS_MODEL".into(), "Set model to claude-opus-4-7[1m]".into());
+
+        let info = build_model_info_from_env(&env, &HashMap::new(), Some("Set model to opus[1m]"));
+        let payload = info.expect("sanitized model info should exist");
+
+        assert_eq!(payload.current_model_id.as_deref(), Some("opus"));
+        assert_eq!(payload.available_models[0].label, "claude-sonnet-4-20250514");
+        assert_eq!(payload.available_models[1].label, "claude-opus-4-7");
     }
 }
