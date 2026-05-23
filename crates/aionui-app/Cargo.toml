@@ -7,6 +7,15 @@ edition.workspace = true
 name = "aioncore"
 path = "src/main.rs"
 
+# The front-end (binaryResolver.ts) looks for "aionui-backend" on PATH.
+# Provide an alias so `cargo install` produces both names.
+# The primary output stays "aioncore" for internal use;
+# the Electron app resolves "aionui-backend" at startup.
+
+[[bin]]
+name = "aionui-backend"
+path = "src/main.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin"]
 telegram = ["aionui-channel/telegram"]
