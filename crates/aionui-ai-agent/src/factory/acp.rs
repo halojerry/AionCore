@@ -50,19 +50,6 @@ fn shell_escape_path(path: &Path) -> String {
     format!("'{}'", raw.replace('\'', "'\''"))
 }
 
-fn resolve_command_on_path(command: &str) -> Option<std::path::PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path_var) {
-        if dir.as_os_str().is_empty() {
-            continue;
-        }
-        if let Some(found) = aionui_runtime::resolve_command_in(command, &dir) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 /// Ensure OpenCode's managed config directory and config file exist,
 /// then return the env vars that redirect OpenCode to the managed
 /// paths instead of the OS default `~/.config/opencode/`.
@@ -72,21 +59,22 @@ fn resolve_command_on_path(command: &str) -> Option<std::path::PathBuf> {
 /// intercepts terminal launches; this function guarantees that
 /// AionCore-spawned OpenCode processes also use the managed config,
 /// even when the shim is missing or PATH bypasses it.
-fn ensure_managed_opencode_env(data_dir: &Path) -> Vec<aionui_common::EnvVar> {
+fn ensure_managed_opencode_env(data_dir: &Path) -> Result<Vec<aionui_common::EnvVar>, AppError> {
     let opencode_config_dir = data_dir.join("managed-opencode");
     let opencode_config_path = opencode_config_dir.join("opencode.json");
     let xdg_config_home = data_dir.join("xdg-config");
     let opencode_xdg_dir = xdg_config_home.join("opencode");
 
-    // Best-effort: create directories and touch the config file so
-    // OpenCode never falls back to ~/.config/opencode on first launch.
-    let _ = fs::create_dir_all(&opencode_config_dir);
-    let _ = fs::create_dir_all(&opencode_xdg_dir);
+    fs::create_dir_all(&opencode_config_dir)
+        .map_err(|e| AppError::Internal(format!("Failed to create managed OpenCode config dir: {e}")))?;
+    fs::create_dir_all(&opencode_xdg_dir)
+        .map_err(|e| AppError::Internal(format!("Failed to create managed OpenCode XDG dir: {e}")))?;
     if !opencode_config_path.exists() {
-        let _ = fs::write(&opencode_config_path, "{}\n");
+        fs::write(&opencode_config_path, "{}\n")
+            .map_err(|e| AppError::Internal(format!("Failed to write managed OpenCode config: {e}")))?;
     }
 
-    vec![
+    Ok(vec![
         aionui_common::EnvVar {
             name: "OPENCODE_CONFIG".into(),
             value: opencode_config_path.to_string_lossy().into_owned(),
@@ -95,7 +83,7 @@ fn ensure_managed_opencode_env(data_dir: &Path) -> Vec<aionui_common::EnvVar> {
             name: "XDG_CONFIG_HOME".into(),
             value: xdg_config_home.to_string_lossy().into_owned(),
         },
-    ]
+    ])
 }
 
 pub(super) async fn build(
@@ -190,8 +178,7 @@ pub(super) async fn build(
             // Matches the same set as CLAUDE_MODEL_ENV_KEYS in
             // NewApiDesktopAccountService.ts.
             let is_model_key = |name: &str| -> bool {
-                name == "ANTHROPIC_MODEL"
-                    || name.starts_with("ANTHROPIC_DEFAULT_") && name.ends_with("_MODEL")
+                name == "ANTHROPIC_MODEL" || name.starts_with("ANTHROPIC_DEFAULT_") && name.ends_with("_MODEL")
             };
             let filtered_count = cc_switch_env.keys().filter(|k| is_model_key(k)).count();
             let injected_keys: Vec<&str> = cc_switch_env
@@ -200,10 +187,7 @@ pub(super) async fn build(
                 .map(|k| k.as_str())
                 .collect();
             if filtered_count > 0 {
-                tracing::info!(
-                    count = filtered_count,
-                    "cc-switch: filtered ANTHROPIC_*_MODEL env keys"
-                );
+                tracing::info!(count = filtered_count, "cc-switch: filtered ANTHROPIC_*_MODEL env keys");
             }
             for (name, value) in &cc_switch_env {
                 if is_model_key(name) {
@@ -216,24 +200,18 @@ pub(super) async fn build(
             }
             tracing::info!(?injected_keys, "cc-switch: env vars injected");
 
-            if let Some(claude_cli) = resolve_command_on_path(
-                meta.agent_source_info
-                    .binary_name
-                    .as_deref()
-                    .unwrap_or("claude"),
-            ) {
-                if let Ok(wrapper) = ensure_managed_claude_wrapper(&deps.data_dir, &claude_cli) {
-                    env.push(aionui_common::EnvVar {
-                        name: "CLAUDE_CODE_EXECUTABLE".into(),
-                        value: wrapper,
-                    });
-                    tracing::info!(
-                        cli = %claude_cli.display(),
-                        "cc-switch: managed Claude wrapper injected"
-                    );
-                }
+            let claude_cli = Path::new(&command);
+            if let Ok(wrapper) = ensure_managed_claude_wrapper(&deps.data_dir, claude_cli) {
+                env.push(aionui_common::EnvVar {
+                    name: "CLAUDE_CODE_EXECUTABLE".into(),
+                    value: wrapper,
+                });
+                tracing::info!(
+                    cli = %claude_cli.display(),
+                    "cc-switch: managed Claude wrapper injected"
+                );
             } else {
-                warn!("cc-switch: native Claude CLI not found on PATH; skipping managed wrapper injection");
+                warn!(cli = %claude_cli.display(), "cc-switch: failed to inject managed Claude wrapper");
             }
         }
     }
@@ -242,7 +220,7 @@ pub(super) async fn build(
     // AionCore-spawned opencode processes always use the managed config
     // path, even when the shell shim is missing or PATH bypasses it.
     if meta.backend.as_deref() == Some("opencode") {
-        for ev in ensure_managed_opencode_env(&deps.data_dir) {
+        for ev in ensure_managed_opencode_env(&deps.data_dir)? {
             env.push(ev);
         }
         tracing::info!("opencode: managed config env vars injected");
@@ -313,7 +291,6 @@ pub(super) async fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     #[test]
@@ -330,26 +307,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_command_on_path_finds_binary_in_path_order() {
+    fn ensure_managed_opencode_env_writes_managed_config_and_xdg_paths() {
         let dir = tempdir().unwrap();
-        let claude = dir.path().join("claude");
-        fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = fs::metadata(&claude).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&claude, perms).unwrap();
+        let env = ensure_managed_opencode_env(dir.path()).unwrap();
 
-        let original_path = std::env::var_os("PATH");
-        // SAFETY: test-only scoped mutation; restored before return.
-        unsafe {
-            std::env::set_var("PATH", dir.path());
-        }
-        let found = resolve_command_on_path("claude");
-        if let Some(path) = original_path {
-            // SAFETY: test-only scoped restoration.
-            unsafe {
-                std::env::set_var("PATH", path);
-            }
-        }
-        assert_eq!(found.as_deref(), Some(claude.as_path()));
+        let config_path = dir.path().join("managed-opencode").join("opencode.json");
+        let xdg_config_home = dir.path().join("xdg-config");
+
+        assert!(config_path.exists());
+        assert!(xdg_config_home.join("opencode").exists());
+        assert!(
+            env.iter()
+                .any(|e| e.name == "OPENCODE_CONFIG" && e.value == config_path.to_string_lossy())
+        );
+        assert!(
+            env.iter()
+                .any(|e| e.name == "XDG_CONFIG_HOME" && e.value == xdg_config_home.to_string_lossy())
+        );
     }
 }

@@ -32,27 +32,6 @@ impl TextFallbackState {
     }
 }
 
-fn collapse_strict_duplicate_text(text: &str) -> String {
-    let char_count = text.chars().count();
-    if char_count < 2 || char_count % 2 != 0 {
-        return text.to_owned();
-    }
-
-    let midpoint = char_count / 2;
-    let split_index = text
-        .char_indices()
-        .nth(midpoint)
-        .map(|(idx, _)| idx)
-        .unwrap_or(text.len());
-    let (left, right) = text.split_at(split_index);
-
-    if left == right {
-        left.to_owned()
-    } else {
-        text.to_owned()
-    }
-}
-
 pub fn map_openclaw_event(
     event: &EventFrame,
     text_state: &mut TextFallbackState,
@@ -167,9 +146,8 @@ fn map_chat_event(
                 if text_state.current_msg_id.is_none() {
                     text_state.current_msg_id = Some(uuid::Uuid::new_v4().to_string());
                 }
-                let normalized_fallback = collapse_strict_duplicate_text(&text_state.agent_assistant_fallback);
                 events.push(AgentStreamEvent::Text(TextEventData {
-                    content: normalized_fallback,
+                    content: text_state.agent_assistant_fallback.clone(),
                 }));
             }
 
@@ -475,33 +453,6 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "Fallback text"));
         assert!(matches!(&events[1], AgentStreamEvent::Finish(_)));
-    }
-
-    #[test]
-    fn chat_final_collapses_strict_duplicate_layer2_fallback() {
-        let mut state = TextFallbackState::new();
-        state.reset_for_new_turn();
-        state.agent_assistant_fallback = "pingping".into();
-
-        let event = make_event("chat", json!({ "state": "final" }));
-        let events = map_openclaw_event(&event, &mut state, None);
-
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "ping"));
-        assert!(matches!(&events[1], AgentStreamEvent::Finish(_)));
-    }
-
-    #[test]
-    fn chat_final_preserves_non_duplicate_layer2_fallback() {
-        let mut state = TextFallbackState::new();
-        state.reset_for_new_turn();
-        state.agent_assistant_fallback = "haha!".into();
-
-        let event = make_event("chat", json!({ "state": "final" }));
-        let events = map_openclaw_event(&event, &mut state, None);
-
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "haha!"));
     }
 
     #[test]
