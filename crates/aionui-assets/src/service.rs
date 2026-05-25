@@ -116,6 +116,18 @@ mod tests {
     }
 
     #[test]
+    fn pounding_heart_solid_embedded() {
+        let service = AssetService;
+        let asset = service
+            .get_logo("brand/pounding-heart-solid.png")
+            .expect("pounding-heart-solid.png should be embedded in the binary");
+        assert_eq!(asset.content_type, HeaderValue::from_static("image/png"));
+        assert!(!asset.bytes.is_empty());
+        // Verify it's a real PNG (starts with PNG magic bytes)
+        assert_eq!(&asset.bytes[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    }
+
+    #[test]
     fn etag_matches_supports_exact_and_star_values() {
         let service = AssetService;
         let etag = HeaderValue::from_static("\"abc\"");

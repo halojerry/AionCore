@@ -5,7 +5,7 @@ use std::time::Duration;
 use aionui_common::{AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, broadcast};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::cli_process::CliAgentProcess;
@@ -200,6 +200,40 @@ impl OpenClawAgentManager {
                         let mut text_state = self.text_state.lock().await;
                         map_openclaw_event(&event_frame, &mut text_state, session_key.as_deref())
                     };
+
+                    for stream_event in &stream_events {
+                        match stream_event {
+                            AgentStreamEvent::Text(d) => {
+                                debug!(
+                                    event_seq = ?event_frame.seq,
+                                    event_name = %event_frame.event,
+                                    text_len = d.content.len(),
+                                    "relay: Text event"
+                                );
+                            }
+                            AgentStreamEvent::Start(_) => {
+                                debug!(
+                                    event_seq = ?event_frame.seq,
+                                    event_name = %event_frame.event,
+                                    "relay: Start event"
+                                );
+                            }
+                            AgentStreamEvent::Finish(_) => {
+                                debug!(
+                                    event_seq = ?event_frame.seq,
+                                    event_name = %event_frame.event,
+                                    "relay: Finish event"
+                                );
+                            }
+                            _ => {
+                                trace!(
+                                    event_seq = ?event_frame.seq,
+                                    event_name = %event_frame.event,
+                                    "relay: other event"
+                                );
+                            }
+                        }
+                    }
 
                     for stream_event in stream_events {
                         self.update_state_from_event(&stream_event).await;

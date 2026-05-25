@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::device_identity::{DeviceIdentity, build_device_auth_params};
 use super::protocol::{
@@ -286,6 +286,13 @@ impl OpenClawConnection {
                     self.last_tick.store(aionui_common::now_ms(), Ordering::Relaxed);
                     return;
                 }
+
+                trace!(
+                    event = %evt.event,
+                    seq = ?evt.seq,
+                    has_payload = evt.payload.is_some(),
+                    "gateway: raw event frame received"
+                );
 
                 let _ = self.event_tx.send(evt);
             }

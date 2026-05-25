@@ -1,6 +1,6 @@
 use aionui_common::Confirmation;
 use serde_json::Value;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use super::protocol::{AgentEvent, ApprovalRequestEvent, ChatEvent, ChatEventState, EventFrame};
 use crate::protocol::events::{
@@ -29,6 +29,27 @@ impl TextFallbackState {
         self.turn_active = true;
         self.current_msg_id = None;
         self.current_run_id = None;
+    }
+}
+
+fn collapse_strict_duplicate_text(text: &str) -> String {
+    let char_count = text.chars().count();
+    if char_count < 2 || char_count % 2 != 0 {
+        return text.to_owned();
+    }
+
+    let midpoint = char_count / 2;
+    let split_index = text
+        .char_indices()
+        .nth(midpoint)
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    let (left, right) = text.split_at(split_index);
+
+    if left == right {
+        left.to_owned()
+    } else {
+        text.to_owned()
     }
 }
 
@@ -67,6 +88,12 @@ fn map_chat_event(
     };
 
     if is_from_other_session(chat.session_key.as_deref(), our_session_key) {
+        trace!(
+            event_seq = ?event.seq,
+            event_session = ?chat.session_key,
+            our_session = ?our_session_key,
+            "map_chat: dropped event from other session"
+        );
         return vec![];
     }
 
@@ -102,6 +129,18 @@ fn map_chat_event(
                 compute_text_delta(&chat.message, &mut text_state.accumulated_text)
             };
 
+            if let Some(ref d) = delta {
+                debug!(
+                    event_seq = ?event.seq,
+                    delta_len = d.len(),
+                    acc_len = text_state.accumulated_text.len(),
+                    has_run_id = chat.run_id.is_some(),
+                    has_session_key = chat.session_key.is_some(),
+                    replace = chat.replace,
+                    "map_chat: delta text chunk"
+                );
+            }
+
             if let Some(delta) = delta {
                 if text_state.current_msg_id.is_none() {
                     text_state.current_msg_id = Some(uuid::Uuid::new_v4().to_string());
@@ -110,13 +149,27 @@ fn map_chat_event(
             }
         }
         ChatEventState::Final => {
-            if text_state.accumulated_text.is_empty() && !text_state.agent_assistant_fallback.is_empty() {
+            let acc_empty = text_state.accumulated_text.is_empty();
+            let fallback_available = !text_state.agent_assistant_fallback.is_empty();
+            debug!(
+                event_seq = ?event.seq,
+                acc_len = text_state.accumulated_text.len(),
+                acc_empty,
+                fallback_len = text_state.agent_assistant_fallback.len(),
+                fallback_used = acc_empty && fallback_available,
+                has_run_id = chat.run_id.is_some(),
+                has_session_key = chat.session_key.is_some(),
+                "map_chat: final"
+            );
+
+            if acc_empty && fallback_available {
                 // Layer 2 fallback: use agent.assistant buffered text
                 if text_state.current_msg_id.is_none() {
                     text_state.current_msg_id = Some(uuid::Uuid::new_v4().to_string());
                 }
+                let normalized_fallback = collapse_strict_duplicate_text(&text_state.agent_assistant_fallback);
                 events.push(AgentStreamEvent::Text(TextEventData {
-                    content: text_state.agent_assistant_fallback.clone(),
+                    content: normalized_fallback,
                 }));
             }
 
@@ -126,6 +179,7 @@ fn map_chat_event(
             text_state.turn_active = false;
         }
         ChatEventState::Aborted => {
+            debug!(event_seq = ?event.seq, "map_chat: aborted");
             events.push(AgentStreamEvent::Finish(FinishEventData {
                 session_id: chat.session_key,
             }));
@@ -133,6 +187,11 @@ fn map_chat_event(
         }
         ChatEventState::Error => {
             let msg = chat.error_message.unwrap_or_else(|| "Unknown chat error".into());
+            debug!(
+                event_seq = ?event.seq,
+                error_msg = %msg,
+                "map_chat: error"
+            );
             events.push(AgentStreamEvent::Error(ErrorEventData {
                 message: msg,
                 code: None,
@@ -184,6 +243,12 @@ fn map_agent_event(
             // Layer 2 buffer: accumulate for fallback
             if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
                 text_state.agent_assistant_fallback.push_str(text);
+                debug!(
+                    event_seq = ?event.seq,
+                    appended_len = text.len(),
+                    total_len = text_state.agent_assistant_fallback.len(),
+                    "map_agent: assistant text accumulated"
+                );
             }
             vec![]
         }
@@ -410,6 +475,33 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "Fallback text"));
         assert!(matches!(&events[1], AgentStreamEvent::Finish(_)));
+    }
+
+    #[test]
+    fn chat_final_collapses_strict_duplicate_layer2_fallback() {
+        let mut state = TextFallbackState::new();
+        state.reset_for_new_turn();
+        state.agent_assistant_fallback = "pingping".into();
+
+        let event = make_event("chat", json!({ "state": "final" }));
+        let events = map_openclaw_event(&event, &mut state, None);
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "ping"));
+        assert!(matches!(&events[1], AgentStreamEvent::Finish(_)));
+    }
+
+    #[test]
+    fn chat_final_preserves_non_duplicate_layer2_fallback() {
+        let mut state = TextFallbackState::new();
+        state.reset_for_new_turn();
+        state.agent_assistant_fallback = "haha!".into();
+
+        let event = make_event("chat", json!({ "state": "final" }));
+        let events = map_openclaw_event(&event, &mut state, None);
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], AgentStreamEvent::Text(d) if d.content == "haha!"));
     }
 
     #[test]
