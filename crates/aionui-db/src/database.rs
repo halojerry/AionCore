@@ -542,5 +542,4 @@ mod tests {
         let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
         assert!(!is_retryable_startup_file_error(&err));
     }
->>>>>>> 3f0b2de (Fix transient startup file lock failures (#348))
 }

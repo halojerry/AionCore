@@ -244,6 +244,7 @@ pub(super) async fn build(
             meta,
             command_spec,
             config,
+            Vec::new(),
             session_snapshot,
             deps.data_dir.clone(),
         )
