@@ -16,6 +16,13 @@ const MAX_CONNECTIONS: u32 = 5;
 
 /// SQLite busy timeout in milliseconds.
 const BUSY_TIMEOUT_MS: u64 = 5000;
+const STARTUP_FILE_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_millis(50),
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+    Duration::from_millis(800),
+];
 
 /// Wraps a SQLite connection pool with lifecycle management.
 #[derive(Clone, Debug)]
@@ -103,9 +110,42 @@ pub fn maybe_copy_legacy_database(target: &Path) -> Result<(), DbError> {
         return Ok(());
     }
 
+    let lock_path = migrate_lock_path(target);
+    let _guard = match MigrateLockGuard::acquire(&lock_path) {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            warn!(
+                lock = %lock_path.display(),
+                error = %e,
+                "Could not acquire legacy database copy lock; continuing without it"
+            );
+            None
+        }
+    };
+    if target.exists() {
+        return Ok(());
+    }
+
     let tmp = target.with_extension("db.tmp");
-    std::fs::copy(&legacy, &tmp).map_err(|e| DbError::Init(format!("Failed to copy legacy database: {e}")))?;
-    std::fs::rename(&tmp, target).map_err(|e| DbError::Init(format!("Failed to rename temp database: {e}")))?;
+    retry_startup_file_op("copy legacy database", &legacy, || std::fs::copy(&legacy, &tmp))
+        .map_err(|e| DbError::Init(format!("Failed to copy legacy database: {e}")))?;
+    if target.exists() {
+        let _ = std::fs::remove_file(&tmp);
+        return Ok(());
+    }
+    match retry_startup_file_op("rename temp database", &tmp, || std::fs::rename(&tmp, target)) {
+        Ok(()) => {}
+        Err(e) if target.exists() => {
+            warn!(
+                target = %target.display(),
+                tmp = %tmp.display(),
+                error = %e,
+                "Legacy database target appeared after rename failed; using existing target"
+            );
+            let _ = std::fs::remove_file(&tmp);
+        }
+        Err(e) => return Err(DbError::Init(format!("Failed to rename temp database: {e}"))),
+    }
 
     let _ = std::fs::remove_file(target.with_extension("db-wal"));
     let _ = std::fs::remove_file(target.with_extension("db-shm"));
@@ -164,6 +204,41 @@ fn migrate_lock_path(db_path: &Path) -> PathBuf {
     };
     p.set_file_name(new_name);
     p
+}
+
+fn retry_startup_file_op<T, F>(operation: &str, path: &Path, mut op: F) -> std::io::Result<T>
+where
+    F: FnMut() -> std::io::Result<T>,
+{
+    for (attempt, delay) in STARTUP_FILE_RETRY_DELAYS.iter().enumerate() {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(e) if is_retryable_startup_file_error(&e) => {
+                warn!(
+                    operation,
+                    path = %path.display(),
+                    attempt = attempt + 1,
+                    retry_after_ms = delay.as_millis(),
+                    raw_os_error = ?e.raw_os_error(),
+                    error = %e,
+                    "Startup file operation failed; retrying"
+                );
+                std::thread::sleep(*delay);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    op()
+}
+
+fn is_retryable_startup_file_error(error: &std::io::Error) -> bool {
+    match error.kind() {
+        std::io::ErrorKind::Interrupted
+        | std::io::ErrorKind::PermissionDenied
+        | std::io::ErrorKind::TimedOut
+        | std::io::ErrorKind::WouldBlock => true,
+        _ => matches!(error.raw_os_error(), Some(5 | 32 | 33)),
+    }
 }
 
 async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
@@ -359,11 +434,113 @@ fn should_attempt_recovery(err: &DbError) -> bool {
 }
 
 fn is_corruption_like_error(err: &DbError) -> bool {
-    let s = err.to_string().to_lowercase();
-    s.contains("disk image is malformed")
-        || s.contains("database disk image is malformed")
-        || s.contains("file is not a database")
-        || s.contains("not a database")
-        || s.contains("database schema has changed")
-        || s.contains("database corruption")
+    let message = err.to_string().to_ascii_lowercase();
+
+    [
+        "sqlite_corrupt",
+        "database disk image is malformed",
+        "file is not a database",
+        "sqlite_notadb",
+        "malformed database schema",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_skips_migration_version_mismatch() {
+        let err = DbError::Migration(sqlx::migrate::MigrateError::VersionMismatch(6));
+
+        assert!(
+            !should_attempt_recovery(&err),
+            "migration checksum mismatch must not trigger recovery"
+        );
+    }
+
+    #[test]
+    fn recovery_skips_lock_contention_errors() {
+        let err = DbError::Init("database is locked".into());
+
+        assert!(
+            !should_attempt_recovery(&err),
+            "lock contention must not trigger recovery"
+        );
+    }
+
+    #[test]
+    fn recovery_allows_corruption_like_errors() {
+        let err = DbError::Init("database disk image is malformed".into());
+
+        assert!(
+            should_attempt_recovery(&err),
+            "corruption-like failures should trigger recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_preserves_fk_references() {
+        let db = init_database_memory().await.unwrap();
+        let pool = db.pool();
+
+        let fk_table: String = sqlx::query_scalar(
+            "SELECT \"table\" FROM pragma_foreign_key_list('messages') WHERE \"from\"='conversation_id'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+        assert_eq!(fk_table, "conversations");
+    }
+
+    #[test]
+    fn migrations_table_unique_conflict_detected_from_message() {
+        // Build the same Execute(sqlx::Error) shape that surfaces when two
+        // processes race on `INSERT INTO _sqlx_migrations`. The detector has
+        // to match on the textual message because the SQLite extended code
+        // is not preserved on the path through MigrateError.
+        let inner = sqlx::Error::Protocol("UNIQUE constraint failed: _sqlx_migrations.version".to_string());
+        let err = sqlx::migrate::MigrateError::Execute(inner);
+        assert!(is_migrations_table_unique_conflict(&err));
+    }
+
+    #[test]
+    fn migrations_table_unique_conflict_ignores_other_errors() {
+        let other = sqlx::migrate::MigrateError::VersionMismatch(3);
+        assert!(!is_migrations_table_unique_conflict(&other));
+
+        let unrelated = sqlx::migrate::MigrateError::Execute(sqlx::Error::Protocol(
+            "UNIQUE constraint failed: users.username".to_string(),
+        ));
+        assert!(!is_migrations_table_unique_conflict(&unrelated));
+    }
+
+    #[test]
+    fn migrate_lock_path_sits_next_to_db() {
+        let db = Path::new("/var/lib/aionui/aionui-backend.db");
+        let lock = migrate_lock_path(db);
+        assert_eq!(lock.parent(), db.parent());
+        assert_eq!(lock.file_name().unwrap(), "aionui-backend.db.migrate.lock");
+    }
+
+    #[test]
+    fn startup_file_retry_handles_windows_transient_lock_errors() {
+        for code in [5, 32, 33] {
+            let err = std::io::Error::from_raw_os_error(code);
+            assert!(
+                is_retryable_startup_file_error(&err),
+                "Windows startup file error {code} should be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_file_retry_rejects_non_transient_errors() {
+        let err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing file");
+        assert!(!is_retryable_startup_file_error(&err));
+    }
+>>>>>>> 3f0b2de (Fix transient startup file lock failures (#348))
 }
