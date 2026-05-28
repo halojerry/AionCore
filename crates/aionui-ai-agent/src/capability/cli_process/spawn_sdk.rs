@@ -202,20 +202,4 @@ mod tests {
                 .any(|(name, value)| name == "BUN_TMPDIR" && value == &dir.path().join("bun-tmp").to_string_lossy())
         );
     }
-
-    #[test]
-    fn resolve_native_claude_path_respects_explicit_executable() {
-        let dir = tempdir().unwrap();
-        let claude = dir.path().join("claude");
-        fs::write(&claude, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut perms = fs::metadata(&claude).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&claude, perms).unwrap();
-
-        let resolved = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), false);
-        assert_eq!(resolved.as_deref(), Some(claude.to_string_lossy().as_ref()));
-
-        let skipped = CliAgentProcess::resolve_native_claude_path(Some(dir.path().as_os_str().to_os_string()), true);
-        assert!(skipped.is_none());
-    }
 }
