@@ -248,7 +248,10 @@ mod tests {
     fn cookie_value_malformed_before_target() {
         // Malformed entry appears before the target cookie
         let headers = headers_with(&[("cookie", "bad_entry; pounding-session=tok123")]);
-        assert_eq!(extract_cookie_value(&headers, "pounding-session"), Some("tok123".into()));
+        assert_eq!(
+            extract_cookie_value(&headers, "pounding-session"),
+            Some("tok123".into())
+        );
     }
 
     #[test]

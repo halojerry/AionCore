@@ -134,27 +134,18 @@ mod tests {
         // We cannot reliably set env in parallel tests, so just verify
         // the default path contains "aionui".
         let dir = resolve_cache_dir();
-        assert!(
-            dir.contains("pounding"),
-            "cache_dir should contain 'pounding': {dir}"
-        );
+        assert!(dir.contains("pounding"), "cache_dir should contain 'pounding': {dir}");
     }
 
     #[test]
     fn test_env_override_work_dir() {
         let dir = resolve_work_dir();
-        assert!(
-            dir.contains("pounding"),
-            "work_dir should contain 'pounding': {dir}"
-        );
+        assert!(dir.contains("pounding"), "work_dir should contain 'pounding': {dir}");
     }
 
     #[test]
     fn test_env_override_log_dir() {
         let dir = resolve_log_dir();
-        assert!(
-            dir.contains("pounding"),
-            "log_dir should contain 'pounding': {dir}"
-        );
+        assert!(dir.contains("pounding"), "log_dir should contain 'pounding': {dir}");
     }
 }
