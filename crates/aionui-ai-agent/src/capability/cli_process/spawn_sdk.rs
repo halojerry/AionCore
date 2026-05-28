@@ -167,8 +167,6 @@ impl CliAgentProcess {
 mod tests {
     use super::super::tests::simple_script_config;
     use super::*;
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
     use tempfile::tempdir;
 
