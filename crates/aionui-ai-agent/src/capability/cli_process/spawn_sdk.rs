@@ -188,7 +188,6 @@ mod tests {
 
         proc.kill(Duration::from_millis(100)).await.unwrap();
     }
-    }
 
     #[test]
     fn agent_spawn_env_adds_bun_paths() {
