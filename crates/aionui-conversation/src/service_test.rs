@@ -506,7 +506,7 @@ async fn create_returns_conversation_with_defaults() {
     assert!(!resp.id.is_empty());
     assert_eq!(resp.r#type, AgentType::Acp);
     assert_eq!(resp.status, ConversationStatus::Pending);
-    assert_eq!(resp.source, Some(ConversationSource::Aionui));
+    assert_eq!(resp.source, Some(ConversationSource::Pounding));
     assert!(!resp.pinned);
     assert!(resp.pinned_at.is_none());
     assert_eq!(resp.extra["workspace"], "/project");
@@ -519,7 +519,7 @@ async fn create_returns_conversation_with_defaults() {
     assert_eq!(events[0].name, "conversation.listChanged");
     assert_eq!(events[0].data["action"], "created");
     assert_eq!(events[0].data["conversation_id"], resp.id);
-    assert_eq!(events[0].data["source"], "aionui");
+    assert_eq!(events[0].data["source"], "pounding");
 }
 
 #[tokio::test]
@@ -2150,7 +2150,7 @@ async fn get_backfills_legacy_row_and_persists() {
         .unwrap(),
         model: None,
         status: Some("finished".into()),
-        source: Some("aionui".into()),
+        source: Some("pounding".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,

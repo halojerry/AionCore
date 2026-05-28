@@ -23,13 +23,18 @@ fn map_arch() -> &'static str {
 ///
 /// Priority: `AIONUI_CACHE_DIR` env → `dirs::cache_dir()/aionui`.
 fn resolve_cache_dir() -> String {
+    if let Ok(v) = std::env::var("POUNDING_CACHE_DIR")
+        && !v.is_empty()
+    {
+        return v;
+    }
     if let Ok(v) = std::env::var("AIONUI_CACHE_DIR")
         && !v.is_empty()
     {
         return v;
     }
     dirs::cache_dir()
-        .map(|p| p.join("aionui").to_string_lossy().into_owned())
+        .map(|p| p.join("pounding").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
@@ -37,13 +42,18 @@ fn resolve_cache_dir() -> String {
 ///
 /// Priority: `AIONUI_WORK_DIR` env → `dirs::data_dir()/aionui`.
 fn resolve_work_dir() -> String {
+    if let Ok(v) = std::env::var("POUNDING_WORK_DIR")
+        && !v.is_empty()
+    {
+        return v;
+    }
     if let Ok(v) = std::env::var("AIONUI_WORK_DIR")
         && !v.is_empty()
     {
         return v;
     }
     dirs::data_dir()
-        .map(|p| p.join("aionui").to_string_lossy().into_owned())
+        .map(|p| p.join("pounding").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
@@ -54,6 +64,11 @@ fn resolve_work_dir() -> String {
 ///   Linux: `dirs::state_dir()/aionui/logs` (XDG_STATE_HOME)
 ///   Windows: `dirs::data_dir()/aionui/logs`
 fn resolve_log_dir() -> String {
+    if let Ok(v) = std::env::var("POUNDING_LOG_DIR")
+        && !v.is_empty()
+    {
+        return v;
+    }
     if let Ok(v) = std::env::var("AIONUI_LOG_DIR")
         && !v.is_empty()
     {
@@ -63,15 +78,15 @@ fn resolve_log_dir() -> String {
     if cfg!(target_os = "macos")
         && let Some(home) = dirs::home_dir()
     {
-        return home.join("Library/Logs/aionui").to_string_lossy().into_owned();
+        return home.join("Library/Logs/pounding").to_string_lossy().into_owned();
     }
     // Linux: XDG state dir
     if let Some(state) = dirs::state_dir() {
-        return state.join("aionui/logs").to_string_lossy().into_owned();
+        return state.join("pounding/logs").to_string_lossy().into_owned();
     }
-    // Fallback: data_dir/aionui/logs
+    // Fallback: data_dir/pounding/logs
     dirs::data_dir()
-        .map(|p| p.join("aionui/logs").to_string_lossy().into_owned())
+        .map(|p| p.join("pounding/logs").to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
@@ -119,18 +134,27 @@ mod tests {
         // We cannot reliably set env in parallel tests, so just verify
         // the default path contains "aionui".
         let dir = resolve_cache_dir();
-        assert!(dir.contains("aionui"), "cache_dir should contain 'aionui': {dir}");
+        assert!(
+            dir.contains("pounding"),
+            "cache_dir should contain 'pounding': {dir}"
+        );
     }
 
     #[test]
     fn test_env_override_work_dir() {
         let dir = resolve_work_dir();
-        assert!(dir.contains("aionui"), "work_dir should contain 'aionui': {dir}");
+        assert!(
+            dir.contains("pounding"),
+            "work_dir should contain 'pounding': {dir}"
+        );
     }
 
     #[test]
     fn test_env_override_log_dir() {
         let dir = resolve_log_dir();
-        assert!(dir.contains("aionui"), "log_dir should contain 'aionui': {dir}");
+        assert!(
+            dir.contains("pounding"),
+            "log_dir should contain 'pounding': {dir}"
+        );
     }
 }

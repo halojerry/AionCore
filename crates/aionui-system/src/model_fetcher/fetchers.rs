@@ -196,7 +196,7 @@ async fn fetch_bedrock(config: &FetchConfig) -> Result<Vec<ModelInfo>, AppError>
             let creds = aws_sdk_bedrock::config::Credentials::new(
                 key_id, secret, None, // session token
                 None, // expiry
-                "aionui",
+                "pounding",
             );
             aws_sdk_bedrock::Config::builder()
                 .region(region)

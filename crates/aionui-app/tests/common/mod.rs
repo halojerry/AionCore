@@ -177,9 +177,9 @@ pub fn extract_csrf_token(resp: &axum::response::Response) -> Option<String> {
         .get_all(header::SET_COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .find(|s| s.starts_with("aionui-csrf-token="))
+        .find(|s| s.starts_with("pounding-csrf-token="))
         .map(|s| {
-            s.strip_prefix("aionui-csrf-token=")
+            s.strip_prefix("pounding-csrf-token=")
                 .unwrap()
                 .split(';')
                 .next()
@@ -208,7 +208,7 @@ pub fn json_with_token(method_str: &str, uri: &str, body: serde_json::Value, tok
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {token}"))
         .header("x-csrf-token", csrf)
-        .header("cookie", format!("aionui-csrf-token={csrf}"))
+        .header("cookie", format!("pounding-csrf-token={csrf}"))
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap()
 }
@@ -219,7 +219,7 @@ pub fn delete_with_token(uri: &str, token: &str, csrf: &str) -> Request<Body> {
         .uri(uri)
         .header("authorization", format!("Bearer {token}"))
         .header("x-csrf-token", csrf)
-        .header("cookie", format!("aionui-csrf-token={csrf}"))
+        .header("cookie", format!("pounding-csrf-token={csrf}"))
         .body(Body::empty())
         .unwrap()
 }

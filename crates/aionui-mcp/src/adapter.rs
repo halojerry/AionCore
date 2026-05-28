@@ -233,8 +233,8 @@ mod tests {
 
     #[tokio::test]
     async fn trait_is_object_safe() {
-        let adapter: Arc<dyn McpAgentAdapter> = Arc::new(MockAdapter::new(McpSource::Aionui, true));
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        let adapter: Arc<dyn McpAgentAdapter> = Arc::new(MockAdapter::new(McpSource::Pounding, true));
+        assert_eq!(adapter.source(), McpSource::Pounding);
         assert!(adapter.is_installed().await.unwrap());
     }
 }

@@ -139,7 +139,7 @@ impl ConversationService {
     ) -> Result<ConversationResponse, AppError> {
         let id = generate_short_id();
         let now = now_ms();
-        let source = req.source.unwrap_or(ConversationSource::Aionui);
+        let source = req.source.unwrap_or(ConversationSource::Pounding);
 
         // Type-aware rule: top-level `model` is aionrs-only. Other agent types
         // carry model/mode via `extra` (see spec 2026-05-12). Reject early so
@@ -1604,7 +1604,7 @@ mod tests {
 
     #[test]
     fn enum_to_db_source() {
-        assert_eq!(enum_to_db(&ConversationSource::Aionui).unwrap(), "aionui");
+        assert_eq!(enum_to_db(&ConversationSource::Pounding).unwrap(), "pounding");
         assert_eq!(enum_to_db(&ConversationSource::Telegram).unwrap(), "telegram");
     }
 

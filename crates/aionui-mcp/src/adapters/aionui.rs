@@ -32,7 +32,7 @@ impl AionuiAdapter {
 #[async_trait::async_trait]
 impl McpAgentAdapter for AionuiAdapter {
     fn source(&self) -> McpSource {
-        McpSource::Aionui
+        McpSource::Pounding
     }
 
     async fn is_installed(&self) -> Result<bool, McpError> {
@@ -167,7 +167,7 @@ mod tests {
     fn source_is_aionui() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter = AionuiAdapter::new(repo);
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::Pounding);
     }
 
     #[tokio::test]
@@ -230,7 +230,7 @@ mod tests {
     async fn trait_is_object_safe() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter: Arc<dyn McpAgentAdapter> = Arc::new(AionuiAdapter::new(repo));
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::Pounding);
         assert!(adapter.is_installed().await.unwrap());
     }
 }

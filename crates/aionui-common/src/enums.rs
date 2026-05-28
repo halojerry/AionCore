@@ -115,7 +115,8 @@ pub enum ConversationStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationSource {
-    Aionui,
+    #[serde(alias = "aionui")]
+    Pounding,
     Telegram,
     Lark,
     Dingtalk,
@@ -256,7 +257,8 @@ pub enum McpSource {
     OpenCode,
     Aionrs,
     Nanobot,
-    Aionui,
+    #[serde(alias = "aionui")]
+    Pounding,
 }
 
 /// MCP server connection status.
@@ -387,7 +389,7 @@ mod tests {
             (McpSource::OpenCode, r#""opencode""#),
             (McpSource::Aionrs, r#""aionrs""#),
             (McpSource::Nanobot, r#""nanobot""#),
-            (McpSource::Aionui, r#""aionui""#),
+            (McpSource::Pounding, r#""pounding""#),
         ];
         for (variant, expected_json) in cases {
             let json = serde_json::to_string(&variant).unwrap();
@@ -395,6 +397,10 @@ mod tests {
             let parsed: McpSource = serde_json::from_str(&json).unwrap();
             assert_eq!(parsed, variant, "deserialize {expected_json}");
         }
+
+        // Backward compat: old "aionui" JSON must deserialize to Pounding
+        let legacy: McpSource = serde_json::from_str(r#""aionui""#).unwrap();
+        assert_eq!(legacy, McpSource::Pounding);
     }
 
     #[test]

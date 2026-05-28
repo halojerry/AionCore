@@ -17,7 +17,7 @@ use std::time::Duration;
 // ---------------------------------------------------------------------------
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const CLIENT_NAME: &str = "aionui-mcp-test";
+const CLIENT_NAME: &str = "pounding-mcp-test";
 const CLIENT_VERSION: &str = "1.0.0";
 
 // ---------------------------------------------------------------------------

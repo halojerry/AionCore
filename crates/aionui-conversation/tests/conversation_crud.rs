@@ -133,7 +133,7 @@ async fn t1_1_create_with_defaults() {
     assert!(!resp.id.is_empty());
     assert_eq!(resp.r#type, AgentType::Acp);
     assert_eq!(resp.status, ConversationStatus::Pending);
-    assert_eq!(resp.source, Some(ConversationSource::Aionui));
+    assert_eq!(resp.source, Some(ConversationSource::Pounding));
     assert!(!resp.pinned);
     assert!(resp.pinned_at.is_none());
     assert_eq!(resp.extra["workspace"], "/home/user/project");
@@ -149,7 +149,7 @@ async fn t1_1_create_with_defaults() {
     assert_eq!(events[0].name, "conversation.listChanged");
     assert_eq!(events[0].data["action"], "created");
     assert_eq!(events[0].data["conversation_id"], resp.id);
-    assert_eq!(events[0].data["source"], "aionui");
+    assert_eq!(events[0].data["source"], "pounding");
 }
 
 #[tokio::test]

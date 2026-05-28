@@ -99,7 +99,7 @@ mod aionui {
     async fn source_is_aionui() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter = AionuiAdapter::new(repo);
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::Pounding);
     }
 
     #[tokio::test]
@@ -172,7 +172,7 @@ mod aionui {
     async fn trait_object_safety() {
         let repo = Arc::new(MockRepo::new(vec![]));
         let adapter: Arc<dyn McpAgentAdapter> = Arc::new(AionuiAdapter::new(repo));
-        assert_eq!(adapter.source(), McpSource::Aionui);
+        assert_eq!(adapter.source(), McpSource::Pounding);
         assert!(adapter.is_installed().await.unwrap());
     }
 }

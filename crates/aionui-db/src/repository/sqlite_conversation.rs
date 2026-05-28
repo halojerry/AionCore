@@ -716,7 +716,7 @@ mod tests {
             extra: r#"{"workspace":"/home/user/project"}"#.to_string(),
             model: Some(r#"{"providerId":"prov_1","model":"claude-sonnet-4-20250514"}"#.to_string()),
             status: Some("pending".to_string()),
-            source: Some("aionui".to_string()),
+            source: Some("pounding".to_string()),
             channel_chat_id: None,
             pinned: false,
             pinned_at: None,

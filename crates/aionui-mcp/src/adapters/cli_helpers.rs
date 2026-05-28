@@ -242,7 +242,7 @@ mod tests {
 
     #[tokio::test]
     async fn is_cli_installed_returns_false_for_missing_binary() {
-        let result = is_cli_installed("aionui-definitely-not-a-real-binary-xyz")
+        let result = is_cli_installed("pounding-definitely-not-a-real-binary-xyz")
             .await
             .unwrap();
         assert!(!result);

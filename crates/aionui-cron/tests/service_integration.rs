@@ -519,7 +519,7 @@ async fn setup_with_conv_repo() -> (
         Arc::new(SqliteAgentMetadataRepository::new(pool.clone()));
     let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool));
     let bc = Arc::new(MockBroadcaster::new());
-    let data_dir = std::env::temp_dir().join(format!("aionui-cron-test-{}", now_ms()));
+    let data_dir = std::env::temp_dir().join(format!("pounding-cron-test-{}", now_ms()));
     std::fs::create_dir_all(&data_dir).unwrap();
 
     struct StubSkillResolver;

@@ -64,7 +64,7 @@ fn multipart_request(uri: &str, content_type: &str, body: Vec<u8>, token: &str, 
         .header("content-type", content_type)
         .header("authorization", format!("Bearer {token}"))
         .header("x-csrf-token", csrf)
-        .header("cookie", format!("aionui-csrf-token={csrf}"))
+        .header("cookie", format!("pounding-csrf-token={csrf}"))
         .body(Body::from(body))
         .unwrap()
 }

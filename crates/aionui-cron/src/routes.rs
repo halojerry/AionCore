@@ -91,7 +91,7 @@ async fn system_resume(
     State(state): State<CronRouterState>,
     headers: HeaderMap,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let is_internal = headers.get("x-aionui-internal").and_then(|value| value.to_str().ok()) == Some("1");
+    let is_internal = headers.get("x-pounding-internal").and_then(|value| value.to_str().ok()) == Some("1");
     if !is_internal {
         return Err(AppError::Forbidden("internal route".into()));
     }

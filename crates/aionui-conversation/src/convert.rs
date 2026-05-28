@@ -280,7 +280,7 @@ mod tests {
         let row = make_row(
             "acp",
             "pending",
-            Some("aionui"),
+            Some("pounding"),
             Some(&model.to_string()),
             r#"{"workspace": "/project"}"#,
         );
@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(resp.id, "conv_1");
         assert_eq!(resp.r#type, AgentType::Acp);
         assert_eq!(resp.status, ConversationStatus::Pending);
-        assert_eq!(resp.source, Some(ConversationSource::Aionui));
+        assert_eq!(resp.source, Some(ConversationSource::Pounding));
         assert_eq!(resp.model.unwrap().model, "m1");
         assert_eq!(resp.extra["workspace"], "/project");
         assert_eq!(resp.modified_at, 2000);
@@ -377,11 +377,11 @@ mod tests {
         let row = make_row(
             "acp",
             "pending",
-            Some("aionui"),
+            Some("pounding"),
             None,
-            r#"{"workspace":"/srv/aionui-data/conversations/claude-temp-abc"}"#,
+            r#"{"workspace":"/srv/pounding-data/conversations/claude-temp-abc"}"#,
         );
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let resp = row_to_response(row, Path::new("/srv/pounding-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], true);
     }
 
@@ -390,18 +390,18 @@ mod tests {
         let row = make_row(
             "acp",
             "pending",
-            Some("aionui"),
+            Some("pounding"),
             None,
             r#"{"workspace":"/Users/alice/my-project"}"#,
         );
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let resp = row_to_response(row, Path::new("/srv/pounding-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
     }
 
     #[test]
     fn row_to_response_marks_missing_workspace_as_non_temporary() {
-        let row = make_row("acp", "pending", Some("aionui"), None, r#"{}"#);
-        let resp = row_to_response(row, Path::new("/srv/aionui-data")).unwrap();
+        let row = make_row("acp", "pending", Some("pounding"), None, r#"{}"#);
+        let resp = row_to_response(row, Path::new("/srv/pounding-data")).unwrap();
         assert_eq!(resp.extra["is_temporary_workspace"], false);
     }
 
@@ -415,7 +415,7 @@ mod tests {
             extra: "{}".into(),
             model: None,
             status: Some("pending".into()),
-            source: Some("aionui".into()),
+            source: Some("pounding".into()),
             channel_chat_id: Some("chat:1".into()),
             pinned: true,
             pinned_at: Some(5000),
@@ -488,7 +488,7 @@ mod tests {
             conversation_extra: r#"{"workspace":"/project"}"#.into(),
             conversation_model: None,
             conversation_status: Some("finished".into()),
-            conversation_source: Some("aionui".into()),
+            conversation_source: Some("pounding".into()),
             conversation_channel_chat_id: None,
             conversation_pinned: false,
             conversation_pinned_at: None,
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(item.conversation.id, "conv_1");
         assert_eq!(item.conversation.name, "Test Conv");
         assert_eq!(item.conversation.r#type, AgentType::Acp);
-        assert_eq!(item.conversation.source, Some(ConversationSource::Aionui));
+        assert_eq!(item.conversation.source, Some(ConversationSource::Pounding));
         assert_eq!(item.conversation.extra["workspace"], "/project");
         assert_eq!(item.conversation.modified_at, 2000);
     }

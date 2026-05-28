@@ -75,9 +75,9 @@ mod tests {
     #[test]
     fn test_app_config_database_path() {
         let config = AppConfig {
-            data_dir: PathBuf::from("/tmp/aionui"),
+            data_dir: PathBuf::from("/tmp/pounding"),
             ..Default::default()
         };
-        assert_eq!(config.database_path(), PathBuf::from("/tmp/aionui/pounding.db"));
+        assert_eq!(config.database_path(), PathBuf::from("/tmp/pounding/pounding.db"));
     }
 }

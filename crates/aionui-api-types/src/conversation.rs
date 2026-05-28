@@ -213,7 +213,7 @@ mod tests {
             "type": "acp",
             "name": "Code Review",
             "model": { "provider_id": "p1", "model": "claude-sonnet-4-20250514" },
-            "source": "aionui",
+            "source": "pounding",
             "channel_chat_id": "user:123",
             "extra": { "workspace": "/project" }
         });
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(req.r#type, AgentType::Acp);
         assert_eq!(req.name.as_deref(), Some("Code Review"));
         assert_eq!(req.model.unwrap().model, "claude-sonnet-4-20250514");
-        assert_eq!(req.source, Some(ConversationSource::Aionui));
+        assert_eq!(req.source, Some(ConversationSource::Pounding));
         assert_eq!(req.channel_chat_id.as_deref(), Some("user:123"));
         assert_eq!(req.extra["workspace"], "/project");
     }
@@ -419,7 +419,7 @@ mod tests {
                 use_model: None,
             }),
             status: ConversationStatus::Pending,
-            source: Some(ConversationSource::Aionui),
+            source: Some(ConversationSource::Pounding),
             pinned: false,
             pinned_at: None,
             channel_chat_id: None,
@@ -431,7 +431,7 @@ mod tests {
         assert_eq!(json["id"], "conv_1");
         assert_eq!(json["type"], "acp");
         assert_eq!(json["status"], "pending");
-        assert_eq!(json["source"], "aionui");
+        assert_eq!(json["source"], "pounding");
         assert_eq!(json["created_at"], 1712345678000_i64);
         assert_eq!(json["modified_at"], 1712345678000_i64);
         assert_eq!(json["extra"]["workspace"], "/project");

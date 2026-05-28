@@ -384,7 +384,7 @@ fn si_7_builtin_image_gen_injection() {
     let builtin = &session_servers[1];
     match builtin {
         AcpSessionMcpServer::Stdio { name, command, env, .. } => {
-            assert_eq!(name, "aionui-image-generation");
+            assert_eq!(name, "pounding-image-generation");
             assert_eq!(command, "/usr/local/bin/aionui-img-gen");
 
             // Verify all 6 env vars are present

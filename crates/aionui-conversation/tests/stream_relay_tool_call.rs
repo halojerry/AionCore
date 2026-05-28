@@ -25,7 +25,7 @@ async fn setup_repo() -> (Arc<SqliteConversationRepository>, aionui_db::Database
         extra: "{}".into(),
         model: None,
         status: Some("running".into()),
-        source: Some("aionui".into()),
+        source: Some("pounding".into()),
         channel_chat_id: None,
         pinned: false,
         pinned_at: None,

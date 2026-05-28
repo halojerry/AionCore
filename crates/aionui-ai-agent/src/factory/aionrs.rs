@@ -298,7 +298,7 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
         deferred: Some(false),
     };
 
-    HashMap::from([(format!("aionui-team-{}", cfg.team_id), server)])
+    HashMap::from([(format!("pounding-team-{}", cfg.team_id), server)])
 }
 
 fn guide_mcp_to_config(
@@ -323,7 +323,7 @@ fn guide_mcp_to_config(
         deferred: Some(false),
     };
 
-    HashMap::from([("aionui-team-guide".into(), server)])
+    HashMap::from([("pounding-team-guide".into(), server)])
 }
 
 #[cfg(test)]
@@ -503,9 +503,9 @@ mod tests {
 
         let result = resolve_mcp_servers(&overrides, "conv-1");
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("aionui-team-team-42"));
+        assert!(result.contains_key("pounding-team-team-42"));
 
-        let server = &result["aionui-team-team-42"];
+        let server = &result["pounding-team-team-42"];
         assert_eq!(server.transport, TransportType::Stdio);
         assert_eq!(server.command.as_deref(), Some("/usr/bin/backend"));
         assert_eq!(server.args.as_deref(), Some(&["mcp-team-stdio".to_owned()][..]));
@@ -532,9 +532,9 @@ mod tests {
 
         let result = resolve_mcp_servers(&overrides, "conv-2");
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("aionui-team-guide"));
+        assert!(result.contains_key("pounding-team-guide"));
 
-        let server = &result["aionui-team-guide"];
+        let server = &result["pounding-team-guide"];
         assert_eq!(server.transport, TransportType::Stdio);
         assert_eq!(server.command.as_deref(), Some("/usr/bin/backend"));
         assert_eq!(server.args.as_deref(), Some(&["mcp-guide-stdio".to_owned()][..]));

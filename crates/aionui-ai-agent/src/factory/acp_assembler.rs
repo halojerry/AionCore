@@ -135,7 +135,7 @@ fn team_mcp_server(cfg: &TeamMcpStdioConfig) -> McpServer {
         EnvVariable::new(TeamMcpStdioConfig::ENV_TOKEN.to_owned(), cfg.token.clone()),
         EnvVariable::new(TeamMcpStdioConfig::ENV_SLOT_ID.to_owned(), cfg.slot_id.clone()),
     ];
-    let stdio = McpServerStdio::new(format!("aionui-team-{}", cfg.team_id), &cfg.binary_path)
+    let stdio = McpServerStdio::new(format!("pounding-team-{}", cfg.team_id), &cfg.binary_path)
         .args(vec!["mcp-team-stdio".to_owned()])
         .env(env);
     McpServer::Stdio(stdio)
@@ -149,7 +149,7 @@ fn guide_mcp_server(cfg: &GuideMcpConfig, extra: &AcpBuildExtra, conversation_id
         EnvVariable::new("AION_MCP_CONVERSATION_ID".to_owned(), conversation_id.to_owned()),
         EnvVariable::new("AION_MCP_USER_ID".to_owned(), extra.user_id.clone().unwrap_or_default()),
     ];
-    let stdio = McpServerStdio::new("aionui-team-guide", &cfg.binary_path)
+    let stdio = McpServerStdio::new("pounding-team-guide", &cfg.binary_path)
         .args(vec!["mcp-guide-stdio".to_owned()])
         .env(env);
     McpServer::Stdio(stdio)
@@ -251,7 +251,7 @@ mod tests {
         let servers = resolve_mcp_servers(&config, "conv-1");
         assert_eq!(servers.len(), 1);
         match &servers[0] {
-            McpServer::Stdio(s) => assert_eq!(s.name, "aionui-team-guide"),
+            McpServer::Stdio(s) => assert_eq!(s.name, "pounding-team-guide"),
             _ => panic!("expected stdio server"),
         }
     }

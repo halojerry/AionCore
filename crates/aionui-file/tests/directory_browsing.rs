@@ -234,13 +234,13 @@ async fn list_workspace_files_relative_paths() {
 #[tokio::test]
 async fn list_workspace_files_skips_directory_symlinks() {
     let dir = tempfile::tempdir().unwrap();
-    let skill_dir = dir.path().join("builtin-skills/auto-inject/aionui-skills");
+    let skill_dir = dir.path().join("builtin-skills/auto-inject/pounding-skills");
     fs::create_dir_all(&skill_dir).unwrap();
     fs::write(skill_dir.join("SKILL.md"), "---\ndescription: test\n---\nbody").unwrap();
 
     let workspace_skills_dir = dir.path().join("workspace/.claude/skills");
     fs::create_dir_all(&workspace_skills_dir).unwrap();
-    std::os::unix::fs::symlink(&skill_dir, workspace_skills_dir.join("aionui-skills")).unwrap();
+    std::os::unix::fs::symlink(&skill_dir, workspace_skills_dir.join("pounding-skills")).unwrap();
 
     let svc = make_service(dir.path().join("workspace").as_path());
     let files = svc
@@ -249,7 +249,7 @@ async fn list_workspace_files_skips_directory_symlinks() {
         .unwrap();
 
     assert!(
-        files.iter().all(|file| file.name != "aionui-skills"),
+        files.iter().all(|file| file.name != "pounding-skills"),
         "directory symlink should not be surfaced as a file: {files:?}"
     );
 }

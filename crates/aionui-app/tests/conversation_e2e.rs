@@ -43,7 +43,7 @@ async fn t1_1_create_conversation_success() {
     assert_eq!(data["name"], "Code Review");
     assert_eq!(data["type"], "acp");
     assert_eq!(data["status"], "pending");
-    assert_eq!(data["source"], "aionui");
+    assert_eq!(data["source"], "pounding");
     assert_eq!(data["pinned"], false);
     assert!(data["id"].as_str().is_some());
     assert!(data["created_at"].as_i64().is_some());

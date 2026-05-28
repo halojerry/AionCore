@@ -119,7 +119,7 @@ fn cargo_cache_root() -> PathBuf {
             .map(|h| h.join(".cargo"))
             .unwrap_or_else(|| PathBuf::from(".cargo"))
     });
-    home.join("aionui-bun-cache")
+    home.join("pounding-bun-cache")
 }
 
 fn write_meta_stub(meta_path: &Path, out_dir: &Path) {

@@ -323,8 +323,8 @@ fn platform_to_source(platform: PluginType) -> ConversationSource {
         PluginType::Lark => ConversationSource::Lark,
         PluginType::Dingtalk => ConversationSource::Dingtalk,
         PluginType::Weixin => ConversationSource::Weixin,
-        // Reserved variants default to Aionui
-        PluginType::Slack | PluginType::Discord => ConversationSource::Aionui,
+        // Reserved variants default to Pounding
+        PluginType::Slack | PluginType::Discord => ConversationSource::Pounding,
     }
 }
 
@@ -409,8 +409,8 @@ mod tests {
 
     #[test]
     fn platform_to_source_reserved_defaults_to_aionui() {
-        assert_eq!(platform_to_source(PluginType::Slack), ConversationSource::Aionui);
-        assert_eq!(platform_to_source(PluginType::Discord), ConversationSource::Aionui);
+        assert_eq!(platform_to_source(PluginType::Slack), ConversationSource::Pounding);
+        assert_eq!(platform_to_source(PluginType::Discord), ConversationSource::Pounding);
     }
 
     // ── parse_agent_type ───────────────────────────────────────────────

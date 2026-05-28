@@ -82,7 +82,7 @@ async fn t12_2_post_with_matching_csrf_tokens_accepted() {
     let resp = app
         .oneshot(
             Request::post("/api/test")
-                .header("cookie", format!("aionui-csrf-token={token}"))
+                .header("cookie", format!("pounding-csrf-token={token}"))
                 .header("x-csrf-token", token)
                 .body(Body::empty())
                 .unwrap(),
@@ -98,7 +98,7 @@ async fn t12_2_post_with_mismatched_csrf_tokens_rejected() {
     let resp = app
         .oneshot(
             Request::post("/api/test")
-                .header("cookie", "aionui-csrf-token=token_a")
+                .header("cookie", "pounding-csrf-token=token_a")
                 .header("x-csrf-token", "token_b")
                 .body(Body::empty())
                 .unwrap(),
@@ -137,7 +137,7 @@ async fn t12_2_csrf_cookie_set_on_first_request() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let set_cookie = resp.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
-    assert!(set_cookie.contains("aionui-csrf-token="));
+    assert!(set_cookie.contains("pounding-csrf-token="));
     // NOT HttpOnly (JS must read it)
     assert!(!set_cookie.contains("HttpOnly"));
 }
@@ -305,7 +305,7 @@ fn t12_3_session_cookie_secure_when_https() {
 fn t13_1_authorization_header_takes_priority() {
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(header::AUTHORIZATION, "Bearer header_tok".parse().unwrap());
-    headers.insert(header::COOKIE, "aionui-session=cookie_tok".parse().unwrap());
+    headers.insert(header::COOKIE, "pounding-session=cookie_tok".parse().unwrap());
     assert_eq!(
         aionui_auth::extract_token_from_headers(&headers),
         Some("header_tok".into())
@@ -315,7 +315,7 @@ fn t13_1_authorization_header_takes_priority() {
 #[test]
 fn t13_2_cookie_fallback() {
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(header::COOKIE, "aionui-session=fallback_tok".parse().unwrap());
+    headers.insert(header::COOKIE, "pounding-session=fallback_tok".parse().unwrap());
     assert_eq!(
         aionui_auth::extract_token_from_headers(&headers),
         Some("fallback_tok".into())

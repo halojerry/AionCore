@@ -95,13 +95,19 @@ fn resolve_scan_paths_inner(
         return paths;
     }
 
-    // 2. User data directory (desktop data dir or historical ~/.aionui fallback).
+    // 2. User data directories.
     if let Some(data_dir) = explicit_data_dir {
         push(data_dir.join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
         if let Some(appdata_dir) = derive_legacy_appdata_extensions_dir(data_dir) {
             push(appdata_dir, ExtensionSource::Appdata);
         }
     } else {
+        // New default path (~/.pounding/extensions/).
+        if let Some(home) = dirs::home_dir() {
+            push(home.join(".pounding").join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
+        }
+
+        // Legacy fallback (~/.aionui/extensions/).
         if let Some(home) = dirs::home_dir() {
             push(home.join(".aionui").join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
         }
@@ -109,7 +115,7 @@ fn resolve_scan_paths_inner(
         // 3. AppData directory (platform-specific).
         if let Some(data_dir) = dirs::data_dir() {
             push(
-                data_dir.join("aionui").join(EXTENSIONS_DIR_NAME),
+                data_dir.join("pounding").join(EXTENSIONS_DIR_NAME),
                 ExtensionSource::Appdata,
             );
         }
