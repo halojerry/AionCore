@@ -222,3 +222,51 @@ cargo test -p aionui-<crate1> -p aionui-<crate2>                               #
 ```bash
 just push                                             # fmt → clippy → test → git push
 ```
+
+## POUNDING Fork: Branch Strategy
+
+**main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
+
+```
+upstream (iOfficeAI/AionCore)
+    ↓ manual fetch to feature branch
+feature/upstream-sync
+    ↓ manual PR (resolve conflicts, preserve POUNDING customizations)
+dev (integration & verification)
+    ↓
+release/pounding-v*.*.x (final verification)
+    ↓
+main (stable — triggers release builds via tag)
+```
+
+**Rules for all agents:**
+- Upstream syncs go to `feature/upstream-sync` — NEVER merge upstream into `main` or `dev` directly.
+- After upstream sync, manually diff and restore all POUNDING customizations (see checklist below).
+- POUNDING-specific features are developed on `feature/*` branches, PR'd to `dev`.
+- Tag format: `v<version>-Pounding` (e.g. `v0.1.15-Pounding`).
+- The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion`).
+
+## POUNDING Custom Features
+
+Features unique to the POUNDING fork that must be preserved during upstream syncs:
+
+| Feature | Key Files / Crates |
+|---------|-------------------|
+| CC-Switch model routing | `crates/aionui-ai-agent/src/cc_switch/` (mod.rs, model_info.rs, paths.rs, provider_env.rs) |
+| POUNDING builtin skill | `crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/` |
+| POUNDING DB migration | `crates/aionui-db/migrations/007_add_pounding_cli.sql` |
+| Brand logo asset | `crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png` |
+| Binary name | Binary must remain `aioncore` (restored from upstream rename) |
+| CC-Switch integration tests | `crates/aionui-ai-agent/tests/cc_switch_integration.rs` |
+
+## POUNDING Branding Checklist
+
+When merging ANY upstream changes, verify these are not overwritten:
+
+- [ ] `007_add_pounding_cli.sql` migration exists
+- [ ] `cc_switch/` module exists under `aionui-ai-agent/src/`
+- [ ] `pounding-ozon-v0.1.0-lite/` builtin skill exists
+- [ ] `pounding-heart-solid.png` brand asset exists
+- [ ] Binary name is `aioncore` (not renamed)
+- [ ] Legacy DB name `aionui.db` preserved in copy/migration functions
+- [ ] CC-Switch integration tests pass (`cargo test -p aionui-ai-agent --test cc_switch_integration`)
