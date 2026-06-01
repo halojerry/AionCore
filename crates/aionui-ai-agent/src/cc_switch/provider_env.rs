@@ -33,6 +33,22 @@ pub(crate) fn normalize_env(raw: &serde_json::Map<String, serde_json::Value>) ->
         .collect()
 }
 
+/// Model env keys that must NOT be injected into agent subprocesses.
+///
+/// These keys are stored in cc-switch.db for `model_info.rs` to build
+/// the UI model picker, but injecting them into the agent's environment
+/// would override the model selected via the ACP session protocol.
+const MODEL_ENV_KEY_BLOCKLIST: &[&str] = &[
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_MODEL",
+    // Legacy keys from the upstream _NAME suffix bug — still present in older
+    // cc-switch.db rows and must not leak into agent subprocess env.
+    "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
+];
+
 pub fn read_claude_provider_env_with_paths(paths: &CcSwitchPaths) -> HashMap<String, String> {
     let settings_content = match fs::read_to_string(&paths.settings_path) {
         Ok(c) => c,
@@ -60,7 +76,16 @@ pub fn read_claude_provider_env_with_paths(paths: &CcSwitchPaths) -> HashMap<Str
         return HashMap::new();
     }
 
-    read_env_from_db(&paths.database_path, &provider_id)
+    let mut env = read_env_from_db(&paths.database_path, &provider_id);
+
+    // Strip model env keys before injecting into agent subprocess.
+    // Model selection is handled by the ACP session protocol; these
+    // env overrides would cause model mismatch.
+    for key in MODEL_ENV_KEY_BLOCKLIST {
+        env.remove(*key);
+    }
+
+    env
 }
 
 fn read_env_from_db(db_path: &Path, provider_id: &str) -> HashMap<String, String> {
