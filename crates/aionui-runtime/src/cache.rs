@@ -47,7 +47,7 @@ pub fn runtime_root() -> Option<PathBuf> {
     if let Some(p) = RUNTIME_ROOT_OVERRIDE.get() {
         return Some(p.clone());
     }
-    dirs::cache_dir().map(|d| d.join("aionui").join("runtime"))
+    dirs::cache_dir().map(|d| d.join("pounding").join("runtime"))
 }
 
 /// Per-version cache directory name: `bun-<version>-<sha12>`.
@@ -89,7 +89,7 @@ mod tests {
             .take(2)
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(tail, vec!["runtime".to_string(), "aionui".to_string()]);
+        assert_eq!(tail, vec!["runtime".to_string(), "pounding".to_string()]);
     }
 
     #[test]

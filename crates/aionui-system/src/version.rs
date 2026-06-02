@@ -128,7 +128,7 @@ fn resolve_repo(from_request: Option<&str>) -> String {
     {
         return r.to_owned();
     }
-    if let Ok(v) = std::env::var("AIONUI_GITHUB_REPO")
+    if let Ok(v) = std::env::var("POUNDING_GITHUB_REPO")
         && !v.is_empty()
     {
         return v;

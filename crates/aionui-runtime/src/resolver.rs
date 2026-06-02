@@ -115,7 +115,7 @@ fn wait_until_observable(path: &Path) -> Result<(), ResolveError> {
 }
 
 fn env_override() -> Option<PathBuf> {
-    let raw = std::env::var("AIONUI_BUN_PATH").ok()?;
+    let raw = std::env::var("POUNDING_BUN_PATH").ok()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -124,7 +124,7 @@ fn env_override() -> Option<PathBuf> {
     if p.is_file() {
         Some(p)
     } else {
-        tracing::warn!(path = %p.display(), "AIONUI_BUN_PATH does not point to a file; ignoring");
+        tracing::warn!(path = %p.display(), "POUNDING_BUN_PATH does not point to a file; ignoring");
         None
     }
 }
@@ -248,7 +248,7 @@ mod tests {
         // Safety: unset to avoid env override winning.
         // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
-            std::env::remove_var("AIONUI_BUN_PATH");
+            std::env::remove_var("POUNDING_BUN_PATH");
         }
 
         let fake = FakeEmbed {
@@ -273,7 +273,7 @@ mod tests {
         let path = tmp.path().to_path_buf();
         // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
-            std::env::set_var("AIONUI_BUN_PATH", &path);
+            std::env::set_var("POUNDING_BUN_PATH", &path);
         }
 
         let payload = b"anything";
@@ -291,7 +291,7 @@ mod tests {
 
         // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
-            std::env::remove_var("AIONUI_BUN_PATH");
+            std::env::remove_var("POUNDING_BUN_PATH");
         }
     }
 
@@ -320,7 +320,7 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
-            std::env::set_var("AIONUI_BUN_PATH", "/definitely/does/not/exist");
+            std::env::set_var("POUNDING_BUN_PATH", "/definitely/does/not/exist");
         }
 
         let fake = FakeEmbed {
@@ -339,7 +339,7 @@ mod tests {
 
         // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
-            std::env::remove_var("AIONUI_BUN_PATH");
+            std::env::remove_var("POUNDING_BUN_PATH");
         }
     }
 

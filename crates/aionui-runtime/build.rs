@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 fn main() {
     println!("cargo:rerun-if-env-changed=BUN_VARIANT");
     println!("cargo:rerun-if-env-changed=BUN_VERSION_OVERRIDE");
-    println!("cargo:rerun-if-env-changed=AIONUI_EMBED_BUN");
+    println!("cargo:rerun-if-env-changed=POUNDING_EMBED_BUN");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -34,7 +34,7 @@ fn main() {
 
     // Default: dev builds skip bun download (no network). CI release
     // sets AIONUI_EMBED_BUN=1 to actually embed.
-    if std::env::var("AIONUI_EMBED_BUN").as_deref() != Ok("1") {
+    if std::env::var("POUNDING_EMBED_BUN").as_deref() != Ok("1") {
         write_meta_stub(&meta_path, &out_dir);
         return;
     }
@@ -119,7 +119,7 @@ fn cargo_cache_root() -> PathBuf {
             .map(|h| h.join(".cargo"))
             .unwrap_or_else(|| PathBuf::from(".cargo"))
     });
-    home.join("aionui-bun-cache")
+    home.join("pounding-bun-cache")
 }
 
 fn write_meta_stub(meta_path: &Path, out_dir: &Path) {

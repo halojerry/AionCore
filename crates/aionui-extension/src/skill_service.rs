@@ -20,7 +20,7 @@ static BUILTIN_SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../aionu
 /// Name of the environment variable that, when set, overrides the embedded
 /// corpus with an on-disk directory. Consumed by
 /// [`resolve_skill_paths`] when building [`SkillPaths`].
-pub const BUILTIN_SKILLS_ENV_VAR: &str = "AIONUI_BUILTIN_SKILLS_PATH";
+pub const BUILTIN_SKILLS_ENV_VAR: &str = "POUNDING_BUILTIN_SKILLS_PATH";
 
 /// Expose the embedded builtin skills corpus for startup
 /// materialization. Consumers outside this crate should not depend on
