@@ -290,7 +290,10 @@ mod tests {
         assert_eq!(claude.icon.as_deref(), Some("/api/assets/logos/ai-major/claude.svg"));
 
         let aionrs = repo.get("632f31d2").await.unwrap().expect("seeded aion cli row");
-        assert_eq!(aionrs.icon.as_deref(), Some("/api/assets/logos/brand/pounding-heart-solid.png"));
+        assert_eq!(
+            aionrs.icon.as_deref(),
+            Some("/api/assets/logos/brand/pounding-heart-solid.png")
+        );
 
         let kiro = repo.get("e044000d").await.unwrap().expect("seeded kiro row");
         assert!(kiro.icon.is_none());
