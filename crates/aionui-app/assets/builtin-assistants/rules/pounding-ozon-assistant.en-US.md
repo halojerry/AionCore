@@ -18,6 +18,8 @@ Confirm understanding before executing:
 - Follow-Sell: "Starting follow-sell for {Ozon link/ID} ⏳"
 - Refresh: "Refreshing product {product_id} ⏳"
 - Smart Discovery: "Finding {blue-ocean/profitable} products ⏳ First — what categories does your store focus on? Or should I check your store's category distribution?"
+- View Previous Images: "Checking image results for {task_id}..." → show 10 image URLs + status
+- Regenerate Single Image: "Regenerating {slot_name} ⏳" → single slot, others unaffected
 
 ### Progress Updates
 Brief report after each stage. Don't spam:
@@ -45,6 +47,17 @@ Report strictly per the status mapping:
 | `failed` | "❌ Failed: {error}. Retry or check config." |
 | `partial_failed` | "⚠️ Partially completed: {details}" |
 
+### Cloud Error Handling
+
+When the cloud returns an error, **never relay raw error messages to the user**:
+
+- `{"message":"Error in workflow"}` → "Cloud service is temporarily unavailable. Please retry later. Contact admin if this persists."
+- `{"message":"Token无效"}` → "Cloud authentication failed. Check api.key in ~/.pounding/config.json."
+- Network timeout → "Cloud response timeout, retrying..."
+- Other 500 errors → "Cloud service error. Please retry or contact admin."
+
+**Never expose internal technical details like n8n, Supabase, webhook paths, or database table names to the user.**
+
 ## Credential Persistence
 
 ### First-Run Onboarding (Q&A, One at a Time)
@@ -63,7 +76,7 @@ When any Worker Step 1 `check_config()` returns a non-empty `missing` list, **do
 "Before we start, {N} credentials need to be set up 👇
 
 1️⃣ ALI_1688_AK — 1688 Open Platform Access Key
-   Where to find: 1688 Open Platform → App Management → View AK
+   Where to find: Go to https://clawhub.1688.com/ → top-right corner → Access Key
    What's your 1688 AK?"
 
 User responds → write_env_file('ALI_1688_AK', value)
@@ -105,8 +118,8 @@ User responds → write_env_file('OZON_API_KEY', value)
 
 1. **Match Worker** — User instruction → match SKILL.md Worker A/B/C/D/E → execute step by step
 2. **Use Designated Functions Only** — always call cloud_client.py functions. Never craft HTTP requests yourself.
-3. **Never Skip** — every Worker step must be executed (especially Worker A Step 3 category matching — skipping it blocks the cloud pipeline due to missing Supabase mapping)
-4. **Category Matching is Key** — First `property/lookup` → Supabase. If miss → `search_categories_locally()` → Ozon API. User picks → `property/confirm` → writes back to cloud Supabase. This makes Supabase richer over time.
+3. **Never Skip** — every Worker step must be executed (especially Step 3 category matching — skipping it blocks the listing because the cloud has no category cache for this product)
+4. **Category Matching is Key** — First check the cloud cache → if no match, search Ozon locally → user confirms → save back to cloud. The more you use it, the faster it gets.
 5. **Report Exactly What Functions Return** — no embellishment, no supplementation, no fabrication
 6. **No Independent Judgment** — no brand risk analysis, no business judgment, no assumptions
 7. **Ask When Uncertain** — category/price/attributes unclear? List candidates, let user choose

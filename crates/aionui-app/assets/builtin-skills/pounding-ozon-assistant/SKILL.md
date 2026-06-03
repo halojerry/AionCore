@@ -4,7 +4,21 @@ description: |
   1688 → Ozon 全链路。跟卖、新上架、变体合并、翻新、选品找货源、制图。
 ---
 
-# pounding-ozon-cloud
+# pounding-ozon-assistant
+
+## 云端 Webhook 映射
+
+每个 Worker 对应不同的云端 webhook，不要混用：
+
+| Worker | 业务 | Webhook 路径 | 说明 |
+|--------|------|-------------|------|
+| A | 1688→Ozon 新上架 | `pl-v3-304140` | 完整 8 阶段管线（类目→属性→制图→上传） |
+| B | Ozon 跟卖 | `fs-v4-303992` | import-by-sku |
+| C | Ozon 翻新 | `re-v2-304020` + `mx-bp2-377417` | Ozon update + 制图 |
+| D | 多SKU变体 | `v2-ingest-292201` + `pl-v3-304140` + `mx-bp2-377417` | 类目匹配 + 管线 + 制图 |
+| E | 智能选品 | 无（本地搜索后进入 Worker A） | 1688 搜索 → 用户选品 → Worker A |
+
+> **接口稳定约定**：云端更新工作流内部逻辑时，webhook 路径和信封格式保持不变，Skills 无需修改即可吃到更新。
 
 ## 配置
 
@@ -26,21 +40,93 @@ description: |
 
 1688 API 返回文字属性但**不返回图片URL、重量、尺寸**。CDP 浏览器打开商品页采集这些数据是 Worker A 的必要步骤 (Step 2b)。
 
+## 关键函数返回值速查
+
+**必须按返回值类型调用，不要自己猜测嵌套结构！**
+
+| 函数 | 模块 | 返回值 | 关键字段 |
+|------|------|--------|---------|
+| `check_config()` | `config_store` | `dict` | `missing: list`, `present: list`, `by_tier: dict` |
+| `search_products(query, page_size=N)` | `ak_1688_client` | `list[dict]` **← 直接是列表！** | 每个元素: `title`, `price`, `itemId`, `detailUrl` |
+| `get_product_details(item_ids)` | `ak_1688_client` | `dict[str, dict]` | `{item_id: {title, price, categories, sku_attributes, all_info}}` |
+| `search_categories_locally(query, ...)` | `cloud_client` | `list[dict]` | 每个元素: `description_category_id`, `type_id`, `category_name`, `type_name`, `score` |
+| `build_envelope(...)` | `cloud_client` | `dict` | `version, project_id, source, assets, draft, extensions` |
+| `submit_envelope(envelope)` | `cloud_client` | `dict` | `task_id, status, category_resolution` |
+| `submit_task(envelope)` | `cloud_client` | `dict` | `task_id, status, stages, final_summary` |
+| `generate_product_images(token, ...)` | `cloud_client` | `dict` | `{slot: url}` |
+| `follow_sell_cloud(sku=..., ...)` | `cloud_client` | `dict` | `path, ozon_task_id` |
+| `list_product_infos(...)` | 从 `pounding_ozon_cloud.ozon_client` 导入 | `list[dict]` | 每个元素: `product_id`, `name`, `offer_id`, `price` |
+
+**示例 — 用 `search_products` 正确遍历结果：**
+```python
+items = search_products("保温杯", page_size=5)  # 返回 list
+for item in items[:3]:
+    print(f"¥{item.get('price')} {item.get('title')[:50]}")
+```
+**不要**写成 `results.get('data', {}).get('result', {}).get('resultList', [])` — `search_products` 返回的已经是列表！
+
+**严禁自己拼 webhook URL** — 所有云端调用必须通过 `cloud_client.py` 的函数。URL 路径由 `path_registry.json` 管理，自己拼的 URL 会错（如旧版 typo `mx-bp2-417417` → 正确是 `mx-bp2-377417`）。制图用 `generate_product_images(token)`，不要自己发 HTTP 请求。
+
+## CDP 探针注意事项（重要！避免 1688 限流）
+
+`probe_1688_page(url)` **一次调用获取全部数据**（标题、价格、图片URL、重量、尺寸、SKU、包装信息都在一次页面探针中提取）。
+
+- ✅ **只调一次** — 一个产品只调一次 `probe_1688_page()`，拿到结果直接用
+- ❌ **不要**为图片调一次、为重量再调一次 — 一次调用全部返回
+- ❌ **不要**手动 reload 页面 — 探针内置的重试已经处理了慢加载
+- ⚠️ 1688 对你频繁刷新页面的行为很敏感，重复打开同一链接会被限流
+- 💾 **1688 详情已缓存**：同一商品 24h 内重复请求直接走磁盘缓存，不再打开浏览器
+
+## 生图缓存 + 单张重生
+
+`generate_product_images(token)` 生成的 10 张图 URL 保存在 Supabase `gateway_tasks.result_json.images` 中，按 `task_id` 查询即可获取。
+
+**用户想看之前的图**：查 `gateway_tasks` → `result_json.images` → 展示给用户。
+
+**用户想重新生成某一张**（如 `main_image` 不好看）：
+```python
+# 单张重生 — 直接调 image_gen webhook
+token = _get_token()
+body = {"slot": "main_image", "prompt": "新的提示词...", "token": token,
+        "model": "gpt-image-2", "aspect_ratio": "1024x1024"}
+resp = requests.post(f"{CLOUD_API_BASE}/webhook/mx-bp2-377417", json=body)
+# → {"slot": "main_image", "ok": true, "url": "https://..."}
+```
+
+- ✅ 单张重生不影响其他已生成的图
+- ✅ 重生后更新 `gateway_tasks` 对应 slot 的 URL
+- ✅ 管线任务提交后，10 张图全部生成完毕才标记完成，过程中可随时查进度
+
+## 项目标识（project_id / subproject_id）
+
+`build_envelope()` 需要这两个参数：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `project_id` | `"default"` | 项目标识，一般用固定值 `"default"` |
+| `subproject_id` | 1688 商品 ID | 子项目标识，用 1688 的 `itemId` 或 `offerId` |
+
+```python
+envelope = build_envelope(
+    project_id="default",          # 固定用 "default"
+    subproject_id=item_id,         # 1688 商品 ID
+    source={...}, assets={...}, draft={...}
+)
+```
+
 ---
 
-### Worker A：1688 → Ozon 新上架（9 步）
+### Worker A：1688 → Ozon 新上架（5 步）
 
 | # | 动作 | 函数 | 对用户说 |
 |---|------|------|---------|
 | 1 | 检查配置 | `check_config()` | 全部就绪→（静默）；有缺失→按 AGENTS.md「首次配置引导」逐个问答填 `.env` |
 | 2 | 获取 1688 详情 | API `prod_detail` + CDP `probe_1688_page()` | "正在获取 1688 商品详情..." → "已获取详情（{N}张图，{M}个SKU）" |
-| 3 | 类目匹配 | `property/lookup` → 命中则跳过；否则 `search_categories_locally()` → 用户选择 → `property/confirm` | 命中："已匹配类目：{类目名}（置信度 {X}%）"；未命中：列候选让用户选 → "已确认类目：{类目名}，已记录到云端 ✅" |
-| 4 | 构建信封 | `build_envelope()` | （静默） |
-| 5 | 属性解析 | 1688 CPV → Ozon 属性匹配引擎 | "正在解析属性..." → "已解析 {N} 个属性" |
-| 6 | 提交任务 | `submit_envelope()` → `submit_task()` | "已提交任务 {task_id}，云端处理中 ⏳" |
-| 7 | 制图 | `generate_product_images(token)` | "制图中（通常 3-9 分钟）..." |
-| 8 | Ozon 上传 | `update_followed_product()` | "正在上架到 Ozon..." |
-| 9 | 汇报结果 | 查 `gateway_tasks` | 按状态映射表汇报（见下方） |
+| 3 | 类目匹配 | **本地主导**：先 `property/lookup` → 云端查缓存；没命中 → 本地 `search_categories_locally()` → Ozon API 搜索；用户选 → `property/confirm` → 云端保存。**无论命中与否，数据都由本地传给云端。越用越快。** | 命中："已匹配类目：{类目名}（置信度 {X}%）"；未命中：列候选让用户选 → "已确认类目：{类目名}，已记录到云端 ✅" |
+| 4 | 构建信封 + 提交 | `build_envelope()` → POST `pl-v3-304140` | "已提交任务 {task_id}，云端处理中（制图+属性+上架）⏳ 通常 3-9 分钟..." |
+| 5 | 汇报结果 | 查 `gateway_tasks` | 按状态映射表汇报（见下方） |
+
+> **Step 4 提交后，云端 n8n 管线自动完成**：类目解析 → 图片上传 → 属性解析 → 10 张 AI 制图 → 构建 Ozon 负载 → 质量检查 → Ozon 上传 → 写入结果。本地只需提交一次信封，等待结果即可。
 
 ### Worker B：Ozon 跟卖（6 步）
 
@@ -104,7 +190,7 @@ description: |
 
 ## 严格禁止
 
-- ❌ 跳过 Worker 步骤（尤其是 Worker A Step 3 类目匹配——跳过会导致云端 pipeline 因 Supabase 无映射而 blocked）
+- ❌ 跳过 Worker 步骤（尤其是 Worker A Step 3 类目匹配——跳过会导致上架被阻断）
 - ❌ 跳过 CDP 浏览器采集（1688 API 不返回图片/重量/尺寸）
 - ❌ "已提交" = "上架成功"
 - ❌ 缺配置继续执行

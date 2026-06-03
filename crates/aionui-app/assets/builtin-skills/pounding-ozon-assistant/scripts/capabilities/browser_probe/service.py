@@ -16,7 +16,9 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
-from scripts._const import DATA_DIR, get_config_profile
+from scripts._const import DATA_DIR, DEFAULT_CACHE_TTL_SECONDS, get_config_profile
+
+_CACHE_TTL = DEFAULT_CACHE_TTL_SECONDS  # 24h — reuse cached probe results within this window
 from scripts._errors import ConfigError, ValidationError
 from scripts.lib.reference_images import is_likely_product_image
 from scripts.lib.task_paths import current_task_id, task_media_dir
@@ -443,7 +445,7 @@ skuContainers.forEach((featureEl, featureIndex) => {
   const packagingLengthIndex = packagingHeaders.findIndex((header) => /(^|[^总])长\s*\(?\s*(cm|mm)?\s*\)?$|长度|length/i.test(header || ''));
   const packagingWidthIndex = packagingHeaders.findIndex((header) => /宽\s*\(?\s*(cm|mm)?\s*\)?$|宽度|width/i.test(header || ''));
   const packagingHeightIndex = packagingHeaders.findIndex((header) => /高\s*\(?\s*(cm|mm)?\s*\)?$|高度|height/i.test(header || ''));
-  const packagingSpecIndex = packagingHeaders.findIndex((header) => /规格|spec/i.test(header || ''));
+  const packagingSpecIndex = packagingHeaders.findIndex((header) => /规格|尺码|spec|size/i.test(header || ''));
   const packagingColorIndex = packagingHeaders.findIndex((header) => /颜色|色系|color/i.test(header || ''));
   queryAll(['.module-od-product-pack-info table tbody tr']).forEach((row) => {
     const cells = Array.from(row.querySelectorAll('td')).map((cell) => normalizeText(cell.innerText || cell.textContent));
@@ -913,10 +915,16 @@ def _probe_opened_target_page_with_retries(
     timeout_seconds: int,
     poll_ms: int,
     headed: bool,
-    max_attempts: int = 3,
+    max_attempts: int = 2,
 ) -> dict[str, Any]:
+    """Probe with retries on the SAME page — no page reload.
+
+    Reloading the page (page.goto) counts as a new request to 1688
+    and triggers rate limiting.  Instead we wait and re-evaluate the
+    extraction JS on the already-loaded DOM.
+    """
     last_probe: dict[str, Any] = {}
-    backoff_schedule_ms = [1500, 3500]
+    backoff_schedule_ms = [1500, 3000]
     for attempt in range(1, max_attempts + 1):
         if attempt > 1:
             wait_ms = backoff_schedule_ms[min(attempt - 2, len(backoff_schedule_ms) - 1)]
@@ -924,20 +932,14 @@ def _probe_opened_target_page_with_retries(
                 page.wait_for_timeout(wait_ms)
             except Exception:
                 pass
+            # Scroll to trigger lazy-loading, then re-evaluate JS on the SAME page
             try:
-                page.goto(target_url, wait_until='domcontentloaded', timeout=max(int(timeout_seconds) * 1000, 45000))
-                try:
-                    page.wait_for_load_state('networkidle', timeout=min(max(int(timeout_seconds) * 1000, 45000), 10000))
-                except PlaywrightTimeoutError:
-                    pass
-            except Exception as exc:
-                last_probe = {
-                    'url': getattr(page, 'url', target_url),
-                    'error': str(exc),
-                    'loginRequired': False,
-                    'ready': False,
-                    'single_pass': False,
-                }
+                page.evaluate("window.scrollTo({top: document.body.scrollHeight, behavior: 'instant'});")
+                page.wait_for_timeout(500)
+                page.evaluate("window.scrollTo({top: 0, behavior: 'instant'});")
+                page.wait_for_timeout(300)
+            except Exception:
+                pass
         probe = _read_page_probe(
             page,
             timeout_seconds=timeout_seconds,
@@ -1068,6 +1070,53 @@ def _artifact_path(task_id: str | None = None) -> Path:
     return task_media_dir('browser-probes', task_id=task_id) / f'1688-probe-{stamp}-{suffix}.json'
 
 
+def _cache_key(url: str) -> str:
+    """Normalize a 1688 URL for cache lookup — strip query params, keep offer ID."""
+    m = re.search(r'offer/(\d+)', url)
+    if m:
+        return f'1688-offer-{m.group(1)}'
+    return url.split('?')[0].rstrip('/')
+
+
+def _find_cached_probe(target_url: str, task_id: str | None = None, max_age_seconds: int = 86400) -> dict[str, Any] | None:
+    """Look for a cached browser probe result for the same 1688 offer.
+
+    Scans browser-probes directory for JSON artifacts containing the same URL.
+    Returns cached result if found and not older than max_age_seconds.
+    """
+    probes_dir = task_media_dir('browser-probes', task_id=task_id)
+    if not probes_dir.is_dir():
+        return None
+    key = _cache_key(target_url)
+    newest_mtime = 0.0
+    newest_path = None
+    for f in sorted(probes_dir.glob('1688-probe-*.json'), reverse=True):
+        try:
+            stat = f.stat()
+            age = time.time() - stat.st_mtime
+            if age > max_age_seconds:
+                continue
+            # Quick check: look for the URL in the first few KB without full parse
+            head = f.read_text(encoding='utf-8')[:4096]
+            if key in head or target_url.split('?')[0] in head:
+                if stat.st_mtime > newest_mtime:
+                    newest_mtime = stat.st_mtime
+                    newest_path = f
+        except Exception:
+            continue
+    if newest_path is None:
+        return None
+    try:
+        cached = json.loads(newest_path.read_text(encoding='utf-8'))
+        if cached.get('ready') and not cached.get('failure_page') and not cached.get('captcha_intercepted'):
+            cached['from_cache'] = True
+            cached['cache_age_seconds'] = round(time.time() - newest_mtime, 1)
+            return cached
+    except Exception:
+        pass
+    return None
+
+
 def _filter_probe_images(images: list[str]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
@@ -1096,6 +1145,13 @@ def probe_1688_page(
         raise ValidationError('1688 页面 URL 不能为空')
     if '1688.com' not in target_url:
         raise ValidationError('browser_probe 当前只支持 1688 页面 URL')
+
+    # Cache-aside: reuse cached probe result if fresh (avoid 1688 rate limiting)
+    cached = _find_cached_probe(target_url, task_id, max_age_seconds=_CACHE_TTL)
+    if cached is not None:
+        cached['artifact_path'] = str(_artifact_path(task_id or current_task_id()))
+        return cached
+
     resolved_browser = find_browser_executable(browser_path)
     if not resolved_browser:
         raise ConfigError('未找到可用的 Chrome/Chromium 浏览器，请先安装 Google Chrome 或传入 --browser-path')
