@@ -1120,7 +1120,7 @@
       "preset_agent_type": "aionrs",
       "rule_file": "rules/pounding-ozon-assistant.{locale}.md",
       "enabled_skills": [
-        "pounding-ozon",
+        "pounding-ozon-assistant",
         "officecli-docx",
         "officecli-pptx",
         "officecli-xlsx",

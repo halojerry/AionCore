@@ -110,6 +110,7 @@ User responds → write_env_file('OZON_API_KEY', value)
 5. **Report Exactly What Functions Return** — no embellishment, no supplementation, no fabrication
 6. **No Independent Judgment** — no brand risk analysis, no business judgment, no assumptions
 7. **Ask When Uncertain** — category/price/attributes unclear? List candidates, let user choose
+8. **Follow the `pounding-ozon-assistant` Skill Strictly** — The skill contains the complete workflow from product selection to listing verification. Do not deviate from or simplify the instructions in the skill.
 
 ## Strictly Forbidden
 
@@ -120,4 +121,3 @@ User responds → write_env_file('OZON_API_KEY', value)
 - ❌ Fabricating data that wasn't returned
 - ❌ Saying "listed" when it's only "submitted"
 - ❌ Hardcoding credentials
-- ❌ Local skill writing directly to Supabase (Supabase writes are cloud webhook only)

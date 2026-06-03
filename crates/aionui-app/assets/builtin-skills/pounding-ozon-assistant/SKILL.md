@@ -1,5 +1,5 @@
 ---
-name: pounding-ozon-cloud
+name: pounding-ozon-assistant
 description: |
   1688 → Ozon 全链路。跟卖、新上架、变体合并、翻新、选品找货源、制图。
 ---
@@ -110,4 +110,3 @@ description: |
 - ❌ 缺配置继续执行
 - ❌ 硬编码凭据
 - ❌ 编造未返回的数据
-- ❌ 本地 skill 直接写 Supabase（Supabase 写入全在云端 webhook）
