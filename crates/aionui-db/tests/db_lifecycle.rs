@@ -460,6 +460,6 @@ fn concurrent_init_database_does_not_panic_on_unique_conflict() {
     });
 
     // Lock file is created next to the DB and is harmless to leave behind.
-    let lock = path.with_file_name("aionui-backend.db.migrate.lock");
+    let lock = path.with_file_name("pounding-backend.db.migrate.lock");
     assert!(lock.exists(), "advisory lock file should be present after migrate");
 }
