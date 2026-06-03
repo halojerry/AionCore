@@ -146,7 +146,11 @@ pub(super) async fn build(
                 let legacy_dir = std::path::Path::new(&ctx.workspace).join(".pounding/sessions");
                 // Also check old .aionrs path for backward compat
                 let old_legacy_dir = std::path::Path::new(&ctx.workspace).join(".aionrs/sessions");
-                let load_dir = if legacy_dir.exists() { &legacy_dir } else { &old_legacy_dir };
+                let load_dir = if legacy_dir.exists() {
+                    &legacy_dir
+                } else {
+                    &old_legacy_dir
+                };
                 let legacy_mgr = SessionManager::new(load_dir.clone(), 100);
                 match legacy_mgr.load(&ctx.conversation_id) {
                     Ok(mut session) => {
