@@ -1101,6 +1101,36 @@
         ]
       },
       "models": []
+    },
+    {
+      "id": "pounding-ozon-assistant",
+      "name": "POUNDING Ozon Assistant",
+      "name_i18n": {
+        "en-US": "POUNDING Ozon Assistant",
+        "zh-CN": "POUNDING Ozon 助手",
+        "ru-RU": "POUNDING Ozon Ассистент"
+      },
+      "description": "POUNDING Ozon cross-border e-commerce assistant with officecli productivity tools. Ozon store management, product listing, data analysis, and document creation.",
+      "description_i18n": {
+        "en-US": "POUNDING Ozon cross-border e-commerce assistant with officecli productivity tools. Ozon store management, product listing, data analysis, and document creation.",
+        "zh-CN": "POUNDING Ozon 跨境电商助手，集成 officecli 生产力工具。Ozon 店铺管理、商品上架、数据分析、文档创建。",
+        "ru-RU": "POUNDING Ozon ассистент для кросс-граничной электронной коммерции с инструментами officecli. Управление магазином Ozon, листинг товаров, анализ данных и создание документов."
+      },
+      "preset": true,
+      "preset_agent_type": "aionrs",
+      "rule_file": "rules/pounding-ozon-assistant.{locale}.md",
+      "enabled_skills": [
+        "pounding-ozon",
+        "officecli-docx",
+        "officecli-pptx",
+        "officecli-xlsx",
+        "officecli-financial-model",
+        "officecli-academic-paper",
+        "officecli-data-dashboard",
+        "officecli-pitch-deck"
+      ],
+      "icon": "brand/pounding-heart-solid.png",
+      "sort_order": 4
     }
   ]
 }
