@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31,<3",
   "pounding-ozon-cloud>=0.2.0",
+  "sentry-sdk>=2.8,<3",
 ]
 
 [project.optional-dependencies]
@@ -18,3 +19,11 @@ pounding-ozon = "cli:main"
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pip]
+# 国内用户优先使用阿里云镜像，海外用户用默认 PyPI
+index-url = "https://mirrors.aliyun.com/pypi/simple/"
+extra-index-url = [
+    "https://pypi.tuna.tsinghua.edu.cn/simple/",
+    "https://pypi.org/simple/",
+]

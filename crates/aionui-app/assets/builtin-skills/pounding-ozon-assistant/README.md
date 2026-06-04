@@ -5,8 +5,11 @@
 ## 安装
 
 ```bash
+# 0. 配置国内镜像源（推荐，加速安装）
+pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
+
 # 1. 安装 Python 依赖
-pip install pounding-ozon-cloud>=0.2.0
+pip install "pounding-ozon-hybrid>=0.1.0"
 
 # 2. 可选：安装浏览器自动化支持（1688 商品详情采集）
 pip install playwright>=1.40
