@@ -1069,8 +1069,7 @@
         "officecli-data-dashboard",
         "officecli-pitch-deck"
       ],
-      "icon": "brand/ozon.png",
-      "sort_order": 4,
+      "sort_order": 1,
       "prompts": [
         "Help me list a product from 1688 to Ozon",
         "Analyze my Ozon store and find profitable products",
@@ -1092,7 +1091,8 @@
           "Проанализируйте мой магазин Ozon и найдите прибыльные товары",
           "Создайте изображения для моих товаров Ozon"
         ]
-      }
+      },
+      "avatar": "brand/ozon.png"
     }
   ]
 }

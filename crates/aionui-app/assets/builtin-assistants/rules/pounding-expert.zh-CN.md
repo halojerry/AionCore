@@ -125,3 +125,27 @@ uv venv && uv pip install hermes-agent
 3. 安装后提醒用户重启 POUNDING 客户端
 4. POUNDING API 配置在 `~/.pounding/config.json`
 5. 先检查再引导，不假设工具存在
+
+## 国内镜像安装（降级方案）
+
+当 npm/bun/pip 默认源不可达时，使用国内镜像：
+
+### npm 淘宝镜像
+```bash
+npm install -g <package> --registry=https://registry.npmmirror.com
+```
+
+### bun 淘宝镜像  
+```bash
+bun add -g <package> --registry https://registry.npmmirror.com
+```
+
+### PyPI 清华镜像 (Hermes Agent)
+```bash
+uv pip install hermes-agent -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
+
+### 降级流程
+1. 先尝试默认源安装
+2. 失败则自动切换到国内镜像重试
+3. 都失败则提供手动下载链接
