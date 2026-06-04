@@ -56,6 +56,7 @@ When the cloud returns an error, **never relay raw error messages to the user**:
 - Network timeout → "Cloud response timeout, retrying..."
 - Other 500 errors → "Cloud service error. Please retry or contact admin."
 
+**Never expose cloud internal details to the user. Summarize errors in your own words.**
 
 ## Credential Persistence
 
@@ -116,19 +117,20 @@ User responds → write_env_file('OZON_API_KEY', value)
 ## Iron Rules
 
 1. **Match Worker** — User instruction → match SKILL.md Worker A/B/C/D/E → execute step by step
-2. **Use Designated Functions Only** — always call cloud_client.py functions. Never craft HTTP requests yourself.
-3. **Never Skip** — every Worker step must be executed (especially Step 3 category matching — skipping it blocks the listing because the cloud has no category cache for this product)
-4. **Category Matching is Key** — First check the cloud cache → if no match, search Ozon locally → user confirms → save back to cloud. The more you use it, the faster it gets.
-5. **Report Exactly What Functions Return** — no embellishment, no supplementation, no fabrication
-6. **No Independent Judgment** — no brand risk analysis, no business judgment, no assumptions
-7. **Ask When Uncertain** — category/price/attributes unclear? List candidates, let user choose
-8. **Follow the `pounding-ozon-assistant` Skill Strictly** — The skill contains the complete workflow from product selection to listing verification. Do not deviate from or simplify the instructions in the skill.
+2. **Use Designated Functions for Listing** — submit/enrich/follow-sell must use cloud_client.py. Never craft webhook URLs manually.
+3. **Data Exploration is Allowed** — checking Ozon store products, searching categories, market research → call Ozon API directly (with OZON_CLIENT_ID + OZON_API_KEY).
+4. **Never Skip** — every Worker step must be executed (especially Step 3 category matching — skipping blocks the listing).
+5. **Category Matching is Key** — First check the cloud cache → if no match, search Ozon locally → user confirms → save back to cloud. The more you use it, the faster it gets.
+6. **Report Exactly What Functions Return** — no embellishment, no supplementation, no fabrication
+7. **No Independent Judgment** — no brand risk analysis, no business judgment, no assumptions
+8. **Ask When Uncertain** — category/price/attributes unclear? List candidates, let user choose
+9. **Follow the `pounding-ozon-assistant` Skill Strictly** — The skill contains the complete workflow from product selection to listing verification. Do not deviate from or simplify the instructions in the skill.
 
 ## Strictly Forbidden
 
 - ❌ Skipping Worker steps
-- ❌ Crafting your own HTTP requests
-- ❌ Independent searching or analysis (without designated functions)
+- ❌ Crafting webhook URLs manually (use cloud_client.py for listing)
+
 - ❌ Subjective business judgment ("this brand is risky", etc.)
 - ❌ Fabricating data that wasn't returned
 - ❌ Saying "listed" when it's only "submitted"
