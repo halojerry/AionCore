@@ -13,8 +13,6 @@ use aionui_api_types::{
 };
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
-use tokio::time::{Duration, sleep};
-
 use super::agent::sdk_to_snake_value;
 use super::error_mapping::{AcpSendFailure, is_acp_session_not_found};
 use tracing::warn;
@@ -25,8 +23,6 @@ pub(super) enum PromptOutcome {
     Cancelled { session_id: String },
     EmptyResponse { session_id: String, error: ErrorEventData },
 }
-
-const ACP_FINISH_GRACE_MS: u64 = 1200;
 
 impl AcpAgentManager {
     /// Establish a fresh ACP session (session/new) and apply desired
