@@ -36,9 +36,18 @@ description: |
 - 用户说"查看配置"→ `check_config()` 列出缺失和已配置项。
 - **严禁硬编码凭据。Step 1 缺任何一项立即停止，列出缺失项。**
 
-## CDP 浏览器是必须的
+## CDP 浏览器采集
 
-1688 API 返回文字属性但**不返回图片URL、重量、尺寸**。CDP 浏览器打开商品页采集这些数据是 Worker A 的必要步骤 (Step 2b)。
+1688 API 返回文字属性但**不返回图片URL、重量、尺寸**。用 `enrich_product_with_cdp()` 补齐——**一个函数搞定所有场景**（没装 Chrome、没登录、探针失败），绝不崩溃：
+
+```python
+from scripts.lib.ak_1688_client import enrich_product_with_cdp
+
+enriched = enrich_product_with_cdp(detail_url=item['detailUrl'], api_data=d)
+# 返回 {ok, degraded, degraded_reason, user_action, data: {images, weight_grams, ...}}
+# data 永远不为空——degraded 时 images/weight_grams 为空列表/None
+# user_action 不为 None 时直接告诉用户那句话即可
+```
 
 ## 关键函数返回值速查
 
@@ -55,7 +64,7 @@ description: |
 | `submit_task(envelope)` | `cloud_client` | `dict` | `task_id, status, stages, final_summary` |
 | `generate_product_images(token, ...)` | `cloud_client` | `dict` | `{slot: url}` |
 | `follow_sell_cloud(sku=..., ...)` | `cloud_client` | `dict` | `path, ozon_task_id` |
-| `list_product_infos(...)` | 从 `pounding_ozon_cloud.ozon_client` 导入 | `list[dict]` | 每个元素: `product_id`, `name`, `offer_id`, `price` |
+| `list_product_infos(...)` | `cloud_client` | `list[dict]` | 每个元素: `product_id`, `name`, `offer_id`, `price` |
 
 **示例 — 用 `search_products` 正确遍历结果：**
 ```python
@@ -170,7 +179,7 @@ envelope = build_envelope(
 
 > **重要**：`submit_envelope()` 走 `v2-ingest-292201` — 只用于类目匹配（property/lookup+confirm）。**上架提交必须用 `submit_task()` 走 `pl-v3-304140` 管线。**
 > **异步处理**：管线提交后立即返回（~3秒），Agent 通过轮询 `gateway_tasks` 查进度，不用傻等。
-> **Ozon API 版本**：类目接口用 `/v1/description-category/tree`（不是 v2）。用 `search_categories_locally()` 封装好的函数即可。需要 `pip install pounding-ozon-cloud>=0.2.0`。
+> **Ozon API 版本**：类目接口用 `/v1/description-category/tree`（不是 v2）。用 `search_categories_locally()` 封装好的函数即可（Ozon API 已内联到 `ozon_api.py`，不需要额外 pip 安装）。
 
 > **Step 4 提交后如果返回 `_next_action: "category_matching_required"`**：说明类目还没匹配。自动执行类目匹配（property/lookup → search_categories_locally → 用户选 → property/confirm），匹配完重新提交信封。
 

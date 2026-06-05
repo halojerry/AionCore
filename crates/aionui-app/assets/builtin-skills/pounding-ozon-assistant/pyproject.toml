@@ -1,11 +1,10 @@
 [project]
 name = "pounding-ozon-hybrid"
-version = "0.1.1"
+version = "0.1.0"
 description = "1688→Ozon cloud pipeline skill — local selection + n8n cloud execution"
 requires-python = ">=3.11"
 dependencies = [
   "requests>=2.31,<3",
-  "pounding-ozon-cloud>=0.2.0",
   "sentry-sdk>=2.8,<3",
 ]
 
