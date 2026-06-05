@@ -1,6 +1,6 @@
 [project]
 name = "pounding-ozon-hybrid"
-version = "0.1.0"
+version = "0.1.1"
 description = "1688→Ozon cloud pipeline skill — local selection + n8n cloud execution"
 requires-python = ">=3.11"
 dependencies = [
