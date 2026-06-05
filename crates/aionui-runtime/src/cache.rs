@@ -118,7 +118,7 @@ mod tests {
             .collect();
         assert_eq!(
             tail,
-            vec!["node".to_string(), "runtime".to_string(), "aionui".to_string()]
+            vec!["node".to_string(), "runtime".to_string(), "pounding".to_string()]
         );
     }
 
@@ -137,7 +137,7 @@ mod tests {
                 "acp".to_string(),
                 "managed-tools".to_string(),
                 "runtime".to_string(),
-                "aionui".to_string()
+                "pounding".to_string()
             ]
         );
     }
