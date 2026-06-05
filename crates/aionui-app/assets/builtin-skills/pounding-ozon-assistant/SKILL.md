@@ -79,9 +79,9 @@ for item in items[:3]:
 
 ## 生图缓存 + 单张重生
 
-`generate_product_images(token)` 生成的 10 张图 URL 保存在 Supabase `gateway_tasks.result_json.images` 中，按 `task_id` 查询即可获取。
+`generate_product_images(token)` 生成的 10 张图 URL 保存在云端任务记录（按 `task_id` 查询），用户随时可查看。
 
-**用户想看之前的图**：查 `gateway_tasks` → `result_json.images` → 展示给用户。
+**用户想看之前的图**：查任务结果 → `result_json.images` → 展示给用户。
 
 **用户想重新生成某一张**（如 `main_image` 不好看）：
 ```python
@@ -94,8 +94,50 @@ resp = requests.post(f"{CLOUD_API_BASE}/webhook/mx-bp2-377417", json=body)
 ```
 
 - ✅ 单张重生不影响其他已生成的图
-- ✅ 重生后更新 `gateway_tasks` 对应 slot 的 URL
+- ✅ 重生后更新云端任务记录对应 slot 的 URL
 - ✅ 管线任务提交后，10 张图全部生成完毕才标记完成，过程中可随时查进度
+
+## 定价计算（云端管线自动完成）
+
+定价由云端管线计算，**计算前必须先获取用户店铺的实际物流渠道**——不同用户用不同物流商（RETS/OYX/CEL/...），用错了白算。
+
+**完整流程**：
+```python
+# 1. 先获取用户 Ozon 店铺的仓库和物流方式
+ozon_client_id = "用户OzonClientID"
+ozon_api_key = "用户OzonApiKey"
+delivery_methods = requests.post(
+    "https://api-seller.ozon.ru/v2/delivery-method/list",
+    headers={"Client-Id": ozon_client_id, "Api-Key": ozon_api_key},
+    json={"filter": {"status": "ACTIVE"}}
+).json()
+
+# 2. 从物流方式中提取 provider（如 RETS、OYX、CEL）
+provider = delivery_methods["result"][0]["warehouse_name"]  # 或从 provider 字段提取
+
+# 3. 用正确的 provider 计算价格
+resp = requests.post(f"{base}/webhook/pricing-v1", json={
+    "cost_cny": 1688采购价,
+    "weight_g": 350,
+    "depth_mm": 70, "width_mm": 70, "height_mm": 240,
+    "provider": provider,      # ← 用户实际的物流商
+    "service": "Express",      # 服务等级
+    "margin_rate": 0.25,
+})
+```
+
+**单独请求定价**（不上架，只算价）：POST `/pricing-v1`
+
+用户可自定义参数通过请求传入：
+```json
+{
+  "cost_cny": 50, "weight_g": 350,
+  "provider": "RETS", "service": "Express",
+  "margin_rate": 0.25, "commission_rate": 0.10, "fx_buffer": 0.05
+}
+```
+
+**不传 provider → 返回错误提示**：必须提供物流商，不能默认。
 
 ## 项目标识（project_id / subproject_id）
 
@@ -123,10 +165,14 @@ envelope = build_envelope(
 | 1 | 检查配置 | `check_config()` | 全部就绪→（静默）；有缺失→按 AGENTS.md「首次配置引导」逐个问答填 `.env` |
 | 2 | 获取 1688 详情 | API `prod_detail` + CDP `probe_1688_page()` | "正在获取 1688 商品详情..." → "已获取详情（{N}张图，{M}个SKU）" |
 | 3 | 类目匹配 | **本地主导**：先 `property/lookup` → 云端查缓存；没命中 → 本地 `search_categories_locally()` → Ozon API 搜索；用户选 → `property/confirm` → 云端保存。**无论命中与否，数据都由本地传给云端。越用越快。** | 命中："已匹配类目：{类目名}（置信度 {X}%）"；未命中：列候选让用户选 → "已确认类目：{类目名}，已记录到云端 ✅" |
-| 4 | 构建信封 + 提交 | `build_envelope()` → POST `pl-v3-304140` | "已提交任务 {task_id}，云端处理中（制图+属性+上架）⏳ 通常 3-9 分钟..." |
-| 5 | 汇报结果 | 查 `gateway_tasks` | 按状态映射表汇报（见下方） |
+| 4 | 构建信封 + 提交 | `build_envelope()` → `submit_task(envelope)` | "已提交任务 {task_id}，云端后台处理中 ⏳ 通常 3-9 分钟完成，我会自动查进度" |
+| 5 | 轮询进度 | 每 30 秒查一次 `gateway_tasks`，直到 terminal=true | 进度更新 → 最终汇报 |
 
-> **Step 4 提交后，云端 n8n 管线自动完成**：类目解析 → 图片上传 → 属性解析 → 10 张 AI 制图 → 构建 Ozon 负载 → 质量检查 → Ozon 上传 → 写入结果。本地只需提交一次信封，等待结果即可。
+> **重要**：`submit_envelope()` 走 `v2-ingest-292201` — 只用于类目匹配（property/lookup+confirm）。**上架提交必须用 `submit_task()` 走 `pl-v3-304140` 管线。**
+> **异步处理**：管线提交后立即返回（~3秒），Agent 通过轮询 `gateway_tasks` 查进度，不用傻等。
+> **Ozon API 版本**：类目接口用 `/v1/description-category/tree`（不是 v2）。用 `search_categories_locally()` 封装好的函数即可。需要 `pip install pounding-ozon-cloud>=0.2.0`。
+
+> **Step 4 提交后如果返回 `_next_action: "category_matching_required"`**：说明类目还没匹配。自动执行类目匹配（property/lookup → search_categories_locally → 用户选 → property/confirm），匹配完重新提交信封。
 
 ### Worker B：Ozon 跟卖（6 步）
 
