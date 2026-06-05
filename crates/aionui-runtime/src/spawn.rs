@@ -44,6 +44,25 @@ pub struct Builder {
     mode: Mode,
 }
 
+/// Force-kill a spawned child and wait for the direct child handle to exit.
+///
+/// On Unix, children spawned through [`Builder::new`] are process-group
+/// leaders, so this targets that group to clean up descendants as well. On
+/// Windows, this uses `taskkill /T` to terminate the process tree.
+pub async fn kill_process_tree(child: &mut Child) -> io::Result<()> {
+    let Some(pid) = child.id() else {
+        return child.kill().await;
+    };
+
+    #[cfg(unix)]
+    force_kill_process_tree(pid, Some(pid))?;
+    #[cfg(windows)]
+    kill_windows_process_tree(pid).await?;
+    #[cfg(not(any(unix, windows)))]
+    child.kill().await?;
+    child.wait().await.map(|_| ())
+}
+
 impl std::fmt::Debug for Builder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Builder")
@@ -73,6 +92,7 @@ impl Builder {
     pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
         let mut inner = Command::new(resolve_program(program.as_ref()));
         inner.kill_on_drop(true);
+        configure_platform_spawn(&mut inner);
         strip_pollution(&mut inner);
         Self {
             inner,
@@ -96,6 +116,7 @@ impl Builder {
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
             .env("TERM", "dumb");
+        configure_platform_spawn(&mut inner);
         strip_pollution(&mut inner);
         Self {
             inner,
@@ -179,6 +200,69 @@ fn strip_pollution(cmd: &mut Command) {
         .env_remove("CLAUDECODE");
 }
 
+#[cfg(unix)]
+fn configure_platform_spawn(cmd: &mut Command) {
+    // Start each child in its own process group so explicit teardown can
+    // kill the whole subtree (CLI + MCP descendants) in one shot.
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_platform_spawn(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn force_kill_process_tree(pid: u32, process_group_id: Option<u32>) -> io::Result<()> {
+    if let Some(group_id) = process_group_id.filter(|group_id| *group_id > 1) {
+        let result = unsafe { libc::kill(-(group_id as i32), libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
+        }
+
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return kill_unix_target(pid as i32);
+        }
+        return Err(err);
+    }
+
+    kill_unix_target(pid as i32)
+}
+
+#[cfg(unix)]
+fn kill_unix_target(target: i32) -> io::Result<()> {
+    let result = unsafe { libc::kill(target, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
+#[cfg(windows)]
+async fn kill_windows_process_tree(pid: u32) -> io::Result<()> {
+    let pid_arg = pid.to_string();
+    let mut cmd = Builder::clean_cli("taskkill");
+    cmd.args(["/F", "/T", "/PID", pid_arg.as_str()]);
+    let output = cmd.output().await?;
+    if output.status.success() || output.status.code() == Some(128) {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "taskkill failed for pid {pid} (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    ))
+}
+
 /// Resolve `program` through `resolve_command_path` so callers don't have
 /// to. If the input already contains a path separator (relative or
 /// absolute) we leave it alone — only bare command names go through
@@ -199,6 +283,7 @@ fn resolve_program(program: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn clean_cli_captures_stdout_and_strips_env_pollution() {
@@ -313,5 +398,69 @@ mod tests {
         );
         assert!(preview.contains(r#""--flag""#), "arg --flag missing: {preview}");
         assert!(preview.contains(r#""with space""#), "arg with space missing: {preview}");
+    }
+
+    #[cfg(unix)]
+    fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !is_pid_alive(pid) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[cfg(unix)]
+    fn is_pid_alive(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        if result == 0 {
+            return true;
+        }
+        !matches!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_uses_cached_group_when_leader_has_exited() {
+        let marker = tempfile::NamedTempFile::new().unwrap();
+        let marker_path = marker.path().to_string_lossy().into_owned();
+
+        let mut builder = Builder::new("sh");
+        builder
+            .args([
+                "-c",
+                "sleep 60 & child=$!; printf '%s' \"$child\" > \"$1\"; exit 0",
+                "runtime-cached-group-cleanup",
+                marker_path.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut child = builder.spawn().unwrap();
+        let leader_pid = child.id().expect("leader pid should exist");
+        let status = child.wait().await.unwrap();
+        assert!(status.success(), "leader should exit before cleanup test");
+
+        let child_pid: u32 = std::fs::read_to_string(marker.path())
+            .expect("background child pid marker should exist")
+            .trim()
+            .parse()
+            .expect("background child pid should be numeric");
+
+        assert!(
+            is_pid_alive(child_pid),
+            "background child pid={child_pid} should still be alive"
+        );
+
+        force_kill_process_tree(leader_pid, Some(leader_pid)).expect("cached group kill should succeed");
+
+        assert!(
+            wait_for_pid_exit(child_pid, Duration::from_secs(5)),
+            "background child pid={child_pid} should exit after cached group kill",
+        );
     }
 }

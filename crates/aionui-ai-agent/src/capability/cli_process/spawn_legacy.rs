@@ -7,7 +7,9 @@ use tokio::process::Child;
 use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{debug, error, info, trace, warn};
 
-use super::{CliAgentProcess, EVENT_CHANNEL_CAPACITY, STDERR_BUFFER_MAX};
+use super::{
+    CliAgentProcess, EVENT_CHANNEL_CAPACITY, STDERR_BUFFER_MAX, prepare_command_cwd, tracked_process_group_id,
+};
 
 impl CliAgentProcess {
     /// Spawn a new CLI subprocess in **legacy mode**.
@@ -28,7 +30,7 @@ impl CliAgentProcess {
             .stderr(std::process::Stdio::piped());
 
         if let Some(ref cwd) = config.cwd {
-            cmd.current_dir(cwd);
+            cmd.current_dir(prepare_command_cwd(cwd)?);
         }
 
         let preview = cmd.to_string();
@@ -130,6 +132,7 @@ impl CliAgentProcess {
             stdin: Mutex::new(Some(stdin)),
             stdout: Mutex::new(None), // stdout consumed by reader task
             pid,
+            process_group_id: tracked_process_group_id(pid),
             event_tx,
             exit_rx,
             initial_rx: std::sync::Mutex::new(Some(initial_rx)),

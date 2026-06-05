@@ -145,7 +145,15 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             .unwrap_or_else(|| std::path::PathBuf::from("aionui-backend")),
     );
 
-    let agent_service = AgentService::new(services.agent_registry.clone(), services.data_dir.clone());
+    let pool = services.database.pool().clone();
+    let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool));
+    let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
+    let agent_service = AgentService::new(
+        services.agent_registry.clone(),
+        provider_repo,
+        encryption_key,
+        services.data_dir.clone(),
+    );
 
     let states = ModuleStates {
         system: build_system_state(services),
@@ -247,6 +255,9 @@ pub fn build_conversation_state(
         agent_metadata_repo,
         acp_session_repo,
     );
+    conversation_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conversation_service.with_delete_hook(hook);
     }
@@ -388,6 +399,9 @@ pub async fn build_channel_state(
         agent_metadata_repo,
         acp_session_repo,
     ));
+    conversation_svc.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conversation_svc.with_delete_hook(hook);
     }
@@ -466,6 +480,9 @@ pub fn build_team_state(
         agent_metadata_repo,
         acp_session_repo,
     );
+    conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conv_service.with_delete_hook(hook);
     }
@@ -508,6 +525,9 @@ pub fn build_cron_state(services: &AppServices) -> CronRouterState {
         agent_metadata_repo,
         acp_session_repo,
     );
+    conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
 
     let busy_guard = Arc::new(aionui_cron::busy_guard::CronBusyGuard::new());
     let executor = Arc::new(aionui_cron::executor::JobExecutor::new(

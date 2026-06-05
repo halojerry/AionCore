@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.1.18](https://github.com/iOfficeAI/AionCore/compare/v0.1.17...v0.1.18) (2026-06-01)
+
+
+### Bug Fixes
+
+* **agent:** classify Bedrock 'model identifier is invalid' as model-not-found (AIO-12) ([#377](https://github.com/iOfficeAI/AionCore/issues/377)) ([07dc3ac](https://github.com/iOfficeAI/AionCore/commit/07dc3ac8b2fae8962e8a7e31a223875669e11ba1))
+* **agent:** preserve process-group cleanup after leader exit ([#369](https://github.com/iOfficeAI/AionCore/issues/369)) ([73d4fb4](https://github.com/iOfficeAI/AionCore/commit/73d4fb4f4e4647352ba3dcac07e4a6b277e46c7b))
+* **agent:** tighten send_error classifier (AIO-87, AIO-89, AIO-90) ([#375](https://github.com/iOfficeAI/AionCore/issues/375)) ([d9a2f76](https://github.com/iOfficeAI/AionCore/commit/d9a2f763d14ec642c09f3aef5a2d8b716f4b0648))
+* **aionui-ai-agent:** strip HTML body from sanitized error detail (AIO-13) ([#380](https://github.com/iOfficeAI/AionCore/issues/380)) ([9fc5d8c](https://github.com/iOfficeAI/AionCore/commit/9fc5d8c088c644f771457bf50658ac7c6e98c1dc))
+* recover deleted conversation workspaces ([#379](https://github.com/iOfficeAI/AionCore/issues/379)) ([759afb8](https://github.com/iOfficeAI/AionCore/commit/759afb88ed404a055abd686c427e5805161b812b))
+
+## [0.1.17](https://github.com/iOfficeAI/AionCore/compare/v0.1.16...v0.1.17) (2026-05-30)
+
+
+### Bug Fixes
+
+* **agent:** make codex sandbox sync non-fatal ([#370](https://github.com/iOfficeAI/AionCore/issues/370)) ([8916faa](https://github.com/iOfficeAI/AionCore/commit/8916faa9bc69ff1959aef2db83febb7c03f1441b))
+
+## [0.1.16](https://github.com/iOfficeAI/AionCore/compare/v0.1.15...v0.1.16) (2026-05-29)
+
+
+### Features
+
+* **agent:** classify structured agent send errors ([#356](https://github.com/iOfficeAI/AionCore/issues/356)) ([f52e8cd](https://github.com/iOfficeAI/AionCore/commit/f52e8cd93edb3e5edbee450ca41bef49e4cc9c48))
+* **mcp:** support session scoped MCP injection ([#363](https://github.com/iOfficeAI/AionCore/issues/363)) ([2974f47](https://github.com/iOfficeAI/AionCore/commit/2974f47346056ef5483fe3e9c39d58d63f714ae7))
+
+
+### Bug Fixes
+
+* channel reply stream cold start ([#366](https://github.com/iOfficeAI/AionCore/issues/366)) ([b848ddf](https://github.com/iOfficeAI/AionCore/commit/b848ddff8fe5a973c67ee3c67187c6248d8c7455))
+* **mcp:** clean up stdio test process trees ([#368](https://github.com/iOfficeAI/AionCore/issues/368)) ([3481956](https://github.com/iOfficeAI/AionCore/commit/3481956d4c7e2148302d9f31ecef5a88357c38e8))
+
+## [0.1.15](https://github.com/iOfficeAI/AionCore/compare/v0.1.14...v0.1.15) (2026-05-28)
+
+
+### Bug Fixes
+
+* **agent:** add provider health check probe ([#358](https://github.com/iOfficeAI/AionCore/issues/358)) ([d3a8702](https://github.com/iOfficeAI/AionCore/commit/d3a8702c2c98a78085a24860bb20a15b1682dfda))
+
 ## [0.1.14](https://github.com/iOfficeAI/AionCore/compare/v0.1.13...v0.1.14) (2026-05-27)
 
 

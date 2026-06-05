@@ -7,9 +7,11 @@ use crate::factory::acp_assembler::AcpSessionParams;
 use crate::manager::acp::{
     AcpSession, AcpSessionEvent, ModelIdentityReminderHook, PermissionRouter, SessionNewPreludeHook,
 };
+use crate::manager::process_registry::{register_session_process, unregister_agent_process};
 use crate::protocol::acp::AcpProtocol;
 use crate::protocol::error::{AcpError, CloseReason};
 use crate::protocol::events::{AgentStreamEvent, FinishEventData};
+use crate::protocol::send_error::AgentSendError;
 use crate::registry::CatalogSender;
 use crate::shared_kernel::{ModeId, ModelId, SessionId as DomainSessionId};
 use crate::types::SendMessageData;
@@ -44,6 +46,7 @@ pub(super) fn user_facing_message(err: &AppError) -> String {
     full.split_once(": ").map(|(_, rest)| rest.to_owned()).unwrap_or(full)
 }
 
+use super::codex_sandbox;
 use super::mode_normalize::normalize_requested_mode;
 
 fn normalize_requested_model_id_for_backend(backend: Option<&str>, model_id: &str) -> String {
@@ -89,6 +92,26 @@ pub(super) fn exit_status_parts(exit: Option<std::process::ExitStatus>) -> (Opti
         }
     }
     (status.code(), None)
+}
+
+fn initial_mode_from_params(params: &AcpSessionParams) -> Option<ModeId> {
+    // Prefer the last-persisted mode; for brand-new conversations
+    // fall back to `AcpBuildExtra::session_mode` so the first turn
+    // still honours the caller's choice.
+    params
+        .session_snapshot
+        .as_ref()
+        .and_then(|s| s.current_mode_id.as_ref())
+        .map(|m| normalize_requested_mode(&params.metadata, m.as_str()))
+        .or_else(|| {
+            params
+                .config
+                .session_mode
+                .as_ref()
+                .map(|m| normalize_requested_mode(&params.metadata, m))
+        })
+        .filter(|m| !m.is_empty())
+        .map(ModeId::new)
 }
 
 fn confirm_option_id(data: &Value) -> Option<String> {
@@ -205,9 +228,25 @@ impl AcpAgentManager {
         ),
         AppError,
     > {
-        let process = CliAgentProcess::spawn_for_sdk(params.command_spec.clone(), &params.data_dir).await?;
+        let initial_mode = initial_mode_from_params(&params);
+        codex_sandbox::sync_for_agent(&params.metadata, initial_mode.as_ref().map(|m| m.as_str())).await;
+
+        let process = Arc::new(CliAgentProcess::spawn_for_sdk(params.command_spec.clone(), &params.data_dir).await?);
+        register_session_process(
+            &params.data_dir,
+            Arc::clone(&process),
+            params.conversation_id.clone(),
+            AgentType::Acp,
+            params.metadata.backend.clone(),
+            Some(format!(
+                "{} {}",
+                params.command_spec.command.display(),
+                params.command_spec.args.join(" ")
+            )),
+        )?;
         let (stdin, stdout) = process.take_stdio().await.ok_or_else(|| {
             error!(conversation_id = %params.conversation_id, "Failed to take stdio from CLI process");
+            let _ = unregister_agent_process(&params.data_dir, process.pid());
             AppError::Internal("Failed to take stdio from CLI process".into())
         })?;
 
@@ -238,6 +277,7 @@ impl AcpAgentManager {
                     stderr = %stderr,
                     "Agent process exited before ACP handshake completed"
                 );
+                let _ = unregister_agent_process(&params.data_dir, process.pid());
                 return Err(AppError::from(AcpError::StartupCrash { exit_code, signal, stderr }));
             }
             res = &mut connect_fut => res.map_err(|e| {
@@ -246,6 +286,7 @@ impl AcpAgentManager {
                     error = %ErrorChain(&e),
                     "Failed to establish ACP protocol connection"
                 );
+                let _ = unregister_agent_process(&params.data_dir, process.pid());
                 AppError::from(e)
             })?,
         };
@@ -253,22 +294,7 @@ impl AcpAgentManager {
 
         let snapshot = params.session_snapshot.as_ref();
 
-        // Prefer the last-persisted mode; for brand-new conversations
-        // fall back to `AcpBuildExtra::session_mode` so the first turn
-        // still honours the caller's choice.
-        let (initial_mode, initial_model, initial_config) = (
-            snapshot
-                .and_then(|s| s.current_mode_id.as_ref())
-                .map(|m| normalize_requested_mode(&params.metadata, m.as_str()))
-                .or_else(|| {
-                    params
-                        .config
-                        .session_mode
-                        .as_ref()
-                        .map(|m| normalize_requested_mode(&params.metadata, m))
-                })
-                .filter(|m| !m.is_empty())
-                .map(ModeId::new),
+        let (initial_model, initial_config) = (
             snapshot
                 .and_then(|s| {
                     normalize_persisted_model_id_for_backend(
@@ -303,7 +329,7 @@ impl AcpAgentManager {
             params,
             session: RwLock::new(session),
             runtime,
-            process: Arc::new(process),
+            process,
             protocol,
             session_lock: Mutex::new(()),
             permission_router,
@@ -392,6 +418,7 @@ impl AcpAgentManager {
         if normalized_mode.is_empty() {
             return Ok(());
         }
+        codex_sandbox::sync_for_agent(&self.params.metadata, Some(&normalized_mode)).await;
         let session_id = self.session.read().await.session_id().map(ToOwned::to_owned);
 
         // Write desired — the aggregate root's legitimate intent write-point.
@@ -614,17 +641,17 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
     }
 
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id, msg_id = %data.msg_id))]
-    async fn send_message(&self, data: SendMessageData) -> Result<(), AppError> {
+    async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
 
-        let result = self.ensure_session_and_send(&data).await;
-        match &result {
+        match self.ensure_session_and_send(&data).await {
             Ok(()) => {
                 info!("ACP send_message completed");
                 // ACP pattern: Finish with session_id = None (default).
                 // If ACP later wants to include the session_id in Finish,
                 // read it from `self.session.read().await.session_id()`.
                 self.runtime.emit_finish(None);
+                Ok(())
             }
             Err(err) => {
                 // Build a CloseReason that captures whatever context we still
@@ -637,22 +664,23 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
                 //      stderr-augmentation heuristic for the SDK's "default
                 //      Internal error" shape; otherwise the user-facing form
                 //      of the AppError is the best we can do.
-                let close_reason = self.build_close_reason_from_error(err).await;
+                let close_reason = self.build_close_reason_from_error(&err).await;
 
                 // Operator log: full error chain + the (raw, pre-redaction)
                 // stderr peek so on-call can correlate. The redacted summary
                 // is what reaches the UI.
                 let summary = close_reason.user_facing_message();
-                warn!(error = %ErrorChain(err), close_reason_summary = %summary, "ACP send_message failed");
+                error!(error = %ErrorChain(&err), close_reason_summary = %summary, "ACP send_message failed");
 
                 {
                     let mut session = self.session.write().await;
                     session.record_close_reason(Some(close_reason));
                 }
-                self.runtime.emit_error(summary);
+                let send_error = AgentSendError::from_app_error(err);
+                self.runtime.emit_error_data(send_error.stream_error().clone());
+                Err(send_error)
             }
         }
-        result
     }
 
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id))]

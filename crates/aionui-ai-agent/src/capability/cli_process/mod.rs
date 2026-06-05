@@ -1,3 +1,5 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
@@ -6,7 +8,7 @@ use aionui_common::AppError;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{Mutex, broadcast, watch};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 mod spawn_legacy;
 mod spawn_sdk;
@@ -23,6 +25,49 @@ pub(super) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Maximum stderr ring-buffer size in bytes.
 pub(super) const STDERR_BUFFER_MAX: usize = 8192;
+
+pub(super) fn prepare_command_cwd(cwd: &str) -> Result<PathBuf, AppError> {
+    let trimmed = cwd.trim_end();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("Workspace directory is empty".into()));
+    }
+
+    if trimmed != cwd {
+        warn!(
+            original_cwd = %cwd,
+            normalized_cwd = %trimmed,
+            "Normalized CLI process cwd by trimming trailing whitespace"
+        );
+    }
+
+    let path = PathBuf::from(trimmed);
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => Ok(path),
+        Ok(_) => Err(AppError::BadRequest(format!(
+            "Workspace path is not a directory: {}",
+            path.display()
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(&path).map_err(|create_err| {
+                AppError::BadRequest(format!(
+                    "Workspace directory no longer exists and could not be recreated: {}: {}",
+                    path.display(),
+                    create_err
+                ))
+            })?;
+            info!(
+                cwd = %path.display(),
+                "Recreated missing workspace directory before spawning CLI process"
+            );
+            Ok(path)
+        }
+        Err(e) => Err(AppError::BadRequest(format!(
+            "Workspace directory is not accessible: {}: {}",
+            path.display(),
+            e
+        ))),
+    }
+}
 
 /// Manages a CLI subprocess with optional JSON-over-stdin/stdout communication.
 ///
@@ -43,6 +88,9 @@ pub struct CliAgentProcess {
     stdout: Mutex<Option<ChildStdout>>,
     /// OS-level process ID.
     pid: u32,
+    /// Process group ID captured at spawn time so teardown can still target
+    /// the whole tree after the direct child exits.
+    process_group_id: Option<u32>,
     /// Broadcast sender for parsed stdout events (legacy mode only).
     #[allow(dead_code)] // Part of the complete CliProcess API; used in legacy mode via subscribe()
     event_tx: broadcast::Sender<serde_json::Value>,
@@ -156,7 +204,21 @@ impl CliAgentProcess {
 
         // Force kill
         warn!(pid = self.pid, "Grace period expired, sending SIGKILL");
-        force_kill(self.pid)
+        force_kill(self.pid, self.process_group_id)?;
+
+        // Wait for the exit monitor to observe process termination so callers
+        // do not race a still-live child after force-kill returns.
+        let mut rx = self.exit_rx.clone();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            if rx.borrow().is_some() {
+                return;
+            }
+            let _ = rx.changed().await;
+        })
+        .await
+        .map_err(|_| AppError::Internal(format!("Process {} did not exit after force_kill", self.pid)))?;
+
+        Ok(())
     }
 
     /// Check whether the subprocess is still running.
@@ -175,6 +237,11 @@ impl CliAgentProcess {
     #[allow(dead_code)] // Complete CliProcess lifecycle API
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// Get the cached process group ID captured when the child was spawned.
+    pub fn process_group_id(&self) -> Option<u32> {
+        self.process_group_id
     }
 
     /// Wait for the process to exit (blocks until exit or cancellation).
@@ -228,6 +295,16 @@ impl CliAgentProcess {
         tail.reverse();
         tail.join("\n")
     }
+}
+
+#[cfg(unix)]
+pub(super) fn tracked_process_group_id(pid: u32) -> Option<u32> {
+    Some(pid)
+}
+
+#[cfg(not(unix))]
+pub(super) fn tracked_process_group_id(_pid: u32) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
@@ -314,6 +391,51 @@ pub(super) mod tests {
             .expect("Timed out")
             .expect("Channel closed");
         assert_eq!(event["val"], "hello_env");
+    }
+
+    #[tokio::test]
+    async fn spawn_recreates_missing_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_cwd = dir.path().join("missing").join("workspace");
+        assert!(!missing_cwd.exists());
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo \"{\\\"cwd\\\":\\\"$PWD\\\"}\"".into()],
+            env: vec![],
+            cwd: Some(missing_cwd.to_string_lossy().into_owned()),
+        };
+        let proc = CliAgentProcess::spawn(config).await.unwrap();
+        let mut rx = proc.subscribe();
+
+        let event = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Timed out")
+            .expect("Channel closed");
+        assert!(missing_cwd.is_dir());
+        assert_eq!(
+            fs::canonicalize(event["cwd"].as_str().unwrap()).unwrap(),
+            fs::canonicalize(&missing_cwd).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_for_sdk_recreates_missing_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let missing_cwd = dir.path().join("missing-sdk").join("workspace");
+        assert!(!missing_cwd.exists());
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 10".into()],
+            env: vec![],
+            cwd: Some(missing_cwd.to_string_lossy().into_owned()),
+        };
+        let proc = CliAgentProcess::spawn_for_sdk(config, data_dir.path()).await.unwrap();
+
+        assert!(missing_cwd.is_dir());
+        proc.kill(Duration::from_millis(100)).await.unwrap();
     }
 
     #[tokio::test]

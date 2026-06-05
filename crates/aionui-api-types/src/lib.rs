@@ -3,6 +3,7 @@ mod acp;
 mod acp_prompt_hook;
 mod agent_build_extra;
 mod agent_discovery;
+mod agent_error;
 mod assistant;
 mod auth;
 mod channel;
@@ -35,9 +36,13 @@ pub use acp::{
 pub use acp_prompt_hook::AcpPromptHookWarningPayload;
 pub use agent_build_extra::{
     AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra,
-    SlashCommandItem,
+    SessionMcpServer, SessionMcpTransport, SlashCommandItem,
 };
 pub use agent_discovery::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy};
+pub use agent_error::{
+    AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
+    AgentStreamErrorData,
+};
 pub use assistant::{
     AssistantResponse, AssistantSource, CreateAssistantRequest, ImportAssistantsRequest, ImportAssistantsResult,
     ImportError, SetAssistantStateRequest, UpdateAssistantRequest,
@@ -57,10 +62,11 @@ pub use confirmation::{ApprovalCheckQuery, ApprovalCheckResponse, ConfirmRequest
 pub use connection_test::TestBedrockConnectionRequest;
 pub use conversation::{
     ActiveCountResponse, CloneConversationRequest, ConversationArtifactKind, ConversationArtifactListResponse,
-    ConversationArtifactResponse, ConversationArtifactStatus, ConversationListResponse, ConversationResponse,
-    CreateConversationRequest, ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse,
-    MessageSearchItem, MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
-    UpdateConversationArtifactRequest, UpdateConversationRequest,
+    ConversationArtifactResponse, ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus,
+    ConversationMcpStatusKind, ConversationResponse, CreateConversationRequest, ListConversationsQuery,
+    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem, MessageSearchResponse,
+    SearchMessagesQuery, SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest,
+    UpdateConversationRequest,
 };
 pub use cron::{
     CreateCronJobRequest, CronAgentConfigDto, CronJobExecutedEvent, CronJobMetadataDto, CronJobPayloadDto,
@@ -86,11 +92,10 @@ pub use file::{
 };
 pub use lifecycle::{GitHubReleaseAsset, SystemInfoResponse, UpdateCheckRequest, UpdateCheckResult, UpdateReleaseInfo};
 pub use mcp::{
-    BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerResponse, ImportMcpServerRequest,
-    McpAgentSyncResult, McpAuthMethod, McpConnectionTestResult, McpServerResponse, McpSyncResult, McpToolResponse,
-    McpTransport, OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
-    OAuthStatusResponse, RemoveFromAgentsRequest, SyncToAgentsRequest, TestMcpConnectionRequest,
-    UpdateMcpServerRequest,
+    BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerEntry, DetectedMcpServerResponse,
+    ImportMcpServerRequest, McpAuthMethod, McpConnectionTestResult, McpServerResponse, McpToolResponse, McpTransport,
+    OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse,
+    TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
 pub use office::{
     CellCoord, CellRange, ConversionResultDto, ConversionTarget, DetectStarOfficeRequest, DocumentConversionRequest,
@@ -102,8 +107,8 @@ pub use office::{
 pub use provider::{
     BedrockAuthMethod, BedrockConfig, CreateProviderRequest, DetectProtocolRequest, DetectionSuggestion,
     FetchModelsAnonymousRequest, FetchModelsRequest, FetchModelsResponse, HealthStatus, KeyTestResult, ModelCapability,
-    ModelHealthStatus, ModelInfo, ModelType, MultiKeyResult, ProtocolDetectionResponse, ProviderResponse,
-    SuggestionType, UpdateProviderRequest,
+    ModelHealthStatus, ModelInfo, ModelType, MultiKeyResult, ProtocolDetectionResponse, ProviderHealthCheckErrorKind,
+    ProviderHealthCheckRequest, ProviderHealthCheckResponse, ProviderResponse, SuggestionType, UpdateProviderRequest,
 };
 pub use remote_agent::{
     CreateRemoteAgentRequest, HandshakeResponse, RemoteAgentListItem, RemoteAgentResponse,
@@ -134,3 +139,19 @@ pub use team::{
 };
 pub use team_mcp::{GuideMcpConfig, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig};
 pub use websocket::WebSocketMessage;
+
+#[cfg(test)]
+mod public_contract_tests {
+    use super::{AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget};
+
+    #[test]
+    fn error_resolution_types_are_exported_from_crate_root() {
+        let resolution = AgentErrorResolution::new(
+            AgentErrorResolutionKind::Retry,
+            Some(AgentErrorResolutionTarget::Feedback),
+        );
+
+        assert_eq!(resolution.kind, AgentErrorResolutionKind::Retry);
+        assert_eq!(resolution.target, Some(AgentErrorResolutionTarget::Feedback));
+    }
+}
