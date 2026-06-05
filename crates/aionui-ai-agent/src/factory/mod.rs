@@ -11,12 +11,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aionui_api_types::GuideMcpConfig;
-use aionui_common::{AgentType, AppError};
+use aionui_common::AgentType;
 use aionui_db::{IMcpServerRepository, IProviderRepository, IRemoteAgentRepository};
+use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
 
 use crate::agent_task::AgentInstance;
 use crate::capability::skill_manager::AcpSkillManager;
+use crate::error::AgentError;
 use crate::factory::context::FactoryContext;
 use crate::persistence::AcpSessionSyncService;
 use crate::registry::AgentRegistry;
@@ -32,6 +34,7 @@ pub struct AgentFactoryDeps {
     pub agent_registry: Arc<AgentRegistry>,
     pub acp_agent_service: Arc<AcpSessionSyncService>,
     pub data_dir: PathBuf,
+    pub broadcaster: Arc<dyn EventBroadcaster>,
     /// Absolute path to the backend binary, reused as the `command` of the
     /// stdio MCP bridge injected into ACP `session/new` for team sessions.
     /// Captured once at app startup (`std::env::current_exe()`).
@@ -62,13 +65,12 @@ pub fn build_agent_factory(deps: AgentFactoryDeps) -> AgentFactory {
     })
 }
 
-async fn build_agent(deps: Arc<AgentFactoryDeps>, options: BuildTaskOptions) -> Result<AgentInstance, AppError> {
+async fn build_agent(deps: Arc<AgentFactoryDeps>, options: BuildTaskOptions) -> Result<AgentInstance, AgentError> {
     let ctx = FactoryContext::resolve(&deps, &options).await?;
     match options.agent_type {
-        AgentType::Gemini => Err(AppError::ConversationArchived(
+        AgentType::Gemini => Err(AgentError::conversation_archived(
             "This conversation was created with the legacy Gemini runtime, which has been \
-             removed. Please start a new conversation with the Gemini ACP backend to continue."
-                .into(),
+             removed. Please start a new conversation with the Gemini ACP backend to continue.",
         )),
         AgentType::Acp => acp::build(deps, options, ctx).await,
         AgentType::OpenclawGateway => openclaw::build(deps, options, ctx).await,

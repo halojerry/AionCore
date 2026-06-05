@@ -1,4 +1,4 @@
-use aionui_common::AppError;
+use aionui_conversation::ConversationError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TeamError {
@@ -29,6 +29,15 @@ pub enum TeamError {
     #[error("Agent name already taken: {0}")]
     DuplicateAgentName(String),
 
+    #[error("Workspace path is unavailable: {0}")]
+    WorkspacePathUnavailable(String),
+
+    #[error("Workspace path is unavailable during execution: {0}")]
+    WorkspacePathRuntimeUnavailable(String),
+
+    #[error(transparent)]
+    Conversation(#[from] ConversationError),
+
     #[error("{0}")]
     Database(#[from] aionui_db::DbError),
 
@@ -36,20 +45,12 @@ pub enum TeamError {
     Json(#[from] serde_json::Error),
 }
 
-impl From<TeamError> for AppError {
-    fn from(err: TeamError) -> Self {
-        match err {
-            TeamError::TeamNotFound(msg) => AppError::NotFound(msg),
-            TeamError::AgentNotFound(msg) => AppError::NotFound(msg),
-            TeamError::TaskNotFound(msg) => AppError::NotFound(msg),
-            TeamError::InvalidRequest(msg) => AppError::BadRequest(msg),
-            TeamError::LeaderOnly(msg) => AppError::Forbidden(msg),
-            TeamError::SessionNotFound(msg) => AppError::NotFound(msg),
-            TeamError::BlockedTaskNotFound(msg) => AppError::BadRequest(msg),
-            TeamError::BackendNotAllowed(msg) => AppError::BadRequest(msg),
-            TeamError::DuplicateAgentName(msg) => AppError::BadRequest(format!("Agent name already taken: {msg}")),
-            TeamError::Database(db_err) => AppError::from(db_err),
-            TeamError::Json(e) => AppError::Internal(format!("JSON error: {e}")),
+impl TeamError {
+    pub(crate) fn from_conversation_create(error: ConversationError) -> Self {
+        match error {
+            ConversationError::WorkspacePathUnavailable { path } => Self::WorkspacePathUnavailable(path),
+            ConversationError::WorkspacePathRuntimeUnavailable { path } => Self::WorkspacePathRuntimeUnavailable(path),
+            other => Self::InvalidRequest(format!("failed to create conversation: {other}")),
         }
     }
 }
@@ -59,64 +60,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn team_not_found_maps_to_app_not_found() {
-        let err: AppError = TeamError::TeamNotFound("t1".into()).into();
-        assert!(matches!(err, AppError::NotFound(msg) if msg == "t1"));
-    }
-
-    #[test]
-    fn agent_not_found_maps_to_app_not_found() {
-        let err: AppError = TeamError::AgentNotFound("slot-1".into()).into();
-        assert!(matches!(err, AppError::NotFound(_)));
-    }
-
-    #[test]
-    fn task_not_found_maps_to_app_not_found() {
-        let err: AppError = TeamError::TaskNotFound("tk-1".into()).into();
-        assert!(matches!(err, AppError::NotFound(_)));
-    }
-
-    #[test]
-    fn invalid_request_maps_to_bad_request() {
-        let err: AppError = TeamError::InvalidRequest("empty agents".into()).into();
-        assert!(matches!(err, AppError::BadRequest(_)));
-    }
-
-    #[test]
-    fn leader_only_maps_to_forbidden() {
-        let err: AppError = TeamError::LeaderOnly("spawn_agent".into()).into();
-        assert!(matches!(err, AppError::Forbidden(msg) if msg == "spawn_agent"));
-    }
-
-    #[test]
-    fn session_not_found_maps_to_not_found() {
-        let err: AppError = TeamError::SessionNotFound("t1".into()).into();
-        assert!(matches!(err, AppError::NotFound(_)));
-    }
-
-    #[test]
-    fn blocked_task_not_found_maps_to_bad_request() {
-        let err: AppError = TeamError::BlockedTaskNotFound("tk-x".into()).into();
-        assert!(matches!(err, AppError::BadRequest(_)));
-    }
-
-    #[test]
-    fn backend_not_allowed_maps_to_bad_request() {
-        let err: AppError = TeamError::BackendNotAllowed("gemini".into()).into();
-        assert!(matches!(err, AppError::BadRequest(msg) if msg == "gemini"));
-    }
-
-    #[test]
-    fn duplicate_agent_name_maps_to_bad_request() {
-        let err: AppError = TeamError::DuplicateAgentName("alice".into()).into();
-        assert!(matches!(err, AppError::BadRequest(msg) if msg.contains("alice")));
-    }
-
-    #[test]
-    fn json_error_maps_to_internal() {
-        let json_err = serde_json::from_str::<serde_json::Value>("bad").unwrap_err();
-        let err: AppError = TeamError::Json(json_err).into();
-        assert!(matches!(err, AppError::Internal(_)));
+    fn conversation_create_preserves_workspace_error_code() {
+        let err = TeamError::from_conversation_create(ConversationError::WorkspacePathUnavailable {
+            path: "/tmp/a b".into(),
+        });
+        assert!(matches!(err, TeamError::WorkspacePathUnavailable(msg) if msg == "/tmp/a b"));
     }
 
     #[test]
