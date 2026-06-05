@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use aionui_ai_agent::{AgentStreamEvent, IAgentConnectorFactory};
+use aionui_ai_agent::{AgentStreamEvent, IWorkerTaskManager};
 use aionui_api_types::{CreateConversationRequest, SendMessageRequest};
 use aionui_common::{AgentType, ConversationSource};
 use aionui_conversation::ConversationService;
@@ -23,7 +23,7 @@ use crate::types::{ActionButton, OutgoingMessageType, PluginType, UnifiedOutgoin
 /// - Handling tool confirmation with timeout
 pub struct ChannelMessageService {
     conversation_svc: Arc<ConversationService>,
-    connector_factory: Arc<dyn IAgentConnectorFactory>,
+    task_manager: Arc<dyn IWorkerTaskManager>,
     settings: Arc<ChannelSettingsService>,
     owner_user_id: String,
 }
@@ -31,13 +31,13 @@ pub struct ChannelMessageService {
 impl ChannelMessageService {
     pub fn new(
         conversation_svc: Arc<ConversationService>,
-        connector_factory: Arc<dyn IAgentConnectorFactory>,
+        task_manager: Arc<dyn IWorkerTaskManager>,
         settings: Arc<ChannelSettingsService>,
         owner_user_id: String,
     ) -> Self {
         Self {
             conversation_svc,
-            connector_factory,
+            task_manager,
             settings,
             owner_user_id,
         }
@@ -46,8 +46,9 @@ impl ChannelMessageService {
     /// Sends a text message from a channel user to the AI agent.
     ///
     /// 1. Ensures the session has a backing conversation (creates one if needed)
-    /// 2. Sends the message via ConversationService
-    /// 3. Returns the conversation_id for stream subscription
+    /// 2. Warms up the backing agent task so stream subscription is available
+    /// 3. Sends the message via ConversationService
+    /// 4. Returns the conversation_id and stream receiver for relay
     ///
     /// The caller is responsible for subscribing to stream events and
     /// relaying them to the IM platform.
@@ -75,30 +76,40 @@ impl ChannelMessageService {
         };
 
         let user_id = &self.owner_user_id;
+        // Channel relays need a stream subscription before the agent starts
+        // emitting. `ConversationService::send_message` returns immediately
+        // and builds cold agents in the background, so warm the conversation
+        // explicitly for channel traffic.
         self.conversation_svc
-            .send_message(user_id, &conversation_id, req, &self.connector_factory)
+            .warmup(user_id, &conversation_id, &self.task_manager)
             .await
             .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
 
-        // Subscribe to the agent's broadcast channel for the ChannelStreamRelay.
-        // The connector exists because send_message just called build_or_get.
-        // ConversationService spawns agent.send_message in a background task,
-        // so the first events have not been emitted yet — no race condition.
         let stream_rx = self
-            .connector_factory
-            .get(&conversation_id)
-            .map(|handle| handle.subscribe_legacy());
+            .task_manager
+            .get_task(&conversation_id)
+            .map(|handle| handle.subscribe())
+            .ok_or_else(|| {
+                ChannelError::MessageSendFailed(format!(
+                    "Agent task missing after warmup for conversation {conversation_id}"
+                ))
+            })?;
+
+        self.conversation_svc
+            .send_message(user_id, &conversation_id, req, &self.task_manager)
+            .await
+            .map_err(|e| ChannelError::MessageSendFailed(e.to_string()))?;
 
         info!(
             conversation_id = %conversation_id,
             session_id = %session.id,
-            has_stream = stream_rx.is_some(),
+            has_stream = true,
             "message sent to agent"
         );
 
         Ok(SendResult {
             conversation_id,
-            stream_rx,
+            stream_rx: Some(stream_rx),
         })
     }
 
@@ -453,10 +464,7 @@ mod tests {
 
     #[test]
     fn error_event_produces_error() {
-        let event = AgentStreamEvent::Error(ErrorEventData {
-            message: "timeout".into(),
-            code: None,
-        });
+        let event = AgentStreamEvent::Error(ErrorEventData::legacy("timeout", None));
         let action = ChannelMessageService::process_stream_event(&event);
         match action {
             Some(StreamAction::Error(msg)) => assert_eq!(msg, "timeout"),

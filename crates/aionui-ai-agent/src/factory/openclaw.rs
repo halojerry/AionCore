@@ -3,7 +3,7 @@ use std::sync::Arc;
 use aionui_api_types::OpenClawBuildExtra;
 use aionui_common::{AgentType, AppError};
 
-use crate::connector::IAgentConnector;
+use crate::agent_task::AgentInstance;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::manager::openclaw::OpenClawAgentManager;
@@ -13,7 +13,7 @@ pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
     options: BuildTaskOptions,
     ctx: FactoryContext,
-) -> Result<Arc<dyn IAgentConnector>, AppError> {
+) -> Result<AgentInstance, AppError> {
     let mut config: OpenClawBuildExtra = serde_json::from_value(options.extra)
         .map_err(|e| AppError::BadRequest(format!("Invalid OpenClaw build options: {e}")))?;
 
@@ -32,8 +32,15 @@ pub(super) async fn build(
     }
 
     let resume_session_key = config.session_key.clone();
-    let agent = OpenClawAgentManager::new(ctx.conversation_id, ctx.workspace, config, resume_session_key).await?;
+    let agent = OpenClawAgentManager::new(
+        ctx.conversation_id,
+        ctx.workspace,
+        config,
+        resume_session_key,
+        deps.data_dir.clone(),
+    )
+    .await?;
     let arc = Arc::new(agent);
     arc.start_event_relay();
-    Ok(arc as Arc<dyn IAgentConnector>)
+    Ok(AgentInstance::OpenClaw(arc))
 }

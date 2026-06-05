@@ -4,12 +4,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use aionui_ai_agent::connector_factory::ConnectorBuildFn;
-use aionui_ai_agent::test_support::{MockConnector, MockConnectorFactory};
+use aionui_ai_agent::task_manager::AgentFactory;
 use aionui_ai_agent::types::BuildTaskOptions;
-use aionui_ai_agent::{IAgentConnector, IAgentConnectorFactory};
+use aionui_ai_agent::{IWorkerTaskManager, WorkerTaskManagerImpl};
 use aionui_api_types::{AddAgentRequest, CreateTeamRequest, TeamAgentInput, WebSocketMessage};
-use aionui_common::{AgentKillReason, AppError, PaginatedResult};
+use aionui_common::{AgentKillReason, AgentType, AppError, PaginatedResult, ProviderWithModel};
 use aionui_db::models::{
     AcpSessionRow, AgentMetadataRow, ConversationRow, MessageRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams,
 };
@@ -423,9 +422,8 @@ impl IAcpSessionRepository for StubAcpSessionRepo {
 }
 
 // ---------------------------------------------------------------------------
-// Counting task manager — wraps `MockConnectorFactory` so tests can assert
-// drop / build_or_get call counts by conversation id. Equivalent in spirit
-// to the legacy `CountingTaskManager` (which wrapped `WorkerTaskManagerImpl`).
+// Counting task manager — wraps WorkerTaskManagerImpl so tests can assert
+// kill / get_or_build_task call counts by conversation id.
 // ---------------------------------------------------------------------------
 
 #[derive(Default, Clone)]
@@ -435,14 +433,14 @@ struct TaskManagerCalls {
 }
 
 struct CountingTaskManager {
-    inner: Arc<MockConnectorFactory>,
+    inner: WorkerTaskManagerImpl,
     calls: Mutex<TaskManagerCalls>,
 }
 
 impl CountingTaskManager {
-    fn new(build_fn: ConnectorBuildFn) -> Self {
+    fn new(factory: AgentFactory) -> Self {
         Self {
-            inner: MockConnectorFactory::builder().build_fn(build_fn).build(),
+            inner: WorkerTaskManagerImpl::new(factory),
             calls: Mutex::new(TaskManagerCalls::default()),
         }
     }
@@ -458,21 +456,33 @@ impl CountingTaskManager {
 }
 
 #[async_trait::async_trait]
-impl IAgentConnectorFactory for CountingTaskManager {
-    async fn build_or_get(&self, opts: BuildTaskOptions) -> Result<Arc<dyn IAgentConnector>, AppError> {
-        self.calls.lock().unwrap().build.push(opts.conversation_id.clone());
-        self.inner.build_or_get(opts).await
+impl IWorkerTaskManager for CountingTaskManager {
+    fn get_task(&self, conversation_id: &str) -> Option<aionui_ai_agent::AgentInstance> {
+        self.inner.get_task(conversation_id)
     }
-    fn get(&self, conversation_id: &str) -> Option<Arc<dyn IAgentConnector>> {
-        self.inner.get(conversation_id)
+    async fn get_or_build_task(
+        &self,
+        conversation_id: &str,
+        options: BuildTaskOptions,
+    ) -> Result<aionui_ai_agent::AgentInstance, AppError> {
+        self.calls.lock().unwrap().build.push(conversation_id.to_owned());
+        self.inner.get_or_build_task(conversation_id, options).await
     }
-    fn drop_connector(&self, conversation_id: &str, reason: Option<AgentKillReason>) {
+    fn kill(&self, conversation_id: &str, reason: Option<AgentKillReason>) -> Result<(), AppError> {
         self.calls
             .lock()
             .unwrap()
             .kill
             .push((conversation_id.to_owned(), reason));
-        self.inner.drop_connector(conversation_id, reason);
+        self.inner.kill(conversation_id, reason)
+    }
+    fn kill_and_wait(
+        &self,
+        conversation_id: &str,
+        reason: Option<AgentKillReason>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let _ = self.kill(conversation_id, reason);
+        Box::pin(std::future::ready(()))
     }
     fn clear(&self) {
         self.inner.clear()
@@ -480,16 +490,117 @@ impl IAgentConnectorFactory for CountingTaskManager {
     fn active_count(&self) -> usize {
         self.inner.active_count()
     }
+    fn collect_idle(&self, idle_threshold_ms: aionui_common::TimestampMs) -> Vec<String> {
+        self.inner.collect_idle(idle_threshold_ms)
+    }
 }
 
-fn success_factory() -> ConnectorBuildFn {
+// Minimal stub agent returned by the test factory: ensure_session only
+// asks the task manager to kill + rebuild; the returned handle never has
+// `send_message` called on it.
+mod mock_agent {
+    use aionui_ai_agent::agent_task::{IAgentTask, IMockAgent};
+    use aionui_ai_agent::protocol::events::AgentStreamEvent;
+    use aionui_ai_agent::types::SendMessageData;
+    use aionui_common::{AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, TimestampMs};
+    use tokio::sync::broadcast;
+
+    pub struct MockAgent {
+        pub conversation_id: String,
+        pub workspace: String,
+        pub event_tx: broadcast::Sender<AgentStreamEvent>,
+        pub confirmations: Vec<Confirmation>,
+    }
+
+    impl MockAgent {
+        pub fn new(conversation_id: String, workspace: String) -> Self {
+            Self::with_confirmations(conversation_id, workspace, Vec::new())
+        }
+
+        pub fn with_confirmations(
+            conversation_id: String,
+            workspace: String,
+            confirmations: Vec<Confirmation>,
+        ) -> Self {
+            let (event_tx, _) = broadcast::channel(16);
+            Self {
+                conversation_id,
+                workspace,
+                event_tx,
+                confirmations,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl IAgentTask for MockAgent {
+        fn agent_type(&self) -> AgentType {
+            AgentType::Acp
+        }
+        fn conversation_id(&self) -> &str {
+            &self.conversation_id
+        }
+        fn workspace(&self) -> &str {
+            &self.workspace
+        }
+        fn status(&self) -> Option<ConversationStatus> {
+            None
+        }
+        fn last_activity_at(&self) -> TimestampMs {
+            0
+        }
+        fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
+            self.event_tx.subscribe()
+        }
+        async fn send_message(&self, _data: SendMessageData) -> Result<(), aionui_ai_agent::AgentSendError> {
+            Ok(())
+        }
+        async fn cancel(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+        fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    impl IMockAgent for MockAgent {
+        fn get_confirmations(&self) -> Vec<Confirmation> {
+            self.confirmations.clone()
+        }
+    }
+}
+
+fn success_factory() -> AgentFactory {
     use futures_util::FutureExt;
     Arc::new(|opts: BuildTaskOptions| {
         async move {
-            let connector: Arc<dyn IAgentConnector> = MockConnector::builder(opts.conversation_id)
-                .workspace(opts.workspace)
-                .build_arc();
-            Ok(connector)
+            Ok(aionui_ai_agent::AgentInstance::Mock(Arc::new(
+                mock_agent::MockAgent::new(opts.conversation_id, opts.workspace),
+            )))
+        }
+        .boxed()
+    })
+}
+
+fn confirmations_factory(count: usize) -> AgentFactory {
+    use aionui_common::Confirmation;
+    use futures_util::FutureExt;
+    Arc::new(move |opts: BuildTaskOptions| {
+        let confirmations = (0..count)
+            .map(|idx| Confirmation {
+                id: format!("tool-{idx}"),
+                call_id: format!("tool-{idx}"),
+                title: None,
+                action: None,
+                description: format!("Confirm tool {idx}"),
+                command_type: None,
+                options: vec![],
+            })
+            .collect::<Vec<_>>();
+        async move {
+            Ok(aionui_ai_agent::AgentInstance::Mock(Arc::new(
+                mock_agent::MockAgent::with_confirmations(opts.conversation_id, opts.workspace, confirmations),
+            )))
         }
         .boxed()
     })
@@ -523,12 +634,12 @@ impl IProviderRepository for EmptyProviderRepo {
     }
 }
 
-fn setup_with_factory(factory: ConnectorBuildFn) -> (Arc<TeamSessionService>, Arc<CountingTaskManager>) {
+fn setup_with_factory(factory: AgentFactory) -> (Arc<TeamSessionService>, Arc<CountingTaskManager>) {
     setup_with_factory_and_metadata(factory, Arc::new(StubAgentMetadataRepo::empty()))
 }
 
 fn setup_with_factory_and_metadata(
-    factory: ConnectorBuildFn,
+    factory: AgentFactory,
     agent_metadata_repo: Arc<dyn IAgentMetadataRepository>,
 ) -> (Arc<TeamSessionService>, Arc<CountingTaskManager>) {
     let team_repo: Arc<dyn ITeamRepository> = Arc::new(FullMockTeamRepo::new());
@@ -536,7 +647,7 @@ fn setup_with_factory_and_metadata(
     let broadcaster: Arc<dyn EventBroadcaster> = Arc::new(NullBroadcaster);
     let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(StubAcpSessionRepo);
     let task_manager = Arc::new(CountingTaskManager::new(factory));
-    let task_manager_dyn: Arc<dyn IAgentConnectorFactory> = task_manager.clone();
+    let task_manager_dyn: Arc<dyn IWorkerTaskManager> = task_manager.clone();
     let conv_service = ConversationService::new(
         std::env::temp_dir(),
         broadcaster.clone(),
@@ -572,7 +683,7 @@ fn setup_with_recording_broadcaster() -> (Arc<TeamSessionService>, Arc<Recording
     let broadcaster: Arc<dyn EventBroadcaster> = recorder.clone();
     let agent_metadata_repo: Arc<dyn IAgentMetadataRepository> = Arc::new(StubAgentMetadataRepo::empty());
     let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(StubAcpSessionRepo);
-    let task_manager: Arc<dyn IAgentConnectorFactory> = Arc::new(CountingTaskManager::new(success_factory()));
+    let task_manager: Arc<dyn IWorkerTaskManager> = Arc::new(CountingTaskManager::new(success_factory()));
     let conv_service = ConversationService::new(
         std::env::temp_dir(),
         broadcaster.clone(),
@@ -898,6 +1009,56 @@ async fn tl2_list_multiple_teams() {
 
     let list = svc.list_teams().await.unwrap();
     assert_eq!(list.len(), 2);
+}
+
+#[tokio::test]
+async fn tl_list_teams_includes_pending_confirmation_counts_without_rebuilding_tasks() {
+    let (svc, task_manager) = setup_with_factory(confirmations_factory(2));
+    let created = svc
+        .create_team(
+            "user1",
+            CreateTeamRequest {
+                name: "With Confirmations".into(),
+                agents: vec![TeamAgentInput {
+                    name: "Lead".into(),
+                    role: "lead".into(),
+                    backend: "acp".into(),
+                    model: "claude".into(),
+                    custom_agent_id: None,
+                    conversation_id: None,
+                }],
+                workspace: None,
+            },
+        )
+        .await
+        .unwrap();
+    let conversation_id = created.agents[0].conversation_id.clone();
+    task_manager
+        .get_or_build_task(
+            &conversation_id,
+            BuildTaskOptions {
+                agent_type: AgentType::Acp,
+                workspace: "/tmp/ws".into(),
+                model: ProviderWithModel {
+                    provider_id: "test".into(),
+                    model: "claude".into(),
+                    use_model: None,
+                },
+                conversation_id: conversation_id.clone(),
+                extra: serde_json::json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let before = task_manager.snapshot();
+
+    let list = svc.list_teams().await.unwrap();
+    let after = task_manager.snapshot();
+
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].id, created.id);
+    assert_eq!(list[0].agents[0].pending_confirmations, 2);
+    assert_eq!(after.build, before.build);
 }
 
 // -- Get team -----------------------------------------------------------------
@@ -1452,10 +1613,9 @@ async fn d9_ensure_session_persists_team_mcp_stdio_config() {
                 "factory called without team_mcp_stdio_config in extra: {:?}",
                 opts.extra
             );
-            let connector: Arc<dyn IAgentConnector> = MockConnector::builder(opts.conversation_id)
-                .workspace(opts.workspace)
-                .build_arc();
-            Ok(connector)
+            Ok(aionui_ai_agent::AgentInstance::Mock(Arc::new(
+                mock_agent::MockAgent::new(opts.conversation_id, opts.workspace),
+            )))
         }
         .boxed()
     }));
@@ -1505,7 +1665,7 @@ async fn d9_ensure_session_rollbacks_when_build_fails() {
     // Factory always fails → ensure_session must propagate error and not
     // insert into sessions, so send_message afterwards still errors.
     use futures_util::FutureExt;
-    let failing_factory: ConnectorBuildFn = Arc::new(|_opts: BuildTaskOptions| {
+    let failing_factory: AgentFactory = Arc::new(|_opts: BuildTaskOptions| {
         async move { Err(AppError::Internal("simulated build failure".into())) }.boxed()
     });
     let (svc, tm) = setup_with_factory(failing_factory);

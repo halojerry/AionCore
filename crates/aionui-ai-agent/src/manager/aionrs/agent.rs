@@ -9,22 +9,27 @@ use aion_config::config::{CliArgs, Config};
 use aion_mcp::manager::McpManager;
 use aion_protocol::commands::SessionMode;
 use aion_protocol::{ToolApprovalManager, ToolApprovalResult};
-use aionui_api_types::{AgentModeResponse, ConversationStatus};
-use aionui_common::{AgentKillReason, AgentType, AppError, Confirmation, ErrorChain, TimestampMs, now_ms};
+use aionui_api_types::{AgentModeResponse, SlashCommandItem};
+use aionui_common::{
+    AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs, now_ms,
+};
 use serde_json::Value;
-use tokio::sync::{Mutex, Notify, broadcast, oneshot};
+use tokio::sync::{Mutex, Notify, broadcast};
 use tracing::{debug, error, info};
 
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::backend_output_sink::BackendOutputSink;
 use crate::capability::backend_protocol_sink::BackendProtocolSink;
-use crate::connector::{ChunkPayload, ConnectorError, ConnectorEvent, IAgentConnector, StopReason, TurnSummary};
 use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::send_error::AgentSendError;
 use crate::types::{AionrsResolvedConfig, SendMessageData};
 
 pub struct AionrsAgentManager {
     runtime: AgentRuntime,
     engine: Mutex<AgentEngine>,
+    /// Static slash command metadata captured at bootstrap so UI lookups do
+    /// not wait behind an active `engine.run()` turn.
+    slash_commands: Vec<SlashCommandItem>,
     /// Holds `Arc<McpManager>` instances alive for the duration of this agent's
     /// lifetime. The managers are not accessed after construction — they exist
     /// solely so their underlying MCP connections outlive the engine's event
@@ -37,13 +42,6 @@ pub struct AionrsAgentManager {
     /// Signalled by `cancel()` to abort an in-flight `engine.run()` via
     /// `tokio::select!` in `send_message()`.
     cancel_notify: Arc<Notify>,
-    /// Receiver-side of the current turn's done-signal. Held in a
-    /// `Mutex<Option<..>>` so `cancel_current_turn` can take ownership and
-    /// await it. `None` means no turn is in flight. Writers: `begin_turn`
-    /// (sets) and `take_turn_done_rx` (clears). Readers: `cancel_current_turn`
-    /// awaits the receiver side; the sender is held inside a `TurnGuard` so
-    /// drop on the turn's exit path signals completion.
-    turn_done_rx: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
 impl Drop for AionrsAgentManager {
@@ -142,78 +140,59 @@ impl AionrsAgentManager {
         let protocol_sink = BackendProtocolSink::new(runtime.event_sender(), confirmations.clone());
         engine.set_approval_manager(approval_manager.clone());
         engine.set_protocol_writer(Arc::new(protocol_sink));
+        let slash_commands = engine
+            .slash_command_list()
+            .into_iter()
+            .map(|(command, description)| SlashCommandItem { command, description })
+            .collect();
 
         runtime.transition_to(ConversationStatus::Pending);
 
         Ok(Self {
             runtime,
             engine: Mutex::new(engine),
+            slash_commands,
             mcp_managers: result.mcp_managers,
             approval_manager,
             confirmations,
             cancel_notify: Arc::new(Notify::new()),
-            turn_done_rx: Mutex::new(None),
         })
     }
 }
 
-/// RAII guard that signals turn completion via a oneshot when dropped.
-///
-/// `_done_tx` is intentionally `Option<oneshot::Sender<()>>` so the field
-/// can be moved out of `Some(..)` into `None` on drop without unsafe code.
-/// The actual signalling happens through Drop on `oneshot::Sender`.
-pub struct TurnGuard {
-    _done_tx: Option<oneshot::Sender<()>>,
-}
-
-impl AionrsAgentManager {
-    /// Register a new turn-done pair. Returns a guard that signals on drop.
-    /// Returns `None` if a turn is already in flight (single-flight defence).
-    pub(crate) fn begin_turn(&self) -> Option<TurnGuard> {
-        let (done_tx, done_rx) = oneshot::channel();
-        let mut slot = self.turn_done_rx.try_lock().ok()?;
-        if slot.is_some() {
-            return None;
-        }
-        *slot = Some(done_rx);
-        Some(TurnGuard {
-            _done_tx: Some(done_tx),
-        })
+#[async_trait::async_trait]
+impl crate::agent_task::IAgentTask for AionrsAgentManager {
+    fn agent_type(&self) -> AgentType {
+        AgentType::Aionrs
     }
 
-    /// Take the current turn's done-receiver, if any.
-    pub(crate) async fn take_turn_done_rx(&self) -> Option<oneshot::Receiver<()>> {
-        self.turn_done_rx.lock().await.take()
+    fn conversation_id(&self) -> &str {
+        self.runtime.conversation_id()
     }
 
-    /// Begin a turn slot exposed for integration tests under the same
-    /// `cfg(any(test, feature = "test-support"))` gate used by other test
-    /// hooks in this crate. Allows downstream tests to simulate an
-    /// in-flight turn without a real LLM provider.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn begin_turn_for_test(&self) -> Option<TurnGuard> {
-        self.begin_turn()
+    fn workspace(&self) -> &str {
+        self.runtime.workspace()
     }
 
-    /// Issue a connector-style cancel from integration tests. Mirrors
-    /// `IAgentConnector::cancel_current_turn` semantics: signals
-    /// `cancel_notify` then awaits the in-flight turn's done-receiver.
-    #[cfg(any(test, feature = "test-support"))]
-    pub async fn cancel_for_test(&self) -> Result<(), AppError> {
-        // Mirrors connector cancel_current_turn semantics.
-        self.cancel_notify.notify_waiters();
-        if let Some(rx) = self.take_turn_done_rx().await {
-            let _ = rx.await;
-        }
-        Ok(())
+    fn status(&self) -> Option<ConversationStatus> {
+        self.runtime.status()
     }
 
-    /// Drives one turn through the engine. Caller MUST already hold a
-    /// `TurnGuard` (acquired via `begin_turn`). Used by both
-    /// `IAgentTask::send_message` and `IAgentConnector::run_turn` so the
-    /// engine drive logic stays in one place.
-    async fn run_turn_inner(&self, data: SendMessageData) -> Result<TurnSummary, ConnectorError> {
+    fn last_activity_at(&self) -> TimestampMs {
+        self.runtime.last_activity_at()
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
+        self.runtime.subscribe()
+    }
+
+    async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         let started_at = now_ms();
+        info!(
+            conversation_id = %self.runtime.conversation_id(),
+            msg_id = %data.msg_id,
+            "Aionrs send_message started"
+        );
         self.runtime.bump_activity();
         self.runtime.reset_for_new_turn(ConversationStatus::Running);
 
@@ -242,10 +221,7 @@ impl AionrsAgentManager {
                     "Aionrs engine.run() completed, emitting Finish"
                 );
                 self.runtime.emit_finish(None);
-                Ok(TurnSummary {
-                    session_id: None,
-                    stop_reason: Some(StopReason::EndTurn),
-                })
+                Ok(())
             }
             Some(Err(e)) => {
                 let error_msg = format!("Aionrs agent error: {e}");
@@ -255,212 +231,17 @@ impl AionrsAgentManager {
                     error = %ErrorChain(&e),
                     "Aionrs engine.run() failed, emitting Error+Finish"
                 );
-                self.runtime.emit_error(error_msg.clone());
+                let send_error = aionrs_engine_error_to_send_error(error_msg);
+                self.runtime.emit_error_data(send_error.stream_error().clone());
                 self.runtime.emit_finish(None);
-                Err(ConnectorError::Protocol(error_msg))
+                Err(send_error)
             }
             None => {
                 self.runtime.emit_error("Stopped by user");
                 self.runtime.emit_finish(None);
-                Ok(TurnSummary {
-                    session_id: None,
-                    stop_reason: Some(StopReason::Cancelled),
-                })
+                Ok(())
             }
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl IAgentConnector for AionrsAgentManager {
-    fn agent_type(&self) -> AgentType {
-        AgentType::Aionrs
-    }
-    fn conversation_id(&self) -> &str {
-        self.runtime.conversation_id()
-    }
-    fn workspace(&self) -> &str {
-        self.runtime.workspace()
-    }
-    fn last_activity_at(&self) -> TimestampMs {
-        self.runtime.last_activity_at()
-    }
-    fn is_open(&self) -> bool {
-        true
-    }
-
-    async fn open(&self) -> Result<(), ConnectorError> {
-        Ok(())
-    }
-
-    fn close(&self, reason: Option<AgentKillReason>) {
-        let _ = crate::agent_task::IAgentTask::kill(self, reason);
-    }
-
-    async fn run_turn(&self, msg: SendMessageData) -> Result<TurnSummary, ConnectorError> {
-        let _turn_guard = self.begin_turn().ok_or(ConnectorError::Busy)?;
-        self.run_turn_inner(msg).await
-    }
-
-    async fn cancel_current_turn(&self) -> Result<(), ConnectorError> {
-        if let Ok(mut confs) = self.confirmations.write() {
-            confs.clear();
-        }
-        self.cancel_notify.notify_waiters();
-        if let Some(rx) = self.take_turn_done_rx().await {
-            let _ = rx.await;
-        }
-        Ok(())
-    }
-
-    fn subscribe(&self) -> broadcast::Receiver<ConnectorEvent> {
-        // Bridge the token-level AgentStreamEvent channel into
-        // ConnectorEvent::Chunk so turn-level subscribers see chunks
-        // alongside lifecycle events.
-        let (tx, rx) = broadcast::channel(64);
-        let mut legacy = self.runtime.subscribe();
-        tokio::spawn(async move {
-            while let Ok(ev) = legacy.recv().await {
-                let _ = tx.send(ConnectorEvent::Chunk(ChunkPayload { event: ev }));
-            }
-        });
-        rx
-    }
-
-    fn subscribe_legacy(&self) -> broadcast::Receiver<AgentStreamEvent> {
-        self.runtime.subscribe()
-    }
-
-    // ── Lifecycle / control surface ─────────────────────────────────────
-    //
-    // Delegates to the crate-private `IAgentTask` impl on `Self` or to
-    // the inherent helpers below.
-
-    async fn send_message(&self, data: SendMessageData) -> Result<(), AppError> {
-        crate::agent_task::IAgentTask::send_message(self, data).await
-    }
-
-    async fn cancel(&self) -> Result<(), AppError> {
-        crate::agent_task::IAgentTask::cancel(self).await
-    }
-
-    fn kill(&self, reason: Option<AgentKillReason>) -> Result<(), AppError> {
-        crate::agent_task::IAgentTask::kill(self, reason)
-    }
-
-    fn kill_and_wait(
-        &self,
-        reason: Option<AgentKillReason>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        AionrsAgentManager::kill_and_wait(self, reason)
-    }
-
-    fn get_confirmations(&self) -> Vec<Confirmation> {
-        AionrsAgentManager::get_confirmations(self)
-    }
-
-    fn confirm(
-        &self,
-        msg_id: &str,
-        call_id: &str,
-        data: serde_json::Value,
-        always_allow: bool,
-    ) -> Result<(), AppError> {
-        AionrsAgentManager::confirm(self, msg_id, call_id, data, always_allow)
-    }
-
-    fn check_approval(&self, action: &str, command_type: Option<&str>) -> bool {
-        AionrsAgentManager::check_approval(self, action, command_type)
-    }
-
-    /// Aionrs does not expose a session key; mirrors the existing
-    /// `AgentInstance::Aionrs(_)` arm in `get_session_key`.
-    fn get_session_key(&self) -> Option<String> {
-        None
-    }
-
-    async fn get_mode(&self) -> Result<aionui_api_types::AgentModeResponse, AppError> {
-        AionrsAgentManager::mode(self).await
-    }
-
-    async fn set_mode(&self, mode: &str) -> Result<(), AppError> {
-        AionrsAgentManager::set_mode(self, mode).await
-    }
-
-    /// Mirrors the existing `AgentInstance::Aionrs(_)` arm in
-    /// `get_model` — Aionrs has no model picker.
-    async fn get_model(&self) -> Result<aionui_api_types::GetModelInfoResponse, AppError> {
-        Ok(aionui_api_types::GetModelInfoResponse { model_info: None })
-    }
-
-    /// Mirrors the existing `AgentInstance::Aionrs(_)` arm in
-    /// `set_model` — model switching is not supported.
-    async fn set_model(&self, model_id: &str) -> Result<(), AppError> {
-        if model_id.trim().is_empty() {
-            return Err(AppError::BadRequest("model_id must not be empty".into()));
-        }
-        Err(AppError::BadRequest(
-            "Model switching is not supported for this agent type".into(),
-        ))
-    }
-
-    async fn get_usage(&self) -> Result<Option<serde_json::Value>, AppError> {
-        Ok(None)
-    }
-
-    async fn get_slash_commands(&self) -> Result<Vec<aionui_api_types::SlashCommandItem>, AppError> {
-        AionrsAgentManager::get_slash_commands(self).await
-    }
-
-    async fn handle_side_question(
-        &self,
-        req: aionui_api_types::SideQuestionRequest,
-    ) -> Result<aionui_api_types::SideQuestionResponse, AppError> {
-        if req.question.trim().is_empty() {
-            return Err(AppError::BadRequest("question must not be empty".into()));
-        }
-        Ok(aionui_api_types::SideQuestionResponse {
-            status: "unsupported".into(),
-            answer: None,
-        })
-    }
-
-    async fn get_openclaw_runtime(&self) -> Result<serde_json::Value, AppError> {
-        Ok(serde_json::Value::Null)
-    }
-}
-
-#[async_trait::async_trait]
-impl crate::agent_task::IAgentTask for AionrsAgentManager {
-    fn status(&self) -> Option<ConversationStatus> {
-        self.runtime.status()
-    }
-
-    async fn send_message(&self, data: SendMessageData) -> Result<(), AppError> {
-        let _turn_guard = match self.begin_turn() {
-            Some(g) => g,
-            None => return Err(AppError::Conflict("Aionrs turn already in flight".into())),
-        };
-        info!(
-            conversation_id = %self.runtime.conversation_id(),
-            msg_id = %data.msg_id,
-            "Aionrs send_message started"
-        );
-
-        let outcome = self.run_turn_inner(data).await;
-
-        // Map TurnSummary → Ok(()), ConnectorError::Protocol → AppError::Internal.
-        let mapped = match outcome {
-            Ok(_) => Ok(()),
-            Err(crate::connector::ConnectorError::Protocol(msg)) => Err(AppError::Internal(msg)),
-            Err(crate::connector::ConnectorError::Busy) => {
-                Err(AppError::Conflict("Aionrs turn already in flight".into()))
-            }
-            Err(e) => Err(AppError::Internal(format!("{e}"))),
-        };
-
-        drop(_turn_guard);
-        mapped
     }
 
     async fn cancel(&self) -> Result<(), AppError> {
@@ -561,13 +342,8 @@ impl AionrsAgentManager {
         Ok(())
     }
 
-    pub async fn get_slash_commands(&self) -> Result<Vec<aionui_api_types::SlashCommandItem>, AppError> {
-        let engine = self.engine.lock().await;
-        Ok(engine
-            .slash_command_list()
-            .into_iter()
-            .map(|(command, description)| aionui_api_types::SlashCommandItem { command, description })
-            .collect())
+    pub async fn get_slash_commands(&self) -> Result<Vec<SlashCommandItem>, AppError> {
+        Ok(self.slash_commands.clone())
     }
 }
 
@@ -579,10 +355,18 @@ fn parse_session_mode(s: &str) -> SessionMode {
     }
 }
 
+fn aionrs_engine_error_to_send_error(error_msg: String) -> AgentSendError {
+    let lower = error_msg.to_ascii_lowercase();
+    if lower.contains("provider error") || lower.contains("provider:") {
+        return AgentSendError::from_app_error(AppError::BadGateway(error_msg));
+    }
+    AgentSendError::from_app_error(AppError::Internal(error_msg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::IAgentConnector;
+    use crate::agent_task::IAgentTask;
 
     fn make_test_config() -> AionrsResolvedConfig {
         AionrsResolvedConfig {
@@ -606,9 +390,9 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        assert_eq!(IAgentConnector::agent_type(&agent), AgentType::Aionrs);
-        assert_eq!(IAgentConnector::workspace(&agent), "/project");
-        assert_eq!(IAgentConnector::conversation_id(&agent), "conv-1");
+        assert_eq!(agent.agent_type(), AgentType::Aionrs);
+        assert_eq!(agent.workspace(), "/project");
+        assert_eq!(agent.conversation_id(), "conv-1");
     }
 
     #[tokio::test]
@@ -616,10 +400,7 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        assert_eq!(
-            crate::agent_task::IAgentTask::status(&agent),
-            Some(ConversationStatus::Pending)
-        );
+        assert_eq!(agent.status(), Some(ConversationStatus::Pending));
     }
 
     #[tokio::test]
@@ -627,7 +408,7 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        let _rx = IAgentConnector::subscribe_legacy(&agent);
+        let _rx = agent.subscribe();
     }
 
     #[tokio::test]
@@ -635,12 +416,9 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        assert!(IAgentConnector::kill(&agent, None).is_ok());
+        assert!(agent.kill(None).is_ok());
         // kill() is a no-op for aionrs (no subprocess); status remains Pending.
-        assert_eq!(
-            crate::agent_task::IAgentTask::status(&agent),
-            Some(ConversationStatus::Pending)
-        );
+        assert_eq!(agent.status(), Some(ConversationStatus::Pending));
     }
 
     #[tokio::test]
@@ -648,7 +426,7 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        assert!(IAgentConnector::kill(&agent, Some(AgentKillReason::IdleTimeout)).is_ok());
+        assert!(agent.kill(Some(AgentKillReason::IdleTimeout)).is_ok());
     }
 
     #[tokio::test]
@@ -657,6 +435,21 @@ mod tests {
             .await
             .unwrap();
         assert!(agent.get_confirmations().is_empty());
+    }
+
+    #[tokio::test]
+    async fn aionrs_agent_get_slash_commands_does_not_wait_for_engine_lock() {
+        let agent = AionrsAgentManager::new("conv-1".into(), "/project".into(), make_test_config(), None)
+            .await
+            .unwrap();
+
+        let _engine_guard = agent.engine.lock().await;
+        let commands = tokio::time::timeout(std::time::Duration::from_millis(50), agent.get_slash_commands())
+            .await
+            .expect("slash command metadata should not wait for an active engine run")
+            .unwrap();
+
+        assert!(!commands.is_empty());
     }
 
     #[tokio::test]
@@ -672,107 +465,12 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-stop".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        let mut rx = IAgentConnector::subscribe_legacy(&agent);
+        let mut rx = agent.subscribe();
 
-        IAgentConnector::cancel(&agent).await.unwrap();
+        agent.cancel().await.unwrap();
 
-        assert_eq!(
-            crate::agent_task::IAgentTask::status(&agent),
-            Some(ConversationStatus::Pending)
-        );
+        assert_eq!(agent.status(), Some(ConversationStatus::Pending));
         assert!(matches!(rx.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
-    }
-
-    #[tokio::test]
-    async fn iagent_connector_basics() {
-        use crate::connector::IAgentConnector;
-
-        let agent = AionrsAgentManager::new("conv-c".into(), "/project".into(), make_test_config(), None)
-            .await
-            .unwrap();
-        let connector: &dyn IAgentConnector = &agent;
-        assert_eq!(connector.agent_type(), AgentType::Aionrs);
-        assert_eq!(connector.conversation_id(), "conv-c");
-        assert_eq!(connector.workspace(), "/project");
-        // open() is idempotent on aionrs (no separate handshake).
-        assert!(connector.is_open());
-        connector.open().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn iagent_connector_concurrent_run_turn_serializes() {
-        use crate::connector::{ConnectorError, IAgentConnector};
-        use std::sync::Arc;
-
-        let agent = Arc::new(
-            AionrsAgentManager::new("conv-s".into(), "/project".into(), make_test_config(), None)
-                .await
-                .unwrap(),
-        );
-
-        // Hold a turn slot so the next run_turn observes Busy.
-        let _guard = agent.begin_turn_for_test().unwrap();
-
-        let connector: Arc<dyn IAgentConnector> = agent.clone();
-        let result = connector
-            .run_turn(SendMessageData {
-                content: "hi".into(),
-                msg_id: "m1".into(),
-                files: vec![],
-                inject_skills: vec![],
-            })
-            .await;
-        assert!(matches!(result, Err(ConnectorError::Busy)));
-    }
-
-    #[tokio::test]
-    async fn cancel_waits_for_in_flight_run_to_drop() {
-        use std::sync::Arc;
-        use std::time::Duration;
-        use tokio::sync::Notify;
-
-        let agent = Arc::new(
-            AionrsAgentManager::new("conv-cancel".into(), "/project".into(), make_test_config(), None)
-                .await
-                .unwrap(),
-        );
-
-        // Spawn a fake turn: register a turn_done pair manually, then sleep.
-        // We can't drive a real engine.run() in unit tests (no provider), so we
-        // exercise the lifecycle hook directly.
-        let release = Arc::new(Notify::new());
-        let release_for_task = release.clone();
-        let agent_for_task = agent.clone();
-        let turn = tokio::spawn(async move {
-            let _guard = agent_for_task.begin_turn_for_test().expect("turn slot free");
-            release_for_task.notified().await;
-            // _guard is dropped here, signalling done_tx.
-        });
-
-        // Give the turn a moment to register.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        // cancel must NOT return until the spawned turn completes.
-        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancelled_flag = cancelled.clone();
-        let agent_for_cancel = agent.clone();
-        let cancel_task = tokio::spawn(async move {
-            agent_for_cancel.cancel_for_test().await.unwrap();
-            cancelled_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
-        // After 50ms, cancel should still be waiting.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            !cancelled.load(std::sync::atomic::Ordering::SeqCst),
-            "cancel returned before the in-flight turn dropped"
-        );
-
-        // Release the fake turn.
-        release.notify_one();
-        turn.await.unwrap();
-        cancel_task.await.unwrap();
-        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -780,7 +478,7 @@ mod tests {
         let agent = AionrsAgentManager::new("conv-err".into(), "/project".into(), make_test_config(), None)
             .await
             .unwrap();
-        let mut rx = IAgentConnector::subscribe_legacy(&agent);
+        let mut rx = agent.subscribe();
 
         agent.runtime.emit_error("test error");
         // emit_error sets status to Finished, so emit_finish is a no-op here.
@@ -799,5 +497,23 @@ mod tests {
             AgentStreamEvent::Finish(_) => {}
             other => panic!("Expected Finish, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn aionrs_provider_connection_error_is_user_llm_provider_error() {
+        let send_error = aionrs_engine_error_to_send_error(
+            "Aionrs agent error: Provider error: Connection error: Signable request error: failed to create canonical request"
+                .to_owned(),
+        );
+
+        assert_eq!(
+            send_error.code(),
+            Some(aionui_api_types::AgentErrorCode::UserLlmProviderConfigError)
+        );
+        assert_eq!(
+            send_error.ownership(),
+            Some(aionui_api_types::AgentErrorOwnership::UserLlmProvider)
+        );
+        assert_eq!(send_error.stream_error().retryable, Some(false));
     }
 }

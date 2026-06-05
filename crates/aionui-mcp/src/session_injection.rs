@@ -121,11 +121,11 @@ pub fn parse_acp_mcp_capabilities(response: &serde_json::Value) -> AcpMcpCapabil
         return AcpMcpCapabilities::default();
     };
 
-    AcpMcpCapabilities {
-        stdio: bool_field(caps, "stdio"),
-        http: bool_field(caps, "http"),
-        sse: bool_field(caps, "sse"),
-    }
+    let http = bool_field(caps, "http");
+    let sse = bool_field(caps, "sse");
+    let stdio = bool_field(caps, "stdio") || http || sse;
+
+    AcpMcpCapabilities { stdio, http, sse }
 }
 
 /// Build ACP session MCP server configs from domain servers.
@@ -218,12 +218,12 @@ fn hashmap_to_pairs(map: &HashMap<String, String>) -> Vec<NameValuePair> {
 /// Sorted by name for deterministic output, consistent with `hashmap_to_pairs`.
 fn build_image_gen_env(config: &ImageGenConfig) -> Vec<NameValuePair> {
     let entries: [(&str, &Option<String>); 6] = [
-        ("AIONUI_IMG_API_KEY", &config.api_key),
-        ("AIONUI_IMG_API_URL", &config.api_url),
-        ("AIONUI_IMG_MODEL", &config.model),
-        ("AIONUI_IMG_QUALITY", &config.quality),
-        ("AIONUI_IMG_SIZE", &config.size),
-        ("AIONUI_IMG_STYLE", &config.style),
+        ("POUNDING_IMG_API_KEY", &config.api_key),
+        ("POUNDING_IMG_API_URL", &config.api_url),
+        ("POUNDING_IMG_MODEL", &config.model),
+        ("POUNDING_IMG_QUALITY", &config.quality),
+        ("POUNDING_IMG_SIZE", &config.size),
+        ("POUNDING_IMG_STYLE", &config.style),
     ];
 
     entries
@@ -257,7 +257,7 @@ mod tests {
             enabled,
             transport,
             tools: vec![],
-            status: McpServerStatus::Disconnected,
+            last_test_status: McpServerStatus::Disconnected,
             last_connected: None,
             original_json: None,
             builtin: false,
@@ -345,7 +345,7 @@ mod tests {
             "mcp": { "stdio": false, "http": true, "sse": false }
         });
         let caps = parse_acp_mcp_capabilities(&resp);
-        assert!(!caps.stdio);
+        assert!(caps.stdio);
         assert!(caps.http);
         assert!(!caps.sse);
     }
@@ -365,6 +365,17 @@ mod tests {
         let caps = parse_acp_mcp_capabilities(&resp);
         assert!(caps.stdio);
         assert!(!caps.http);
+        assert!(!caps.sse);
+    }
+
+    #[test]
+    fn parse_http_support_implies_stdio() {
+        let resp = serde_json::json!({
+            "mcp_capabilities": { "http": true, "sse": false }
+        });
+        let caps = parse_acp_mcp_capabilities(&resp);
+        assert!(caps.stdio);
+        assert!(caps.http);
         assert!(!caps.sse);
     }
 
@@ -529,7 +540,7 @@ mod tests {
                 assert_eq!(command, "/usr/bin/img-gen");
                 assert!(args.is_empty());
                 assert_eq!(env.len(), 6);
-                assert_eq!(env[0].name, "AIONUI_IMG_API_KEY");
+                assert_eq!(env[0].name, "POUNDING_IMG_API_KEY");
                 assert_eq!(env[0].value, "sk-test");
             }
             _ => panic!("expected Stdio"),
@@ -550,9 +561,9 @@ mod tests {
             AcpSessionMcpServer::Stdio { env, .. } => {
                 assert_eq!(env.len(), 2);
                 // Sorted alphabetically: API_URL before MODEL
-                assert_eq!(env[0].name, "AIONUI_IMG_API_URL");
+                assert_eq!(env[0].name, "POUNDING_IMG_API_URL");
                 assert_eq!(env[0].value, "https://api.openai.com");
-                assert_eq!(env[1].name, "AIONUI_IMG_MODEL");
+                assert_eq!(env[1].name, "POUNDING_IMG_MODEL");
                 assert_eq!(env[1].value, "dall-e-3");
             }
             _ => panic!("expected Stdio"),

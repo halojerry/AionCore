@@ -32,7 +32,7 @@ pub async fn run_doctor(cli: &Cli, merged_path: &str) -> Result<ExitCode> {
 
     // Use the real on-disk DB so the report reflects the user's actual
     // catalog (including custom agents they've added via the UI).
-    let db_path = cli.data_dir.join("aionui-backend.db");
+    let db_path = cli.data_dir.join("pounding-backend.db");
     maybe_copy_legacy_database(&db_path)?;
     let database = init_database(&db_path).await?;
 
@@ -57,8 +57,8 @@ fn print_environment(merged_path: &str, data_dir: &Path) {
     println!("  data-dir       : {}", data_dir.display());
     println!("  PATH segments  : {path_segments}");
     println!("  PATH length    : {}", merged_path.len());
-    if let Some(p) = std::env::var_os("AIONUI_BUN_PATH") {
-        println!("  AIONUI_BUN_PATH: {}", PathBuf::from(p).display());
+    if let Some(p) = std::env::var_os("POUNDING_BUN_PATH") {
+        println!("  POUNDING_BUN_PATH: {}", PathBuf::from(p).display());
     }
     println!();
 }

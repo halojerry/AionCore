@@ -8,6 +8,7 @@ async-trait.workspace = true
 aionui-auth.workspace = true
 aionui-common.workspace = true
 aionui-db.workspace = true
+aionui-mcp.workspace = true
 aionui-runtime.workspace = true
 aionui-extension.workspace = true
 aionui-api-types.workspace = true
@@ -38,6 +39,7 @@ uuid.workspace = true
 agent-client-protocol = { version = "0.11.1", features = ["unstable_session_model", "unstable_session_close", "unstable_session_usage", "unstable_session_fork", "unstable_session_additional_directories", "unstable_session_resume"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 rusqlite.workspace = true
+libc.workspace = true
 
 [features]
 # Enables the `AgentInstance::Mock` variant used by downstream test harnesses
@@ -60,11 +62,4 @@ aionui-db.workspace = true
 # tests compile as separate binaries and must opt in via a feature.
 [[test]]
 name = "agent_types_integration"
-required-features = ["test-support"]
-
-# Integration tests for the connect-layer cancel/run_turn invariants
-# (Phase 1 of the conversation refactor). Reaches into test-only
-# helpers on `AionrsAgentManager`, so requires `test-support`.
-[[test]]
-name = "connector_cancel_invariants"
 required-features = ["test-support"]

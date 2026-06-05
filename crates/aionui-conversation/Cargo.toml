@@ -11,6 +11,8 @@ aionui-realtime.workspace = true
 aionui-auth.workspace = true
 aionui-ai-agent.workspace = true
 aionui-extension.workspace = true
+aionui-mcp.workspace = true
+aionui-runtime.workspace = true
 axum.workspace = true
 regex.workspace = true
 tokio.workspace = true
@@ -18,7 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 async-trait.workspace = true
-dashmap.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

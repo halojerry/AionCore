@@ -466,75 +466,20 @@
       "models": []
     },
     {
-      "id": "star-office-helper",
-      "name": "Star Office Helper",
+      "id": "pounding-expert",
+      "name": "POUNDING Expert",
       "name_i18n": {
-        "en-US": "Star Office Helper",
-        "zh-CN": "Star Office 助手",
-        "ru-RU": "Помощник Star Office",
-        "uk-UA": "Помічник Star Office"
+        "en-US": "POUNDING Expert",
+        "zh-CN": "POUNDING 使用专家",
+        "ru-RU": "POUNDING Эксперт"
       },
-      "description": "Install, connect, and troubleshoot Star-Office-UI visualization for Aion preview.",
+      "description": "Install, configure, and troubleshoot all POUNDING CLI agents: Claude Code, Codex, OpenClaw, OpenCode, and Hermes Agent. Your one-stop CLI setup expert.",
       "description_i18n": {
-        "en-US": "Install, connect, and troubleshoot Star-Office-UI visualization for Aion preview.",
-        "zh-CN": "用于在 Aion 预览中安装、连接并排查 Star-Office-UI 可视化问题。",
-        "ru-RU": "Помогает установить, подключить и диагностировать визуализацию Star-Office-UI для предпросмотра в Aion.",
-        "uk-UA": "Допомагає встановлювати, підключати та діагностувати візуалізацію Star-Office-UI для попереднього перегляду в Aion."
+        "en-US": "Install, configure, and troubleshoot all POUNDING CLI agents: Claude Code, Codex, OpenClaw, OpenCode, and Hermes Agent. Your one-stop CLI setup expert.",
+        "zh-CN": "安装、配置和排查所有 POUNDING CLI 代理：Claude Code、Codex、OpenClaw、OpenCode、Hermes Agent。一站式 CLI 使用专家。",
+        "ru-RU": "Установка, настройка и устранение неполадок всех CLI агентов POUNDING: Claude Code, Codex, OpenClaw, OpenCode и Hermes Agent."
       },
-      "avatar": "📺",
-      "preset_agent_type": "aionrs",
-      "enabled_skills": [
-        "star-office-helper"
-      ],
-      "custom_skill_names": [],
-      "disabled_builtin_skills": [],
-      "rule_file": "rules/star-office-helper.{locale}.md",
-      "prompts": [
-        "Set up Star Office on my machine",
-        "Fix Unauthorized on Star Office page",
-        "Connect Aion preview to http://127.0.0.1:19000"
-      ],
-      "prompts_i18n": {
-        "en-US": [
-          "Set up Star Office on my machine",
-          "Fix Unauthorized on Star Office page",
-          "Connect Aion preview to http://127.0.0.1:19000"
-        ],
-        "zh-CN": [
-          "帮我安装 Star Office",
-          "排查 Star Office Unauthorized",
-          "把 Aion 预览连接到 http://127.0.0.1:19000"
-        ],
-        "ru-RU": [
-          "Настрой Star Office на моём компьютере",
-          "Исправь ошибку Unauthorized на странице Star Office",
-          "Подключи предпросмотр Aion к http://127.0.0.1:19000"
-        ],
-        "uk-UA": [
-          "Налаштувати Star Office на моєму комп'ютері",
-          "Виправити помилку Unauthorized на сторінці Star Office",
-          "Підключити попередній перегляд Aion до http://127.0.0.1:19000"
-        ]
-      },
-      "models": []
-    },
-    {
-      "id": "openclaw-setup",
-      "name": "OpenClaw Setup Expert",
-      "name_i18n": {
-        "en-US": "OpenClaw Setup Expert",
-        "zh-CN": "OpenClaw 部署专家",
-        "ru-RU": "Эксперт по настройке OpenClaw",
-        "uk-UA": "Експерт з налаштування OpenClaw"
-      },
-      "description": "Expert guide for installing, deploying, configuring, and troubleshooting OpenClaw. Proactively helps with setup, diagnoses issues, and provides security best practices.",
-      "description_i18n": {
-        "en-US": "Expert guide for installing, deploying, configuring, and troubleshooting OpenClaw. Proactively helps with setup, diagnoses issues, and provides security best practices.",
-        "zh-CN": "OpenClaw 安装、部署、配置和故障排查专家。主动协助设置、诊断问题并提供安全最佳实践。",
-        "ru-RU": "Эксперт по установке, развёртыванию, настройке и устранению неполадок OpenClaw. Помогает пройти настройку, диагностирует проблемы и подсказывает безопасные практики.",
-        "uk-UA": "Експертний посібник зі встановлення, розгортання, налаштування та усунення несправностей OpenClaw. Допомагає з налаштуванням та безпекою."
-      },
-      "avatar": "🦞",
+      "avatar": "🔧",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
         "openclaw-setup",
@@ -542,32 +487,27 @@
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
-      "rule_file": "rules/openclaw-setup.{locale}.md",
+      "rule_file": "rules/pounding-expert.{locale}.md",
       "prompts": [
-        "Help me install OpenClaw step by step",
-        "My OpenClaw isn't working, please diagnose the issue",
-        "Configure Telegram channel for OpenClaw integration"
+        "Help me install all POUNDING CLI agents",
+        "My Claude Code isn't working, please diagnose",
+        "Set up OpenClaw with POUNDING API"
       ],
       "prompts_i18n": {
         "en-US": [
-          "Help me install OpenClaw step by step",
-          "My OpenClaw isn't working, please diagnose the issue",
-          "Configure Telegram channel for OpenClaw integration"
+          "Help me install all POUNDING CLI agents",
+          "My Claude Code isn't working, please diagnose",
+          "Set up OpenClaw with POUNDING API"
         ],
         "zh-CN": [
-          "帮我一步步安装 OpenClaw",
-          "我的 OpenClaw 出问题了，请帮我诊断",
-          "为 OpenClaw 配置 Telegram 渠道"
+          "帮我安装所有 POUNDING CLI 代理",
+          "我的 Claude Code 不工作了，请帮我排查",
+          "帮我用 POUNDING API 配置 OpenClaw"
         ],
         "ru-RU": [
-          "Помоги мне установить OpenClaw пошагово",
-          "Мой OpenClaw не работает, пожалуйста, диагностируй проблему",
-          "Настрой Telegram-канал для интеграции с OpenClaw"
-        ],
-        "uk-UA": [
-          "Допоможи мені встановити OpenClaw крок за кроком",
-          "Мій OpenClaw не працює, будь ласка, діагностуй проблему",
-          "Налаштувати канал Telegram для інтеграції з OpenClaw"
+          "Помогите установить все CLI агенты POUNDING",
+          "Мой Claude Code не работает, помогите разобраться",
+          "Настройте OpenClaw с POUNDING API"
         ]
       },
       "models": []
@@ -1101,6 +1041,58 @@
         ]
       },
       "models": []
+    },
+    {
+      "id": "pounding-ozon-assistant",
+      "name": "POUNDING Ozon Assistant",
+      "name_i18n": {
+        "en-US": "POUNDING Ozon Assistant",
+        "zh-CN": "POUNDING Ozon 助手",
+        "ru-RU": "POUNDING Ozon Ассистент"
+      },
+      "description": "POUNDING Ozon cross-border e-commerce assistant with officecli productivity tools. Ozon store management, product listing, data analysis, and document creation.",
+      "description_i18n": {
+        "en-US": "POUNDING Ozon cross-border e-commerce assistant with officecli productivity tools. Ozon store management, product listing, data analysis, and document creation.",
+        "zh-CN": "POUNDING Ozon 跨境电商助手，集成 officecli 生产力工具。Ozon 店铺管理、商品上架、数据分析、文档创建。",
+        "ru-RU": "POUNDING Ozon ассистент для кросс-граничной электронной коммерции с инструментами officecli. Управление магазином Ozon, листинг товаров, анализ данных и создание документов."
+      },
+      "preset": true,
+      "preset_agent_type": "aionrs",
+      "rule_file": "rules/pounding-ozon-assistant.{locale}.md",
+      "enabled_skills": [
+        "pounding-ozon-assistant",
+        "officecli-docx",
+        "officecli-pptx",
+        "officecli-xlsx",
+        "officecli-financial-model",
+        "officecli-academic-paper",
+        "officecli-data-dashboard",
+        "officecli-pitch-deck"
+      ],
+      "sort_order": 1,
+      "prompts": [
+        "Help me list a product from 1688 to Ozon",
+        "Analyze my Ozon store and find profitable products",
+        "Generate product images for my Ozon listing"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Help me list a product from 1688 to Ozon",
+          "Analyze my Ozon store and find profitable products",
+          "Generate product images for my Ozon listing"
+        ],
+        "zh-CN": [
+          "帮我把1688的商品上架到Ozon",
+          "帮我分析Ozon店铺，找有利润的产品",
+          "为我的Ozon商品生成图片"
+        ],
+        "ru-RU": [
+          "Помогите разместить товар с 1688 на Ozon",
+          "Проанализируйте мой магазин Ozon и найдите прибыльные товары",
+          "Создайте изображения для моих товаров Ozon"
+        ]
+      },
+      "avatar": "/api/assets/logos/brand/ozon.png"
     }
   ]
 }

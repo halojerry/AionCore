@@ -28,7 +28,7 @@ impl AgentType {
             AgentType::OpenclawGateway => "OpenClaw Gateway",
             AgentType::Nanobot => "Nanobot",
             AgentType::Remote => "Remote",
-            AgentType::Aionrs => "Aion CLI",
+            AgentType::Aionrs => "POUNDING CLI",
             AgentType::Gemini => "Gemini (legacy)",
         }
     }
@@ -65,7 +65,7 @@ impl AgentType {
     /// path during workspace provisioning.
     pub fn native_skills_dirs(&self) -> Option<&'static [&'static str]> {
         match self {
-            AgentType::Aionrs => Some(&[".aionrs/skills"]),
+            AgentType::Aionrs => Some(&[".pounding/skills"]),
             AgentType::Acp
             | AgentType::OpenclawGateway
             | AgentType::Nanobot
@@ -100,6 +100,15 @@ impl AgentType {
             | AgentType::Remote => "yolo",
         }
     }
+}
+
+/// Runtime status of a conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationStatus {
+    Pending,
+    Running,
+    Finished,
 }
 
 /// Origin of a conversation.
@@ -267,7 +276,7 @@ mod tests {
     #[test]
     fn test_agent_type_display_names() {
         assert_eq!(AgentType::OpenclawGateway.display_name(), "OpenClaw Gateway");
-        assert_eq!(AgentType::Aionrs.display_name(), "Aion CLI");
+        assert_eq!(AgentType::Aionrs.display_name(), "POUNDING CLI");
         assert_eq!(AgentType::Nanobot.display_name(), "Nanobot");
         assert_eq!(AgentType::Remote.display_name(), "Remote");
         assert_eq!(AgentType::Acp.display_name(), "ACP");
@@ -330,6 +339,13 @@ mod tests {
         assert_eq!(json, r#""openai""#);
         let parsed: ProtocolType = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, ProtocolType::OpenAI);
+    }
+
+    #[test]
+    fn test_conversation_status_lowercase() {
+        let val = ConversationStatus::Pending;
+        let json = serde_json::to_string(&val).unwrap();
+        assert_eq!(json, r#""pending""#);
     }
 
     #[test]

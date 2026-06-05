@@ -28,7 +28,7 @@ pub struct ScanPath {
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths() -> Vec<ScanPath> {
-    let env_path = std::env::var("AIONUI_EXTENSIONS_PATH").ok();
+    let env_path = std::env::var("POUNDING_EXTENSIONS_PATH").ok();
     let e2e_mode = is_e2e_test_mode();
     resolve_scan_paths_inner(env_path.as_deref(), e2e_mode, None)
 }
@@ -44,7 +44,7 @@ pub fn resolve_scan_paths() -> Vec<ScanPath> {
 /// In E2E test mode (`AIONUI_E2E_TEST=1`), only the environment variable
 /// paths are returned to ensure test isolation.
 pub fn resolve_scan_paths_for_data_dir(data_dir: &Path) -> Vec<ScanPath> {
-    let env_path = std::env::var("AIONUI_EXTENSIONS_PATH").ok();
+    let env_path = std::env::var("POUNDING_EXTENSIONS_PATH").ok();
     let e2e_mode = is_e2e_test_mode();
     resolve_scan_paths_inner(env_path.as_deref(), e2e_mode, Some(data_dir))
 }
@@ -103,13 +103,13 @@ fn resolve_scan_paths_inner(
         }
     } else {
         if let Some(home) = dirs::home_dir() {
-            push(home.join(".aionui").join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
+            push(home.join(".pounding").join(EXTENSIONS_DIR_NAME), ExtensionSource::Local);
         }
 
         // 3. AppData directory (platform-specific).
         if let Some(data_dir) = dirs::data_dir() {
             push(
-                data_dir.join("aionui").join(EXTENSIONS_DIR_NAME),
+                data_dir.join("pounding").join(EXTENSIONS_DIR_NAME),
                 ExtensionSource::Appdata,
             );
         }
@@ -121,7 +121,7 @@ fn resolve_scan_paths_inner(
 fn derive_legacy_appdata_extensions_dir(data_dir: &Path) -> Option<PathBuf> {
     let resolved = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
     let leaf = resolved.file_name()?.to_str()?;
-    if leaf != "aionui" {
+    if leaf != "pounding" {
         return None;
     }
     Some(resolved.parent()?.join(EXTENSIONS_DIR_NAME))
@@ -324,7 +324,7 @@ fn is_api_version_compatible(ext: &LoadedExtension) -> bool {
 // ---------------------------------------------------------------------------
 
 fn is_e2e_test_mode() -> bool {
-    std::env::var("AIONUI_E2E_TEST").map(|v| v == "1").unwrap_or(false)
+    std::env::var("POUNDING_E2E_TEST").map(|v| v == "1").unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -710,7 +710,7 @@ mod tests {
     fn resolve_scan_paths_for_data_dir_prefers_env_then_data_dir_then_appdata() {
         let tmp = tempfile::TempDir::new().unwrap();
         let app_root = tmp.path().join("AionUi-Dev");
-        let data_dir = app_root.join("aionui");
+        let data_dir = app_root.join("pounding");
         std::fs::create_dir_all(&data_dir).unwrap();
         let canonical_app_root = std::fs::canonicalize(&app_root).unwrap();
 

@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aionui_ai_agent::{
-    AgentStreamEvent,
+    AgentSendError, AgentStreamEvent,
     protocol::events::{
         ThinkingEventData,
         tool_call::{AcpToolCallSessionUpdateKind, AcpToolCallStatus, ToolCallStatus},
@@ -12,13 +12,12 @@ use crate::response_middleware::{ICronService, MessageMiddleware, MiddlewareResu
 use aionui_api_types::WebSocketMessage;
 use aionui_common::{ErrorChain, normalize_keys_to_snake_case, now_ms};
 
-use crate::conv_actor::TurnHandle;
 use crate::service::ConversationService;
 use aionui_db::IConversationRepository;
 use aionui_db::models::MessageRow;
 use aionui_realtime::EventBroadcaster;
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tracing::{debug, error, info, warn};
 
 /// Number of text chunks to accumulate before flushing to the database.
@@ -62,9 +61,7 @@ pub struct StreamRelay {
     repo: Arc<dyn IConversationRepository>,
     broadcaster: Arc<dyn EventBroadcaster>,
     cron_service: Option<Arc<dyn ICronService>>,
-    /// Released exactly once before terminal events are forwarded to
-    /// WebSocket subscribers.
-    turn_handle: Mutex<Option<TurnHandle>>,
+    complete_turn: bool,
 }
 
 impl StreamRelay {
@@ -83,24 +80,13 @@ impl StreamRelay {
             repo,
             broadcaster,
             cron_service,
-            turn_handle: Mutex::new(None),
+            complete_turn: true,
         }
     }
 
-    /// Register the turn handle released exactly once, just before the
-    /// terminal event reaches WebSocket subscribers.
-    pub fn with_turn_handle(self, handle: TurnHandle) -> Self {
-        if let Ok(mut guard) = self.turn_handle.lock() {
-            *guard = Some(handle);
-        }
+    pub fn with_turn_completion(mut self, enabled: bool) -> Self {
+        self.complete_turn = enabled;
         self
-    }
-
-    async fn release_turn_slot(&self) {
-        let handle = self.turn_handle.lock().ok().and_then(|mut g| g.take());
-        if let Some(handle) = handle {
-            handle.release().await;
-        }
     }
 
     /// Run the relay loop. Consumes `self` and runs until the agent stream ends.
@@ -111,7 +97,32 @@ impl StreamRelay {
             msg_id = %self.msg_id,
         )
     )]
-    pub async fn consume(self, mut rx: broadcast::Receiver<AgentStreamEvent>) -> RelayOutcome {
+    pub async fn consume(self, rx: broadcast::Receiver<AgentStreamEvent>) -> RelayOutcome {
+        self.consume_inner(rx, None).await
+    }
+
+    /// Run the relay loop while also accepting a typed send failure from the
+    /// task that called `IAgentTask::send_message`.
+    #[tracing::instrument(
+        skip_all,
+        fields(
+            conversation_id = %self.conversation_id,
+            msg_id = %self.msg_id,
+        )
+    )]
+    pub async fn consume_with_send_error(
+        self,
+        rx: broadcast::Receiver<AgentStreamEvent>,
+        send_error_rx: oneshot::Receiver<AgentSendError>,
+    ) -> RelayOutcome {
+        self.consume_inner(rx, Some(send_error_rx)).await
+    }
+
+    async fn consume_inner(
+        self,
+        mut rx: broadcast::Receiver<AgentStreamEvent>,
+        mut send_error_rx: Option<oneshot::Receiver<AgentSendError>>,
+    ) -> RelayOutcome {
         let started_at = now_ms();
         info!("StreamRelay started");
 
@@ -120,106 +131,155 @@ impl StreamRelay {
         let mut active_text: Option<TextSegmentState> = None;
         let mut active_thinking: Option<ThinkingSegmentState> = None;
         let mut used_primary_segment_msg_id = false;
+        let mut first_agent_event_logged = false;
+        let mut first_visible_output_logged = false;
+        let mut send_error_done = send_error_rx.is_none();
 
         loop {
-            match rx.recv().await {
-                Ok(event) => match &event {
-                    AgentStreamEvent::Thinking(data) => {
-                        if data.status.as_deref() == Some("done") {
-                            self.complete_active_thinking(&mut active_thinking).await;
-                            continue;
-                        }
-
-                        self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
-                            .await;
-
-                        let segment = active_thinking.get_or_insert_with(|| ThinkingSegmentState {
-                            id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
-                            buffer: String::new(),
-                            started_at: now_ms(),
-                        });
-                        segment.buffer.push_str(&data.content);
-                        self.forward_to_websocket_with_msg_id(&segment.id, &event);
-                    }
-                    AgentStreamEvent::Text(data) => {
-                        self.complete_active_thinking(&mut active_thinking).await;
-
-                        let segment = active_text.get_or_insert_with(|| TextSegmentState {
-                            id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
-                            buffer: String::new(),
-                            created_at: now_ms(),
-                            record_created: false,
-                            flush_counter: 0,
-                        });
-                        self.forward_to_websocket_with_msg_id(&segment.id, &event);
-                        segment.buffer.push_str(&data.content);
-                        full_text_buffer.push_str(&data.content);
-                        segment.flush_counter += 1;
-                        if segment.flush_counter >= FLUSH_INTERVAL {
-                            self.flush_text_segment(segment).await;
-                            segment.flush_counter = 0;
+            let recv_result = if send_error_done {
+                rx.recv().await
+            } else {
+                tokio::select! {
+                    recv = rx.recv() => recv,
+                    send_error = send_error_rx.as_mut().expect("send_error_rx exists while pending") => {
+                        send_error_done = true;
+                        match send_error {
+                            Ok(send_error) => {
+                                warn!(
+                                    code = ?send_error.code(),
+                                    ownership = ?send_error.ownership(),
+                                    "Injecting stream error for failed agent send"
+                                );
+                                Ok(AgentStreamEvent::Error(send_error.into_stream_error()))
+                            }
+                            Err(_) => continue,
                         }
                     }
-                    AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => {
-                        let elapsed_ms = now_ms() - started_at;
-                        let event_type = if matches!(event, AgentStreamEvent::Finish(_)) {
-                            "Finish"
-                        } else {
-                            "Error"
-                        };
+                }
+            };
+
+            match recv_result {
+                Ok(event) => {
+                    if !first_agent_event_logged {
+                        first_agent_event_logged = true;
                         info!(
-                            event_type,
-                            elapsed_ms,
-                            text_len = full_text_buffer.len(),
-                            "StreamRelay received terminal event"
+                            event_type = Self::event_kind(&event),
+                            elapsed_ms = now_ms().saturating_sub(started_at),
+                            "StreamRelay received first agent event"
                         );
+                    }
 
-                        self.complete_active_thinking(&mut active_thinking).await;
-                        self.close_active_text_segment(
-                            &mut active_text,
-                            &mut text_segments,
-                            if matches!(event, AgentStreamEvent::Error(_)) {
-                                "error"
+                    match &event {
+                        AgentStreamEvent::Thinking(data) => {
+                            if data.status.as_deref() == Some("done") {
+                                self.complete_active_thinking(&mut active_thinking).await;
+                                continue;
+                            }
+
+                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                                .await;
+                            if !first_visible_output_logged && !data.content.is_empty() {
+                                first_visible_output_logged = true;
+                                info!(
+                                    event_type = "Thinking",
+                                    elapsed_ms = now_ms().saturating_sub(started_at),
+                                    "StreamRelay received first visible output"
+                                );
+                            }
+
+                            let segment = active_thinking.get_or_insert_with(|| ThinkingSegmentState {
+                                id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
+                                buffer: String::new(),
+                                started_at: now_ms(),
+                            });
+                            segment.buffer.push_str(&data.content);
+                            self.forward_to_websocket_with_msg_id(&segment.id, &event);
+                        }
+                        AgentStreamEvent::Text(data) => {
+                            self.complete_active_thinking(&mut active_thinking).await;
+                            if !first_visible_output_logged && !data.content.is_empty() {
+                                first_visible_output_logged = true;
+                                info!(
+                                    event_type = "Text",
+                                    elapsed_ms = now_ms().saturating_sub(started_at),
+                                    "StreamRelay received first visible output"
+                                );
+                            }
+
+                            let segment = active_text.get_or_insert_with(|| TextSegmentState {
+                                id: Self::mint_segment_msg_id(&mut used_primary_segment_msg_id, &self.msg_id),
+                                buffer: String::new(),
+                                created_at: now_ms(),
+                                record_created: false,
+                                flush_counter: 0,
+                            });
+                            self.forward_to_websocket_with_msg_id(&segment.id, &event);
+                            segment.buffer.push_str(&data.content);
+                            full_text_buffer.push_str(&data.content);
+                            segment.flush_counter += 1;
+                            if segment.flush_counter >= FLUSH_INTERVAL {
+                                self.flush_text_segment(segment).await;
+                                segment.flush_counter = 0;
+                            }
+                        }
+                        AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => {
+                            let elapsed_ms = now_ms() - started_at;
+                            let event_type = if matches!(event, AgentStreamEvent::Finish(_)) {
+                                "Finish"
                             } else {
-                                "finish"
-                            },
-                        )
-                        .await;
-                        // Release the actor's running slot before the
-                        // client sees the terminal event — otherwise the
-                        // queue's next dequeue races with the slot
-                        // release and the backend returns Conflict.
-                        self.release_turn_slot().await;
-                        self.forward_to_websocket(&event);
-                        let outcome = self.finalize(&full_text_buffer, &text_segments, &event).await;
-                        Self::complete_conversation(&self.repo, &self.broadcaster, &self.conversation_id).await;
-                        break outcome;
-                    }
-                    AgentStreamEvent::ToolCall(data) => {
-                        self.complete_active_thinking(&mut active_thinking).await;
-                        self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                                "Error"
+                            };
+                            info!(
+                                event_type,
+                                elapsed_ms,
+                                text_len = full_text_buffer.len(),
+                                "StreamRelay received terminal event"
+                            );
+
+                            self.complete_active_thinking(&mut active_thinking).await;
+                            self.close_active_text_segment(
+                                &mut active_text,
+                                &mut text_segments,
+                                if matches!(event, AgentStreamEvent::Error(_)) {
+                                    "error"
+                                } else {
+                                    "finish"
+                                },
+                            )
                             .await;
-                        self.forward_to_websocket(&event);
-                        self.persist_tool_call(data).await;
+                            self.forward_to_websocket(&event);
+                            let outcome = self.finalize(&full_text_buffer, &text_segments, &event).await;
+                            if self.complete_turn {
+                                Self::complete_conversation(&self.repo, &self.broadcaster, &self.conversation_id).await;
+                            }
+                            break outcome;
+                        }
+                        AgentStreamEvent::ToolCall(data) => {
+                            self.complete_active_thinking(&mut active_thinking).await;
+                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                                .await;
+                            self.forward_to_websocket(&event);
+                            self.persist_tool_call(data).await;
+                        }
+                        AgentStreamEvent::AcpToolCall(data) => {
+                            self.complete_active_thinking(&mut active_thinking).await;
+                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                                .await;
+                            self.forward_to_websocket(&event);
+                            self.persist_acp_tool_call(data).await;
+                        }
+                        AgentStreamEvent::ToolGroup(entries) => {
+                            self.complete_active_thinking(&mut active_thinking).await;
+                            self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
+                                .await;
+                            self.forward_to_websocket(&event);
+                            self.persist_tool_group(entries).await;
+                        }
+                        _ => {
+                            self.forward_to_websocket(&event);
+                        }
                     }
-                    AgentStreamEvent::AcpToolCall(data) => {
-                        self.complete_active_thinking(&mut active_thinking).await;
-                        self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
-                            .await;
-                        self.forward_to_websocket(&event);
-                        self.persist_acp_tool_call(data).await;
-                    }
-                    AgentStreamEvent::ToolGroup(entries) => {
-                        self.complete_active_thinking(&mut active_thinking).await;
-                        self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
-                            .await;
-                        self.forward_to_websocket(&event);
-                        self.persist_tool_group(entries).await;
-                    }
-                    _ => {
-                        self.forward_to_websocket(&event);
-                    }
-                },
+                }
                 Err(broadcast::error::RecvError::Closed) => {
                     let elapsed_ms = now_ms() - started_at;
                     warn!(
@@ -231,9 +291,6 @@ impl StreamRelay {
                     self.complete_active_thinking(&mut active_thinking).await;
                     self.close_active_text_segment(&mut active_text, &mut text_segments, "finish")
                         .await;
-                    // Release the slot before broadcasting turn.completed
-                    // for the same reason as the Finish/Error branch.
-                    self.release_turn_slot().await;
                     // Channel closed without finish/error — still finalize
                     let outcome = self
                         .finalize(
@@ -242,13 +299,46 @@ impl StreamRelay {
                             &AgentStreamEvent::Finish(aionui_ai_agent::protocol::events::FinishEventData::default()),
                         )
                         .await;
-                    Self::complete_conversation(&self.repo, &self.broadcaster, &self.conversation_id).await;
+                    if self.complete_turn {
+                        Self::complete_conversation(&self.repo, &self.broadcaster, &self.conversation_id).await;
+                    }
                     break outcome;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(lagged = n, "Stream relay lagged, some events dropped");
                 }
             }
+        }
+    }
+
+    fn event_kind(event: &AgentStreamEvent) -> &'static str {
+        match event {
+            AgentStreamEvent::Start(_) => "Start",
+            AgentStreamEvent::Text(_) => "Text",
+            AgentStreamEvent::Tips(_) => "Tips",
+            AgentStreamEvent::Thinking(_) => "Thinking",
+            AgentStreamEvent::ToolCall(_) => "ToolCall",
+            AgentStreamEvent::AcpToolCall(_) => "AcpToolCall",
+            AgentStreamEvent::ToolGroup(_) => "ToolGroup",
+            AgentStreamEvent::AgentStatus(_) => "AgentStatus",
+            AgentStreamEvent::Plan(_) => "Plan",
+            AgentStreamEvent::Permission(_) => "Permission",
+            AgentStreamEvent::AcpPermission(_) => "AcpPermission",
+            AgentStreamEvent::SkillSuggest(_) => "SkillSuggest",
+            AgentStreamEvent::CronTrigger(_) => "CronTrigger",
+            AgentStreamEvent::AcpModelInfo(_) => "AcpModelInfo",
+            AgentStreamEvent::AcpModeInfo(_) => "AcpModeInfo",
+            AgentStreamEvent::AcpConfigOption(_) => "AcpConfigOption",
+            AgentStreamEvent::AcpSessionInfo(_) => "AcpSessionInfo",
+            AgentStreamEvent::AcpContextUsage(_) => "AcpContextUsage",
+            AgentStreamEvent::AcpPromptHookWarning(_) => "AcpPromptHookWarning",
+            AgentStreamEvent::SlashCommandsUpdated(_) => "SlashCommandsUpdated",
+            AgentStreamEvent::AvailableCommands(_) => "AvailableCommands",
+            AgentStreamEvent::Finish(_) => "Finish",
+            AgentStreamEvent::Error(_) => "Error",
+            AgentStreamEvent::System(_) => "System",
+            AgentStreamEvent::RequestTrace(_) => "RequestTrace",
+            AgentStreamEvent::SessionAssigned(_) => "SessionAssigned",
         }
     }
 
@@ -441,7 +531,7 @@ impl StreamRelay {
             outcome.system_responses = processed.system_responses;
         } else if let AgentStreamEvent::Error(data) = event {
             // No text accumulated but got an error — store error as tips message
-            let content = json!({ "content": data.message, "type": "error" }).to_string();
+            let content = json!({ "content": &data.message, "type": "error", "error": &data }).to_string();
             let row = MessageRow {
                 id: ConversationService::mint_msg_id(),
                 conversation_id: self.conversation_id.clone(),
@@ -776,17 +866,19 @@ impl StreamRelay {
 
     #[tracing::instrument(skip_all, fields(conversation_id = %conversation_id))]
     pub async fn complete_conversation(
-        _repo: &Arc<dyn IConversationRepository>,
+        repo: &Arc<dyn IConversationRepository>,
         broadcaster: &Arc<dyn EventBroadcaster>,
         conversation_id: &str,
     ) {
-        // DB.status is not the runtime source of truth — `ConvActor`
-        // is. The runtime transition back to `Idle` is handled by
-        // `TurnHandle::Drop` in the `send_message` spawn. Here we
-        // only broadcast turn.completed so live subscribers re-enable
-        // the input. `_repo` is preserved to keep the signature
-        // stable for callers; it can be dropped once they all stop
-        // passing it.
+        let update = aionui_db::ConversationRowUpdate {
+            status: Some("finished".to_owned()),
+            updated_at: Some(now_ms()),
+            ..Default::default()
+        };
+        if let Err(e) = repo.update(conversation_id, &update).await {
+            error!(error = %ErrorChain(&e), "Failed to update conversation status");
+        }
+
         let payload = json!({
             "conversation_id": conversation_id,
             "session_id": conversation_id,
@@ -834,7 +926,6 @@ impl ICronService for SharedCronService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conv_actor::ConvActor;
     use aionui_ai_agent::protocol::events::{ErrorEventData, FinishEventData, TextEventData, ThinkingEventData};
     use aionui_db::DbError;
     use std::sync::Mutex;
@@ -959,10 +1050,10 @@ mod tests {
 
         let rx = tx.subscribe();
 
-        tx.send(AgentStreamEvent::Error(ErrorEventData {
-            message: "Something went wrong".into(),
-            code: None,
-        }))
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "Something went wrong",
+            None,
+        )))
         .unwrap();
 
         let outcome = relay.consume(rx).await;
@@ -977,6 +1068,148 @@ mod tests {
         let content: serde_json::Value = serde_json::from_str(&msg.content).unwrap();
         assert_eq!(content["content"], "Something went wrong");
         assert_eq!(content["type"], "error");
+    }
+
+    #[tokio::test]
+    async fn run_send_error_injects_error_and_completes_turn() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let mut ws_rx = bus.subscribe();
+        let rx = tx.subscribe();
+        let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
+        send_error_tx
+            .send(AgentSendError::from_app_error(aionui_common::AppError::BadGateway(
+                "provider returned 401 invalid api key".into(),
+            )))
+            .unwrap();
+
+        let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
+        assert!(outcome.system_responses.is_empty());
+
+        let inserts = repo.take_inserts();
+        assert_eq!(inserts.len(), 1);
+        assert_eq!(inserts[0].r#type, "tips");
+        assert_eq!(inserts[0].status.as_deref(), Some("error"));
+        let content: serde_json::Value = serde_json::from_str(&inserts[0].content).unwrap();
+        assert_eq!(content["content"], "The model provider rejected the request");
+        assert_eq!(content["type"], "error");
+        assert_eq!(content["error"]["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
+        assert_eq!(content["error"]["ownership"], "user_llm_provider");
+        assert_eq!(content["error"]["retryable"], false);
+        assert_eq!(content["error"]["feedback_recommended"], false);
+        assert_eq!(content["error"]["detail"], "provider returned 401 invalid api key");
+        assert_eq!(content["error"]["resolution"]["kind"], "check_provider_credentials");
+        assert_eq!(content["error"]["resolution"]["target"], "provider_settings");
+
+        let mut ws_events = vec![];
+        while let Ok(evt) = ws_rx.try_recv() {
+            ws_events.push(evt);
+        }
+
+        let error_event = ws_events
+            .iter()
+            .find(|evt| evt.name == "message.stream" && evt.data["type"] == "error")
+            .expect("send error should be forwarded as message.stream error");
+        assert_eq!(error_event.data["data"]["code"], "USER_LLM_PROVIDER_AUTH_FAILED");
+        assert_eq!(error_event.data["data"]["ownership"], "user_llm_provider");
+        assert!(ws_events.iter().any(|evt| evt.name == "turn.completed"));
+    }
+
+    #[tokio::test]
+    async fn run_send_error_keeps_existing_stream_error_when_it_arrives_first() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let rx = tx.subscribe();
+        let send_error = AgentSendError::from_app_error(aionui_common::AppError::BadGateway(
+            "provider returned 401 invalid api key".into(),
+        ));
+        tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+            "stream already emitted",
+            None,
+        )))
+        .unwrap();
+        let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
+        let delayed_send_error = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = send_error_tx.send(send_error);
+        });
+
+        let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
+        delayed_send_error.await.unwrap();
+        assert!(outcome.system_responses.is_empty());
+
+        let inserts = repo.take_inserts();
+        assert_eq!(inserts.len(), 1);
+        assert_eq!(inserts[0].r#type, "tips");
+        let content: serde_json::Value = serde_json::from_str(&inserts[0].content).unwrap();
+        assert_eq!(content["content"], "stream already emitted");
+        assert_eq!(content["type"], "error");
+    }
+
+    #[tokio::test]
+    async fn run_send_error_uses_send_error_when_it_arrives_first() {
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "user-1".into(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        );
+
+        let rx = tx.subscribe();
+        let (send_error_tx, send_error_rx) = tokio::sync::oneshot::channel();
+        send_error_tx
+            .send(AgentSendError::from_app_error(aionui_common::AppError::BadGateway(
+                "provider returned 401 invalid api key".into(),
+            )))
+            .unwrap();
+        let delayed_stream_error = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let _ = tx.send(AgentStreamEvent::Error(ErrorEventData::legacy(
+                "stream already emitted",
+                None,
+            )));
+        });
+
+        let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
+        delayed_stream_error.await.unwrap();
+        assert!(outcome.system_responses.is_empty());
+
+        let inserts = repo.take_inserts();
+        assert_eq!(inserts.len(), 1);
+        assert_eq!(inserts[0].r#type, "tips");
+        let content: serde_json::Value = serde_json::from_str(&inserts[0].content).unwrap();
+        assert_eq!(content["content"], "The model provider rejected the request");
+        assert_eq!(content["type"], "error");
+        assert_eq!(content["error"]["resolution"]["kind"], "check_provider_credentials");
+        assert_eq!(content["error"]["resolution"]["target"], "provider_settings");
     }
 
     #[tokio::test]
@@ -1177,101 +1410,6 @@ mod tests {
         assert_eq!(data["session_id"], "conv-1");
         assert_eq!(data["status"], "finished");
         assert_eq!(data["canSendMessage"], true);
-    }
-
-    #[tokio::test]
-    async fn turn_handle_releases_before_terminal_event_reaches_bus() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        let repo = Arc::new(RecordingRepo::new());
-        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
-        let (tx, _) = broadcast::channel(64);
-
-        let mut ws_rx = bus.subscribe();
-        let actor = ConvActor::new("conv-1".into());
-        actor.mark_idle().await;
-        let turn_handle = actor.begin_turn("asst-1".into()).await.unwrap();
-        let released = Arc::new(AtomicBool::new(false));
-        let observed_when_finish_arrived = Arc::new(AtomicBool::new(false));
-        let observed_when_turn_completed = Arc::new(AtomicBool::new(false));
-
-        let relay = StreamRelay::new(
-            "conv-1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus.clone(),
-            None,
-        )
-        .with_turn_handle(turn_handle);
-
-        let rx = tx.subscribe();
-        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
-
-        let observe_finish = Arc::clone(&observed_when_finish_arrived);
-        let observe_turn = Arc::clone(&observed_when_turn_completed);
-        let actor_observed = actor.clone();
-        let released_observed = Arc::clone(&released);
-        let drain = tokio::spawn(async move {
-            while let Ok(evt) = ws_rx.recv().await {
-                let snapshot = actor_observed.public_status() == crate::conv_service_trait::ConversationStatus::Idle;
-                if snapshot {
-                    released_observed.store(true, Ordering::SeqCst);
-                }
-                let kind = evt.data["type"].as_str().unwrap_or("");
-                if evt.name == "message.stream" && kind == "finish" {
-                    observe_finish.store(snapshot, Ordering::SeqCst);
-                }
-                if evt.name == "turn.completed" {
-                    observe_turn.store(snapshot, Ordering::SeqCst);
-                    return;
-                }
-            }
-        });
-
-        relay.consume(rx).await;
-        drain.await.unwrap();
-
-        assert!(released.load(Ordering::SeqCst), "turn handle must release");
-        assert!(
-            observed_when_finish_arrived.load(Ordering::SeqCst),
-            "turn handle must release before the terminal stream event reaches the bus"
-        );
-        assert!(
-            observed_when_turn_completed.load(Ordering::SeqCst),
-            "turn handle must release before turn.completed reaches the bus"
-        );
-    }
-
-    #[tokio::test]
-    async fn turn_handle_releases_on_channel_close() {
-        let repo = Arc::new(RecordingRepo::new());
-        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
-        let (tx, _) = broadcast::channel::<AgentStreamEvent>(64);
-
-        let actor = ConvActor::new("conv-1".into());
-        actor.mark_idle().await;
-        let turn_handle = actor.begin_turn("asst-1".into()).await.unwrap();
-        let relay = StreamRelay::new(
-            "conv-1".into(),
-            "asst-1".into(),
-            "user-1".into(),
-            repo.clone(),
-            bus.clone(),
-            None,
-        )
-        .with_turn_handle(turn_handle);
-
-        let rx = tx.subscribe();
-        // Drop the sender to close the channel without a terminal
-        // event. The relay's `Closed` arm must still release the turn.
-        drop(tx);
-        relay.consume(rx).await;
-
-        assert_eq!(
-            actor.public_status(),
-            crate::conv_service_trait::ConversationStatus::Idle
-        );
     }
 
     #[tokio::test]

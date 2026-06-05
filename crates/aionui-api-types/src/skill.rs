@@ -239,7 +239,7 @@ mod tests {
         let item = SkillListItemResponse {
             name: "my-skill".into(),
             description: "Does things".into(),
-            location: "/home/user/.aionui/skills/my-skill".into(),
+            location: "/home/user/.pounding/skills/my-skill".into(),
             relative_location: None,
             is_custom: true,
             source: SkillSourceResponse::Custom,
@@ -260,7 +260,7 @@ mod tests {
         let item = SkillListItemResponse {
             name: "cron".into(),
             description: "Schedule recurring tasks".into(),
-            location: "/home/user/.aionui/builtin-skills-view/cron/SKILL.md".into(),
+            location: "/home/user/.pounding/builtin-skills-view/cron/SKILL.md".into(),
             relative_location: Some("auto-inject/cron/SKILL.md".into()),
             is_custom: false,
             source: SkillSourceResponse::Builtin,
@@ -513,12 +513,12 @@ mod tests {
     #[test]
     fn test_skill_paths_response() {
         let resp = SkillPathsResponse {
-            user_skills_dir: "/home/user/.aionui/skills".into(),
+            user_skills_dir: "/home/user/.pounding/skills".into(),
             builtin_skills_dir: "/app/resources/skills".into(),
         };
         let json = serde_json::to_value(&resp).unwrap();
         // Project-wide wire contract: snake_case fields on the wire.
-        assert_eq!(json["user_skills_dir"], "/home/user/.aionui/skills");
+        assert_eq!(json["user_skills_dir"], "/home/user/.pounding/skills");
         assert_eq!(json["builtin_skills_dir"], "/app/resources/skills");
         assert!(json.get("userSkillsDir").is_none());
         assert!(json.get("builtinSkillsDir").is_none());

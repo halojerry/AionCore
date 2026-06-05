@@ -1,26 +1,26 @@
 use aionui_common::{
-    AgentType, ConversationSource, MessagePosition, MessageStatus, MessageType, PaginatedResult, ProviderWithModel,
-    TimestampMs,
+    AgentType, ConversationSource, ConversationStatus, MessagePosition, MessageStatus, MessageType, PaginatedResult,
+    ProviderWithModel, TimestampMs,
 };
 use serde::{Deserialize, Serialize};
 
-/// Wire-format status of a conversation row.
-///
-/// Pure DTO: the real runtime status is
-/// `aionui_conversation::ConversationStatus` (an
-/// `Idle / Running { msg_id }` enum on `ConvActor`). The conv layer's
-/// `row_to_response` collapses runtime state into one of these three
-/// lowercase strings so the existing wire contract with the frontend
-/// is preserved unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ConversationStatus {
-    /// Newly-created row that has never been opened in this process.
-    Pending,
-    /// Actor exists and an in-flight turn is active.
-    Running,
-    /// Actor exists and is idle (no in-flight turn).
-    Finished,
+/// Per-MCP snapshot status stored in `conversation.extra`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationMcpStatusKind {
+    Loaded,
+    Failed,
+    Unsupported,
+}
+
+/// A single MCP item shown in the conversation-scoped MCP list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConversationMcpStatus {
+    pub id: String,
+    pub name: String,
+    pub status: ConversationMcpStatusKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ── Request types ──────────────────────────────────────────────────
@@ -96,6 +96,7 @@ pub struct ListMessagesQuery {
     pub page: Option<u32>,
     pub page_size: Option<u32>,
     pub order: Option<String>,
+    pub content_mode: Option<String>,
 }
 
 /// Body for `PATCH /api/conversations/:id/artifacts/:artifact_id`.
@@ -396,15 +397,17 @@ mod tests {
         assert!(q.page.is_none());
         assert!(q.page_size.is_none());
         assert!(q.order.is_none());
+        assert!(q.content_mode.is_none());
     }
 
     #[test]
     fn deserialize_messages_query_with_values() {
-        let raw = json!({ "page": 2, "page_size": 30, "order": "ASC" });
+        let raw = json!({ "page": 2, "page_size": 30, "order": "ASC", "content_mode": "compact" });
         let q: ListMessagesQuery = serde_json::from_value(raw).unwrap();
         assert_eq!(q.page, Some(2));
         assert_eq!(q.page_size, Some(30));
         assert_eq!(q.order.as_deref(), Some("ASC"));
+        assert_eq!(q.content_mode.as_deref(), Some("compact"));
     }
 
     // ── SearchMessagesQuery ─────────────────────────────────────────

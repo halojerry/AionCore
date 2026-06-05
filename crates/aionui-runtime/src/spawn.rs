@@ -44,6 +44,25 @@ pub struct Builder {
     mode: Mode,
 }
 
+/// Force-kill a spawned child and wait for the direct child handle to exit.
+///
+/// On Unix, children spawned through [`Builder::new`] are process-group
+/// leaders, so this targets that group to clean up descendants as well. On
+/// Windows, this uses `taskkill /T` to terminate the process tree.
+pub async fn kill_process_tree(child: &mut Child) -> io::Result<()> {
+    let Some(pid) = child.id() else {
+        return child.kill().await;
+    };
+
+    #[cfg(unix)]
+    force_kill_process_tree(pid)?;
+    #[cfg(windows)]
+    kill_windows_process_tree(pid).await?;
+    #[cfg(not(any(unix, windows)))]
+    child.kill().await?;
+    child.wait().await.map(|_| ())
+}
+
 impl std::fmt::Debug for Builder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Builder")
@@ -73,6 +92,7 @@ impl Builder {
     pub fn new<S: AsRef<OsStr>>(program: S) -> Self {
         let mut inner = Command::new(resolve_program(program.as_ref()));
         inner.kill_on_drop(true);
+        configure_platform_spawn(&mut inner);
         strip_pollution(&mut inner);
         Self {
             inner,
@@ -96,6 +116,7 @@ impl Builder {
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
             .env("TERM", "dumb");
+        configure_platform_spawn(&mut inner);
         strip_pollution(&mut inner);
         Self {
             inner,
@@ -177,6 +198,69 @@ fn strip_pollution(cmd: &mut Command) {
         .env_remove("NODE_INSPECT")
         .env_remove("NODE_DEBUG")
         .env_remove("CLAUDECODE");
+}
+
+#[cfg(unix)]
+fn configure_platform_spawn(cmd: &mut Command) {
+    // Start each child in its own process group so explicit teardown can
+    // kill the whole subtree (CLI + MCP descendants) in one shot.
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_platform_spawn(_cmd: &mut Command) {}
+
+#[cfg(unix)]
+fn force_kill_process_tree(pid: u32) -> io::Result<()> {
+    let pgid = unsafe { libc::getpgid(pid as i32) };
+    if pgid == -1 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return Ok(());
+        }
+        return kill_unix_target(pid as i32);
+    }
+
+    if pgid > 1 && pgid as u32 == pid {
+        kill_unix_target(-pgid)
+    } else {
+        kill_unix_target(pid as i32)
+    }
+}
+
+#[cfg(unix)]
+fn kill_unix_target(target: i32) -> io::Result<()> {
+    let result = unsafe { libc::kill(target, libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(err)
+    }
+}
+
+#[cfg(windows)]
+async fn kill_windows_process_tree(pid: u32) -> io::Result<()> {
+    let pid_arg = pid.to_string();
+    let mut cmd = Builder::clean_cli("taskkill");
+    cmd.args(["/F", "/T", "/PID", pid_arg.as_str()]);
+    let output = cmd.output().await?;
+    if output.status.success() || output.status.code() == Some(128) {
+        return Ok(());
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "taskkill failed for pid {pid} (exit {:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    ))
 }
 
 /// Resolve `program` through `resolve_command_path` so callers don't have

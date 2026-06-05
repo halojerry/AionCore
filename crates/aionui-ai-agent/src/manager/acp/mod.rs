@@ -1,10 +1,10 @@
 pub mod agent;
 mod agent_close;
-mod agent_connector;
 pub mod agent_event_tracker;
 pub mod agent_reconcile;
 mod agent_session_flow;
 pub mod catalog_forwarder;
+mod codex_sandbox;
 pub mod hooks;
 mod mode_normalize;
 pub mod permission_router;

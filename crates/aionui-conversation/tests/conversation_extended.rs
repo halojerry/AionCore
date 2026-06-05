@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use aionui_ai_agent::IAgentConnectorFactory;
-use aionui_ai_agent::test_support::MockConnectorFactory;
+use aionui_ai_agent::IWorkerTaskManager;
 use aionui_api_types::{
-    CloneConversationRequest, ConversationStatus, CreateConversationRequest, ListMessagesQuery, SearchMessagesQuery,
-    WebSocketMessage,
+    CloneConversationRequest, CreateConversationRequest, ListMessagesQuery, SearchMessagesQuery, WebSocketMessage,
 };
-use aionui_common::{generate_prefixed_id, now_ms};
+use aionui_common::{AgentKillReason, AppError, ConversationStatus, TimestampMs, generate_prefixed_id, now_ms};
 use aionui_conversation::ConversationService;
 use aionui_conversation::skill_resolver::SkillResolver;
 use aionui_db::models::MessageRow;
@@ -32,6 +30,39 @@ impl TestBroadcaster {
 impl EventBroadcaster for TestBroadcaster {
     fn broadcast(&self, event: WebSocketMessage<serde_json::Value>) {
         self.events.lock().unwrap().push(event);
+    }
+}
+
+struct NoopTaskManager;
+
+#[async_trait::async_trait]
+impl IWorkerTaskManager for NoopTaskManager {
+    fn get_task(&self, _: &str) -> Option<aionui_ai_agent::AgentInstance> {
+        None
+    }
+    async fn get_or_build_task(
+        &self,
+        _: &str,
+        _: aionui_ai_agent::types::BuildTaskOptions,
+    ) -> Result<aionui_ai_agent::AgentInstance, AppError> {
+        Err(AppError::Internal("noop".into()))
+    }
+    fn kill(&self, _: &str, _: Option<AgentKillReason>) -> Result<(), AppError> {
+        Ok(())
+    }
+    fn kill_and_wait(
+        &self,
+        _: &str,
+        _: Option<AgentKillReason>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(std::future::ready(()))
+    }
+    fn clear(&self) {}
+    fn active_count(&self) -> usize {
+        0
+    }
+    fn collect_idle(&self, _: TimestampMs) -> Vec<String> {
+        vec![]
     }
 }
 
@@ -69,7 +100,7 @@ async fn setup() -> (
         Arc::new(aionui_db::SqliteAgentMetadataRepository::new(db.pool().clone()));
     let acp_session_repo: Arc<dyn aionui_db::IAcpSessionRepository> =
         Arc::new(aionui_db::SqliteAcpSessionRepository::new(db.pool().clone()));
-    let task_mgr: Arc<dyn IAgentConnectorFactory> = MockConnectorFactory::builder().build();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(NoopTaskManager);
     let svc = ConversationService::new(
         std::env::temp_dir(),
         broadcaster.clone(),
@@ -100,6 +131,35 @@ fn make_message(conv_id: &str, content: &str, offset_ms: i64) -> MessageRow {
         r#type: "text".to_string(),
         content: format!(r#"{{"content":"{content}"}}"#),
         position: Some("right".to_string()),
+        status: Some("finish".to_string()),
+        hidden: false,
+        created_at: now_ms() + offset_ms,
+    }
+}
+
+fn make_acp_tool_message(conv_id: &str, id: &str, output: &str, offset_ms: i64) -> MessageRow {
+    MessageRow {
+        id: id.to_string(),
+        conversation_id: conv_id.to_string(),
+        msg_id: Some(id.to_string()),
+        r#type: "acp_tool_call".to_string(),
+        content: json!({
+            "session_id": "session-1",
+            "update": {
+                "session_update": "tool_call",
+                "tool_call_id": id,
+                "status": "completed",
+                "title": "rg",
+                "kind": "search",
+                "raw_input": { "pattern": "needle", "path": "." },
+                "content": [{
+                    "type": "content",
+                    "content": { "type": "text", "text": output }
+                }]
+            }
+        })
+        .to_string(),
+        position: Some("left".to_string()),
         status: Some("finish".to_string()),
         hidden: false,
         created_at: now_ms() + offset_ms,
@@ -144,8 +204,6 @@ async fn t7_1_reset_clears_messages_and_status() {
     svc.reset(USER_ID, &conv.id).await.unwrap();
 
     let fetched = svc.get(USER_ID, &conv.id).await.unwrap();
-    // reset() writes DB.status="pending" and clears any actor; with no
-    // actor entry the response status falls back to the DB column.
     assert_eq!(fetched.status, ConversationStatus::Pending);
 
     let messages = svc
@@ -193,6 +251,7 @@ async fn t8_2_pagination() {
         page: Some(1),
         page_size: Some(3),
         order: None,
+        content_mode: None,
     };
     let result = svc.list_messages(USER_ID, &conv.id, query).await.unwrap();
     assert_eq!(result.items.len(), 3);
@@ -251,6 +310,81 @@ async fn t8_5_conversation_not_found() {
 }
 
 // ── T9: Message search ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn t8_6_compact_mode_truncates_large_tool_content_only_for_list_response() {
+    let (svc, repo, _b) = setup().await;
+    let conv = svc.create(USER_ID, make_create_req()).await.unwrap();
+    let large_output = "match line\n".repeat(10_000);
+
+    repo.insert_message(&make_acp_tool_message(&conv.id, "tool-big", &large_output, 0))
+        .await
+        .unwrap();
+
+    let full = svc
+        .list_messages(USER_ID, &conv.id, ListMessagesQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        full.items[0].content["update"]["content"][0]["content"]["text"]
+            .as_str()
+            .unwrap(),
+        large_output
+    );
+
+    let compact = svc
+        .list_messages(
+            USER_ID,
+            &conv.id,
+            ListMessagesQuery {
+                content_mode: Some("compact".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let compact_content = &compact.items[0].content;
+    let preview = compact_content["update"]["content"][0]["content"]["text"]
+        .as_str()
+        .unwrap();
+
+    assert!(compact_content["_compact"]["truncated"].as_bool().unwrap());
+    assert!(compact_content["_compact"]["original_size"].as_u64().unwrap() > preview.len() as u64);
+    assert!(preview.len() < large_output.len());
+    assert!(!preview.contains(&large_output));
+}
+
+#[tokio::test]
+async fn t8_7_get_message_returns_full_tool_content_after_compact_list() {
+    let (svc, repo, _b) = setup().await;
+    let conv = svc.create(USER_ID, make_create_req()).await.unwrap();
+    let large_output = "wide rg output\n".repeat(10_000);
+
+    repo.insert_message(&make_acp_tool_message(&conv.id, "tool-detail", &large_output, 0))
+        .await
+        .unwrap();
+
+    let _ = svc
+        .list_messages(
+            USER_ID,
+            &conv.id,
+            ListMessagesQuery {
+                content_mode: Some("compact".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let detail = svc.get_message(USER_ID, &conv.id, "tool-detail").await.unwrap();
+
+    assert_eq!(
+        detail.content["update"]["content"][0]["content"]["text"]
+            .as_str()
+            .unwrap(),
+        large_output
+    );
+}
 
 #[tokio::test]
 async fn t9_1_keyword_match() {

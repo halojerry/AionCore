@@ -243,11 +243,11 @@ async fn sm11_get_skill_paths() {
     // (SAFETY: `remove_var` is unsafe in 2024 edition due to process-wide
     // side-effects.)
     unsafe {
-        std::env::remove_var("AIONUI_BUILTIN_SKILLS_PATH");
+        std::env::remove_var("POUNDING_BUILTIN_SKILLS_PATH");
     }
 
     let resource_dir = Path::new("/app/resources");
-    let data_dir = Path::new("/home/user/.aionui");
+    let data_dir = Path::new("/home/user/.pounding");
     let paths = resolve_skill_paths(resource_dir, data_dir);
 
     assert!(paths.user_skills_dir.to_string_lossy().contains("skills"));

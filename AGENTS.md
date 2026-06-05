@@ -22,69 +22,15 @@ Only after exhausting the above — and explicitly documenting why each option i
 
 ### Logging
 
-When changing a critical path, explicitly evaluate whether logs are needed for development diagnosis and production troubleshooting. Add structured logs with appropriate levels:
-- `debug` for detailed, high-frequency internal flow that helps verify behavior and diagnose issues in development
-- `info` for low-volume lifecycle boundaries useful in production
+When planning or changing a critical path or hard-to-observe flow, evaluate whether logging needs to change. In implementation plans for such changes, briefly state whether logs will be added, existing observability is sufficient, or logs are intentionally unnecessary. Do not add logs for simple refactors, test-only changes, UI copy/style changes, or when existing tests, errors, metrics, or logs already provide enough observability.
+
+Add structured logs only when they help verify behavior during development or locate production issues later:
+- `debug` for development-only flow details and state transitions
+- `info` for low-volume production lifecycle boundaries and important state changes
 - `warn` for malformed or unexpected data that is safely handled
 - `error` for contract violations or failed operations
 
 Production-visible logs must not include sensitive payloads such as prompts, tool input/output, file contents, command bodies, tokens, secrets, or raw provider requests/responses. If such payloads are needed for local debugging, they must be behind explicit development-only guards and never enabled by default.
-
-### Four-Layer Architecture
-
-The conversation/agent system is organized into four layers with strictly
-downward dependencies:
-
-```
-biz layer        aionui-team / aionui-cron / aionui-assistant
-                            │
-                            ▼ uses IConversationService
-conv layer       aionui-conversation
-                            │
-                            ▼ uses IAgentConnector / IAgentConnectorFactory
-connect layer    aionui-ai-agent
-                            │
-                            ▼ spawns and talks to
-agent layer      aionrs / acp engine processes
-```
-
-**Rules:**
-- Biz layer talks to the conv layer ONLY through `IConversationService`.
-  Never reach around it to call `IAgentConnectorFactory`, `IAgentConnector`,
-  or any connect-layer type directly.
-- Conv layer talks to the connect layer ONLY through `IAgentConnector`
-  and `IAgentConnectorFactory`. The conv layer is the sole owner of
-  per-conversation runtime state (idle/running, last_activity).
-- Connect layer is a stateless adapter: each `IAgentConnector` impl
-  spawns the corresponding agent process and translates events. It
-  MUST NOT carry conversation-level state (status, history) — that's
-  conv-layer territory.
-
-**Why this exists:** the ELECTRON-1KB Sentry issue family
-(1FZ / 1J4 / 1MJ / 1EV / 1E9 / 1P0 / 1KB) was caused by state
-fragmentation across five holders (DB.status, AgentRuntime.status,
-OnceCell, ACP session state, OS subprocess) with no single source of
-truth. The race window between user cancel and the next user send
-produced 409 Conflict bursts that confused the UI and corrupted
-agent sessions. The four-layer split exists to prevent that class of
-bug at the type level.
-
-**Enforcement:** `scripts/check_layer_deps.sh` (wired into `just push`)
-greps for forbidden cross-layer imports and Phase-5-deleted types.
-Each crate has a `crates/<crate>/AGENTS.md` with the per-layer hard
-rules. If you find yourself adding state to bridge two layers, stop —
-it belongs to one of them, not in between.
-
-### Per-crate AGENTS.md
-
-Each crate that participates in the four-layer architecture has its own
-AGENTS.md with hard rules:
-
-- [`crates/aionui-conversation/AGENTS.md`](crates/aionui-conversation/AGENTS.md) — conv layer
-- [`crates/aionui-team/AGENTS.md`](crates/aionui-team/AGENTS.md) — biz layer (team)
-- [`crates/aionui-ai-agent/AGENTS.md`](crates/aionui-ai-agent/AGENTS.md) — connect layer
-
-Read those before changing code in the corresponding crate.
 
 ## Architecture
 
@@ -278,3 +224,51 @@ cargo test -p aionui-<crate1> -p aionui-<crate2>                               #
 ```bash
 just push                                             # fmt → clippy → test → git push
 ```
+
+## POUNDING Fork: Branch Strategy
+
+**main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
+
+```
+upstream (iOfficeAI/AionCore)
+    ↓ manual fetch to feature branch
+feature/upstream-sync
+    ↓ manual PR (resolve conflicts, preserve POUNDING customizations)
+dev (integration & verification)
+    ↓
+release/pounding-v*.*.x (final verification)
+    ↓
+main (stable — triggers release builds via tag)
+```
+
+**Rules for all agents:**
+- Upstream syncs go to `feature/upstream-sync` — NEVER merge upstream into `main` or `dev` directly.
+- After upstream sync, manually diff and restore all POUNDING customizations (see checklist below).
+- POUNDING-specific features are developed on `feature/*` branches, PR'd to `dev`.
+- Tag format: `v<version>-Pounding` (e.g. `v0.1.15-Pounding`).
+- The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion`).
+
+## POUNDING Custom Features
+
+Features unique to the POUNDING fork that must be preserved during upstream syncs:
+
+| Feature | Key Files / Crates |
+|---------|-------------------|
+| CC-Switch model routing | `crates/aionui-ai-agent/src/cc_switch/` (mod.rs, model_info.rs, paths.rs, provider_env.rs) |
+| POUNDING builtin skill | `crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/` |
+| POUNDING DB migration | `crates/aionui-db/migrations/007_add_pounding_cli.sql` |
+| Brand logo asset | `crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png` |
+| Binary name | Binary must remain `aioncore` (restored from upstream rename) |
+| CC-Switch integration tests | `crates/aionui-ai-agent/tests/cc_switch_integration.rs` |
+
+## POUNDING Branding Checklist
+
+When merging ANY upstream changes, verify these are not overwritten:
+
+- [ ] `007_add_pounding_cli.sql` migration exists
+- [ ] `cc_switch/` module exists under `aionui-ai-agent/src/`
+- [ ] `pounding-ozon-v0.1.0-lite/` builtin skill exists
+- [ ] `pounding-heart-solid.png` brand asset exists
+- [ ] Binary name is `aioncore` (not renamed)
+- [ ] Legacy DB name `aionui.db` preserved in copy/migration functions
+- [ ] CC-Switch integration tests pass (`cargo test -p aionui-ai-agent --test cc_switch_integration`)

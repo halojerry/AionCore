@@ -36,7 +36,7 @@ struct Inner {
     writer_spawned: Mutex<bool>,
 }
 
-const EXTENSION_STATES_FILE_ENV: &str = "AIONUI_EXTENSION_STATES_FILE";
+const EXTENSION_STATES_FILE_ENV: &str = "POUNDING_EXTENSION_STATES_FILE";
 const DEFAULT_STATES_FILE: &str = "extension-states.json";
 
 #[derive(Debug, Deserialize, Serialize)]

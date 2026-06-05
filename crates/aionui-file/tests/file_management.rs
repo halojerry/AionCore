@@ -412,7 +412,7 @@ async fn create_temp_file_path_in_aionui_dir() {
     let svc = make_service(dir.path());
     let path = svc.create_temp_file("check.txt").await.unwrap();
 
-    assert!(path.contains("aionui"), "temp path should be under aionui dir");
+    assert!(path.contains("pounding"), "temp path should be under pounding dir");
 }
 
 #[tokio::test]

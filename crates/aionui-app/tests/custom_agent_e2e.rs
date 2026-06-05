@@ -69,7 +69,7 @@ async fn custom_agent_full_roundtrip() {
     let _guard = lock_env().await;
     // SAFETY: single env-var mutation under ENV_MUTEX; restored at function end.
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("POUNDING_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -172,7 +172,7 @@ async fn custom_agent_full_roundtrip() {
     );
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("POUNDING_BYPASS_PROBE");
     }
 }
 
@@ -182,7 +182,7 @@ async fn custom_agent_full_roundtrip() {
 async fn custom_agent_advanced_overrides_persist() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("POUNDING_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -210,7 +210,7 @@ async fn custom_agent_advanced_overrides_persist() {
     assert_eq!(json["data"]["description"], "test");
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("POUNDING_BYPASS_PROBE");
     }
 }
 
@@ -246,7 +246,7 @@ async fn create_rejects_empty_command() {
 async fn update_unknown_id_returns_404() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("POUNDING_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -263,7 +263,7 @@ async fn update_unknown_id_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("POUNDING_BYPASS_PROBE");
     }
 }
 
@@ -271,7 +271,7 @@ async fn update_unknown_id_returns_404() {
 async fn update_builtin_id_returns_403() {
     let _guard = lock_env().await;
     unsafe {
-        std::env::set_var("AIONUI_BYPASS_PROBE", "1");
+        std::env::set_var("POUNDING_BYPASS_PROBE", "1");
     }
 
     let (mut app, services) = build_app().await;
@@ -289,7 +289,7 @@ async fn update_builtin_id_returns_403() {
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
     unsafe {
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("POUNDING_BYPASS_PROBE");
     }
 }
 
@@ -330,7 +330,7 @@ async fn test_on_save_cli_not_found_blocks_upsert() {
     let _guard = lock_env().await;
     unsafe {
         // Ensure clean state regardless of test ordering.
-        std::env::remove_var("AIONUI_BYPASS_PROBE");
+        std::env::remove_var("POUNDING_BYPASS_PROBE");
     }
 
     let (mut app, services) = build_app().await;

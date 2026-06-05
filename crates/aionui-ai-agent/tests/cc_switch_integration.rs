@@ -65,8 +65,16 @@ fn reads_provider_env_from_fixture_db() {
 
     assert_eq!(env.get("ANTHROPIC_BASE_URL").unwrap(), "https://relay.example.com/v1");
     assert_eq!(env.get("ANTHROPIC_API_KEY").unwrap(), "sk-relay-test-key");
-    assert_eq!(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").unwrap(), "deepseek-v4-pro");
-    assert_eq!(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").unwrap(), "deepseek-v4-max");
+    // Model env keys must be filtered out — they are read by model_info.rs
+    // for the UI model picker but must NOT leak into agent subprocess env.
+    assert!(
+        env.get("ANTHROPIC_DEFAULT_SONNET_MODEL").is_none(),
+        "model env key must be filtered"
+    );
+    assert!(
+        env.get("ANTHROPIC_DEFAULT_OPUS_MODEL").is_none(),
+        "model env key must be filtered"
+    );
 }
 
 #[test]
