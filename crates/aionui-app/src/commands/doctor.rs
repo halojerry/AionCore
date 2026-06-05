@@ -58,8 +58,6 @@ fn print_environment(merged_path: &str, data_dir: &Path) {
     println!("  data-dir       : {}", data_dir.display());
     println!("  PATH segments  : {path_segments}");
     println!("  PATH length    : {}", merged_path.len());
-<<<<<<< HEAD
-    if let Some(p) = std::env::var_os("POUNDING_BUN_PATH") {
     for line in runtime_snapshot_lines() {
         println!("{line}");
     }

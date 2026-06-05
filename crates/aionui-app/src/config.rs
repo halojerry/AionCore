@@ -78,7 +78,6 @@ mod tests {
             data_dir: PathBuf::from("/tmp/pounding"),
             ..Default::default()
         };
-<<<<<<< HEAD
         assert_eq!(
             config.database_path(),
             PathBuf::from("/tmp/pounding/pounding-backend.db")
