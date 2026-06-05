@@ -6,7 +6,9 @@ use aionui_ai_agent::task_manager::IWorkerTaskManager;
 use aionui_ai_agent::types::{BuildTaskOptions, SendMessageData};
 use aionui_ai_agent::{AgentRegistry, AgentStreamEvent};
 use aionui_api_types::{CreateConversationRequest, SendMessageRequest};
-use aionui_common::{AgentType, AppError, ProviderWithModel, now_ms, workspace_path_has_whitespace_segment};
+use aionui_common::{
+    AgentType, ProviderWithModel, WorkspacePathValidationError, now_ms, validate_workspace_path_availability,
+};
 use aionui_conversation::ConversationService;
 use aionui_db::models::MessageRow;
 use aionui_db::{ConversationRowUpdate, IConversationRepository};
@@ -200,17 +202,15 @@ impl JobExecutor {
 
     pub(crate) async fn validate_runtime_job_workspace(&self, job: &CronJob) -> Result<(), CronError> {
         let workspace = self.resolve_job_workspace_raw(job).await?;
-        if workspace.trim().is_empty() {
-            return Ok(());
+        match validate_workspace_path_availability(&workspace) {
+            Ok(_) => Ok(()),
+            Err(WorkspacePathValidationError::Empty) => Ok(()),
+            Err(WorkspacePathValidationError::DoesNotExist(path))
+            | Err(WorkspacePathValidationError::NotDirectory(path))
+            | Err(WorkspacePathValidationError::NotAccessible { path, .. }) => {
+                Err(CronError::WorkspacePathRuntimeUnavailable(path))
+            }
         }
-
-        if workspace_path_has_whitespace_segment(Path::new(&workspace)) {
-            return Err(CronError::App(
-                AppError::WorkspacePathContainsWhitespaceRuntimeUnsupported(workspace),
-            ));
-        }
-
-        Ok(())
     }
 
     pub async fn insert_tips_message(
@@ -1202,6 +1202,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::sync::{RwLock, broadcast};
 
+    fn ensure_named_workspace_path(name: &str) -> String {
+        let workspace = std::env::temp_dir().join(name);
+        std::fs::create_dir_all(&workspace).unwrap();
+        workspace.to_string_lossy().to_string()
+    }
+
     fn sample_job() -> CronJob {
         CronJob {
             id: "cron_test1".into(),
@@ -1223,7 +1229,7 @@ mod tests {
                 mode: None,
                 model_id: Some("claude-sonnet-4".into()),
                 config_options: None,
-                workspace: Some("/home/user/project".into()),
+                workspace: Some(ensure_named_workspace_path("aionui-cron-sample-job-workspace")),
             }),
             conversation_id: "conv_1".into(),
             conversation_title: Some("Test Conv".into()),
@@ -1610,7 +1616,10 @@ mod tests {
 
         let extra = build_conversation_extra(&registry, &job, None).await;
 
-        assert_eq!(extra["workspace"], "/home/user/project");
+        assert_eq!(
+            extra["workspace"],
+            ensure_named_workspace_path("aionui-cron-sample-job-workspace")
+        );
     }
 
     #[tokio::test]
@@ -1868,7 +1877,10 @@ mod tests {
         let options = task_manager
             .last_options()
             .expect("task manager should capture build options");
-        assert_eq!(options.workspace, "/tmp/existing-conversation-workspace");
+        assert_eq!(
+            options.workspace,
+            ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+        );
     }
 
     #[tokio::test]
@@ -1902,7 +1914,10 @@ mod tests {
             .expect("conversation workspace should be persisted");
         let extra = update.extra.expect("workspace update should write extra");
         let value: serde_json::Value = serde_json::from_str(&extra).expect("valid extra json");
-        assert_eq!(value["workspace"], "/tmp/cron-test");
+        assert_eq!(
+            value["workspace"],
+            ensure_named_workspace_path("aionui-cron-agent-workspace")
+        );
     }
 
     #[tokio::test]
@@ -1911,7 +1926,9 @@ mod tests {
         let task_manager = Arc::new(RecordingTaskManager::new(AgentInstance::Mock(agent.clone())));
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
-            serde_json::json!({ "workspace": "/tmp/existing-conversation-workspace" }),
+            serde_json::json!({
+                "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+            }),
         ));
         let executor = make_executor_with_task_manager_and_repo(task_manager, repo.clone());
         let job = CronJob {
@@ -1946,7 +1963,9 @@ mod tests {
         let task_manager = Arc::new(RecordingTaskManager::new(AgentInstance::Mock(agent.clone())));
         let repo = Arc::new(MissingWorkspaceConversationRepo::new(
             "conv_1",
-            serde_json::json!({ "workspace": "/tmp/existing-conversation-workspace" }),
+            serde_json::json!({
+                "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
+            }),
         ));
         let broadcaster = Arc::new(RecordingBroadcaster::new());
         let executor =
@@ -1996,10 +2015,14 @@ mod tests {
                 &self,
                 _: &str,
                 _: BuildTaskOptions,
-            ) -> Result<AgentInstance, aionui_common::AppError> {
-                Err(aionui_common::AppError::Internal("stub".into()))
+            ) -> Result<AgentInstance, aionui_ai_agent::AgentError> {
+                Err(aionui_ai_agent::AgentError::internal("stub"))
             }
-            fn kill(&self, _: &str, _: Option<aionui_common::AgentKillReason>) -> Result<(), aionui_common::AppError> {
+            fn kill(
+                &self,
+                _: &str,
+                _: Option<aionui_common::AgentKillReason>,
+            ) -> Result<(), aionui_ai_agent::AgentError> {
                 Ok(())
             }
             fn kill_and_wait(
@@ -2186,7 +2209,7 @@ mod tests {
             let (event_tx, _) = broadcast::channel(16);
             Self {
                 conversation_id: conversation_id.to_owned(),
-                workspace: "/tmp/cron-test".to_owned(),
+                workspace: ensure_named_workspace_path("aionui-cron-agent-workspace"),
                 event_tx,
                 mode: RwLock::new(mode.to_owned()),
                 sent_messages: RwLock::new(Vec::new()),
@@ -2245,25 +2268,25 @@ mod tests {
             Ok(())
         }
 
-        async fn cancel(&self) -> Result<(), aionui_common::AppError> {
+        async fn cancel(&self) -> Result<(), aionui_ai_agent::AgentError> {
             Ok(())
         }
 
-        fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), aionui_common::AppError> {
+        fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), aionui_ai_agent::AgentError> {
             Ok(())
         }
     }
 
     #[async_trait::async_trait]
     impl IMockAgent for RecordingAgent {
-        async fn mode(&self) -> Result<AgentModeResponse, aionui_common::AppError> {
+        async fn mode(&self) -> Result<AgentModeResponse, aionui_ai_agent::AgentError> {
             Ok(AgentModeResponse {
                 mode: self.mode().await,
                 initialized: self.initialized,
             })
         }
 
-        async fn set_mode(&self, mode: &str) -> Result<(), aionui_common::AppError> {
+        async fn set_mode(&self, mode: &str) -> Result<(), aionui_ai_agent::AgentError> {
             self.set_mode_calls.fetch_add(1, Ordering::Relaxed);
             let mut guard = self.mode.write().await;
             *guard = mode.to_owned();
@@ -2285,7 +2308,7 @@ mod tests {
             &self,
             _conversation_id: &str,
             _options: BuildTaskOptions,
-        ) -> Result<AgentInstance, aionui_common::AppError> {
+        ) -> Result<AgentInstance, aionui_ai_agent::AgentError> {
             Ok(self.agent.clone())
         }
 
@@ -2293,7 +2316,7 @@ mod tests {
             &self,
             _conversation_id: &str,
             _reason: Option<AgentKillReason>,
-        ) -> Result<(), aionui_common::AppError> {
+        ) -> Result<(), aionui_ai_agent::AgentError> {
             Ok(())
         }
 
@@ -2348,7 +2371,7 @@ mod tests {
             &self,
             _conversation_id: &str,
             options: BuildTaskOptions,
-        ) -> Result<AgentInstance, aionui_common::AppError> {
+        ) -> Result<AgentInstance, aionui_ai_agent::AgentError> {
             self.options.lock().unwrap().push(options);
             Ok(self.agent.clone())
         }
@@ -2357,7 +2380,7 @@ mod tests {
             &self,
             _conversation_id: &str,
             _reason: Option<AgentKillReason>,
-        ) -> Result<(), aionui_common::AppError> {
+        ) -> Result<(), aionui_ai_agent::AgentError> {
             Ok(())
         }
 
@@ -2391,7 +2414,7 @@ mod tests {
                 name: "Cron Conversation".into(),
                 r#type: "acp".into(),
                 extra: serde_json::json!({
-                    "workspace": "/tmp/existing-conversation-workspace"
+                    "workspace": ensure_named_workspace_path("aionui-cron-existing-conversation-workspace")
                 })
                 .to_string(),
                 model: None,

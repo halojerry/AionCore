@@ -1,4 +1,6 @@
-use aionui_common::AppError;
+#![allow(clippy::disallowed_types)]
+
+use aionui_common::ApiError;
 use serde::{Deserialize, Serialize};
 
 /// Standard API success response envelope.
@@ -56,7 +58,7 @@ impl ApiResponse<()> {
 
 /// Standard API error response.
 ///
-/// Matches the JSON format produced by `AppError::IntoResponse`:
+/// Matches the JSON format produced by `ApiError::IntoResponse`:
 /// `{ "success": false, "error": "...", "code": "...", "details": ... }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
@@ -86,8 +88,8 @@ impl ErrorResponse {
     }
 }
 
-impl From<AppError> for ErrorResponse {
-    fn from(err: AppError) -> Self {
+impl From<ApiError> for ErrorResponse {
+    fn from(err: ApiError) -> Self {
         Self {
             success: false,
             error: err.to_string(),
@@ -180,8 +182,8 @@ mod tests {
     }
 
     #[test]
-    fn test_error_response_from_app_error() {
-        let err = AppError::Unauthorized("invalid token".into());
+    fn test_error_response_from_api_error() {
+        let err = ApiError::Unauthorized("invalid token".into());
         let resp = ErrorResponse::from(err);
         assert!(!resp.success);
         assert_eq!(resp.error, "Unauthorized: invalid token");
@@ -191,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_error_response_from_rate_limited() {
-        let resp = ErrorResponse::from(AppError::RateLimited);
+        let resp = ErrorResponse::from(ApiError::RateLimited);
         assert!(!resp.success);
         assert_eq!(resp.error, "Rate limited");
         assert_eq!(resp.code, "RATE_LIMITED");
@@ -202,7 +204,7 @@ mod tests {
     fn test_error_response_new_with_details() {
         let resp = ErrorResponse::new_with_details(
             "Bad request: invalid workspace",
-            "WORKSPACE_PATH_CONTAINS_WHITESPACE_UNSUPPORTED",
+            "WORKSPACE_PATH_UNAVAILABLE",
             serde_json::json!({ "workspace_path": "/tmp/Archive " }),
         );
         assert_eq!(
@@ -213,8 +215,8 @@ mod tests {
 
     #[test]
     fn test_error_response_from_workspace_error_includes_details() {
-        let resp = ErrorResponse::from(AppError::WorkspacePathContainsWhitespace("/tmp/Archive ".into()));
-        assert_eq!(resp.code, "WORKSPACE_PATH_CONTAINS_WHITESPACE_UNSUPPORTED");
+        let resp = ErrorResponse::from(ApiError::WorkspacePathUnavailable("/tmp/Archive ".into()));
+        assert_eq!(resp.code, "WORKSPACE_PATH_UNAVAILABLE");
         assert_eq!(
             resp.details.as_ref().and_then(|details| details.get("workspace_path")),
             Some(&serde_json::json!("/tmp/Archive "))
@@ -227,10 +229,8 @@ mod tests {
 
     #[test]
     fn test_error_response_from_runtime_workspace_error_includes_details() {
-        let resp = ErrorResponse::from(AppError::WorkspacePathContainsWhitespaceRuntimeUnsupported(
-            "/tmp/Archive ".into(),
-        ));
-        assert_eq!(resp.code, "WORKSPACE_PATH_CONTAINS_WHITESPACE_RUNTIME_UNSUPPORTED");
+        let resp = ErrorResponse::from(ApiError::WorkspacePathRuntimeUnavailable("/tmp/Archive ".into()));
+        assert_eq!(resp.code, "WORKSPACE_PATH_RUNTIME_UNAVAILABLE");
         assert_eq!(
             resp.details.as_ref().and_then(|details| details.get("workspace_path")),
             Some(&serde_json::json!("/tmp/Archive "))

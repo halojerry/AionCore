@@ -1,3 +1,4 @@
+use crate::error::AgentError;
 use crate::manager::acp::AcpAgentManager;
 use crate::manager::acp::mode_normalize::agent_metadata_uses_meta_resume;
 use crate::protocol::error::AcpError;
@@ -10,15 +11,12 @@ use agent_client_protocol::schema::{ContentBlock, LoadSessionRequest, PromptRequ
 use aionui_api_types::{
     AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
 };
-use aionui_common::AppError;
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::time::{Duration, sleep};
 
 use super::agent::sdk_to_snake_value;
-use super::error_mapping::{
-    AcpSendFailure, acp_error_to_app_error, is_acp_session_not_found, is_mapped_acp_session_not_found,
-};
+use super::error_mapping::{AcpSendFailure, is_acp_session_not_found};
 use tracing::warn;
 
 #[derive(Debug)]
@@ -36,9 +34,9 @@ impl AcpAgentManager {
     /// does NOT emit Start/Finish — callers wrap that around if needed.
     ///
     /// Returns the CLI-assigned session id.
-    pub(super) async fn open_session_new(&self) -> Result<String, AppError> {
+    pub(super) async fn open_session_new(&self) -> Result<String, AgentError> {
         let req = self.params.new_session_request();
-        let session_response = self.protocol.new_session(req).await.map_err(acp_error_to_app_error)?;
+        let session_response = self.protocol.new_session(req).await?;
 
         let sid = session_response.session_id.to_string();
 
@@ -79,7 +77,7 @@ impl AcpAgentManager {
     /// Used as the rescue path when resume helpers see `SessionNotFound`.
     /// Emits a `warn!` so ops can still see the original failure that
     /// triggered the rebuild.
-    async fn rebuild_after_session_not_found(&self, stale_sid: &str, err: &AppError) -> Result<String, AppError> {
+    async fn rebuild_after_session_not_found(&self, stale_sid: &str, err: &AcpError) -> Result<String, AgentError> {
         warn!(
             conversation_id = %self.params.conversation_id,
             stale_session_id = %stale_sid,
@@ -94,8 +92,7 @@ impl AcpAgentManager {
         self.open_session_new().await
     }
 
-    async fn rebuild_after_acp_session_not_found(&self, stale_sid: &str, err: AcpError) -> Result<String, AppError> {
-        let err = acp_error_to_app_error(err);
+    async fn rebuild_after_acp_session_not_found(&self, stale_sid: &str, err: AcpError) -> Result<String, AgentError> {
         self.rebuild_after_session_not_found(stale_sid, &err).await
     }
 
@@ -116,7 +113,7 @@ impl AcpAgentManager {
     /// re-runs `open_session_new`. ELECTRON-1HQ regressed because we
     /// silently swallowed this case during warmup, leaving every
     /// subsequent `session/prompt` to surface the same error to the user.
-    pub(super) async fn open_session_resume(&self, session_id: &str) -> Result<String, AppError> {
+    pub(super) async fn open_session_resume(&self, session_id: &str) -> Result<String, AgentError> {
         if agent_metadata_uses_meta_resume(&self.params.metadata) {
             let mut meta = serde_json::Map::new();
             let mut claude_code = serde_json::Map::new();
@@ -131,7 +128,7 @@ impl AcpAgentManager {
                 Err(e) if is_acp_session_not_found(&e) => {
                     return self.rebuild_after_acp_session_not_found(session_id, e).await;
                 }
-                Err(e) => return Err(acp_error_to_app_error(e)),
+                Err(e) => return Err(e.into()),
             };
             let new_sid = new_response.session_id.to_string();
 
@@ -160,10 +157,8 @@ impl AcpAgentManager {
 
             return match self.reconcile_session(&new_sid).await {
                 Ok(()) => Ok(new_sid),
-                Err(e) if is_mapped_acp_session_not_found(&e) => {
-                    self.rebuild_after_session_not_found(&new_sid, &e).await
-                }
-                Err(e) => Err(e),
+                Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(&new_sid, &e).await,
+                Err(e) => Err(e.into()),
             };
         }
 
@@ -185,7 +180,7 @@ impl AcpAgentManager {
                 Err(e) if is_acp_session_not_found(&e) => {
                     return self.rebuild_after_acp_session_not_found(session_id, e).await;
                 }
-                Err(e) => return Err(acp_error_to_app_error(e)),
+                Err(e) => return Err(e.into()),
             };
 
             {
@@ -209,10 +204,8 @@ impl AcpAgentManager {
 
             return match self.reconcile_session(session_id).await {
                 Ok(()) => Ok(session_id.to_owned()),
-                Err(e) if is_mapped_acp_session_not_found(&e) => {
-                    self.rebuild_after_session_not_found(session_id, &e).await
-                }
-                Err(e) => Err(e),
+                Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
+                Err(e) => Err(e.into()),
             };
         }
 
@@ -227,8 +220,8 @@ impl AcpAgentManager {
         self.emit_snapshot_events().await;
         match self.reconcile_session(session_id).await {
             Ok(()) => Ok(session_id.to_owned()),
-            Err(e) if is_mapped_acp_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
-            Err(e) => Err(e),
+            Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -239,7 +232,7 @@ impl AcpAgentManager {
         session_id: Option<&str>,
     ) -> Result<PromptOutcome, AcpSendFailure> {
         let sid = session_id
-            .ok_or_else(|| AppError::Internal("Cannot prompt: no session ID available".into()))
+            .ok_or_else(|| AgentError::internal("Cannot prompt: no session ID available"))
             .map_err(AcpSendFailure::from)?;
 
         let content = data.content.clone();
