@@ -1043,6 +1043,50 @@
       "models": []
     },
     {
+      "id": "social-cover-design",
+      "name": "Social Cover Designer",
+      "name_i18n": {
+        "en-US": "Social Cover Designer",
+        "zh-CN": "社媒封面制作",
+        "ru-RU": "Дизайнер обложек"
+      },
+      "description": "Professional social media cover designer with 10 styles. Step-by-step guided cover creation for WeChat, Xiaohongshu, TikTok and more. Uses image generation to create final covers.",
+      "description_i18n": {
+        "en-US": "Professional social media cover designer with 10 styles. Step-by-step guided cover creation for WeChat, Xiaohongshu, TikTok and more. Uses image generation to create final covers.",
+        "zh-CN": "专业社媒封面设计助手，10 种风格可选。逐步引导制作公众号、小红书、抖音等平台封面，使用图片生成创建最终封面。",
+        "ru-RU": "Профессиональный дизайнер обложек для соцсетей с 10 стилями. Пошаговое создание обложек для WeChat, Xiaohongshu, TikTok и других. Использует генерацию изображений для финальной обложки."
+      },
+      "avatar": "🎨",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/social-cover-design.{locale}.md",
+      "prompts": [
+        "Design a WeChat cover for my article about AI trends",
+        "Create a Xiaohongshu cover with before/after comparison style",
+        "Make a professional social media cover for my tech blog"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Design a WeChat cover for my article about AI trends",
+          "Create a Xiaohongshu cover with before/after comparison style",
+          "Make a professional social media cover for my tech blog"
+        ],
+        "zh-CN": [
+          "帮我设计一张关于 AI 趋势的公众号封面",
+          "用对比风格做一张小红书封面",
+          "为我的科技博客做一张专业的社媒封面"
+        ],
+        "ru-RU": [
+          "Создай обложку для WeChat о трендах ИИ",
+          "Сделай обложку для Xiaohongshu в стиле сравнения до/после",
+          "Создай профессиональную обложку для технологического блога"
+        ]
+      },
+      "models": []
+    },
+    {
       "id": "pounding-ozon-assistant",
       "name": "POUNDING Ozon Assistant",
       "name_i18n": {
