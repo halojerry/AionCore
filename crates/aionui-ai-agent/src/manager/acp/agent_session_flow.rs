@@ -1,8 +1,9 @@
+use crate::error::AgentError;
 use crate::manager::acp::AcpAgentManager;
 use crate::manager::acp::mode_normalize::agent_metadata_uses_meta_resume;
+use crate::protocol::error::AcpError;
 use crate::protocol::events::{
-    AgentStreamEvent, AvailableCommandsEventData, ErrorEventData, FinishEventData, SessionAssignedEventData,
-    StartEventData,
+    AgentStreamEvent, AvailableCommandsEventData, ErrorEventData, SessionAssignedEventData, StartEventData,
 };
 use crate::shared_kernel::SessionId as DomainSessionId;
 use crate::types::SendMessageData;
@@ -10,23 +11,22 @@ use agent_client_protocol::schema::{ContentBlock, LoadSessionRequest, PromptRequ
 use aionui_api_types::{
     AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
 };
-use aionui_common::AppError;
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
+use tokio::time::{Duration, sleep};
 
 use super::agent::sdk_to_snake_value;
+use super::error_mapping::{AcpSendFailure, is_acp_session_not_found};
 use tracing::warn;
 
-/// True when an `AppError` originates from an ACP `SessionNotFound`
-/// reply. Used to decide whether `open_session_resume` should drop a
-/// stale sid and fall through to `open_session_new` instead of
-/// surfacing the error. The `AcpError::SessionNotFound -> AppError`
-/// converter renders as "Session not found: <sid>", so we match on
-/// that text rather than `AppError::NotFound` alone — other 404 paths
-/// (e.g. "Workspace not found") must not trigger a session rebuild.
-fn is_session_not_found(err: &AppError) -> bool {
-    matches!(err, AppError::NotFound(msg) if msg.starts_with("Session not found"))
+#[derive(Debug)]
+pub(super) enum PromptOutcome {
+    Completed { session_id: String },
+    Cancelled { session_id: String },
+    EmptyResponse { session_id: String, error: ErrorEventData },
 }
+
+const ACP_FINISH_GRACE_MS: u64 = 1200;
 
 impl AcpAgentManager {
     /// Establish a fresh ACP session (session/new) and apply desired
@@ -34,9 +34,9 @@ impl AcpAgentManager {
     /// does NOT emit Start/Finish — callers wrap that around if needed.
     ///
     /// Returns the CLI-assigned session id.
-    pub(super) async fn open_session_new(&self) -> Result<String, AppError> {
+    pub(super) async fn open_session_new(&self) -> Result<String, AgentError> {
         let req = self.params.new_session_request();
-        let session_response = self.protocol.new_session(req).await.map_err(AppError::from)?;
+        let session_response = self.protocol.new_session(req).await?;
 
         let sid = session_response.session_id.to_string();
 
@@ -77,7 +77,7 @@ impl AcpAgentManager {
     /// Used as the rescue path when resume helpers see `SessionNotFound`.
     /// Emits a `warn!` so ops can still see the original failure that
     /// triggered the rebuild.
-    async fn rebuild_after_session_not_found(&self, stale_sid: &str, err: &AppError) -> Result<String, AppError> {
+    async fn rebuild_after_session_not_found(&self, stale_sid: &str, err: &AcpError) -> Result<String, AgentError> {
         warn!(
             conversation_id = %self.params.conversation_id,
             stale_session_id = %stale_sid,
@@ -90,6 +90,10 @@ impl AcpAgentManager {
             self.commit_session_changes(&mut session).await;
         }
         self.open_session_new().await
+    }
+
+    async fn rebuild_after_acp_session_not_found(&self, stale_sid: &str, err: AcpError) -> Result<String, AgentError> {
+        self.rebuild_after_session_not_found(stale_sid, &err).await
     }
 
     /// Resume an existing ACP session and apply desired mode/model/config.
@@ -109,7 +113,7 @@ impl AcpAgentManager {
     /// re-runs `open_session_new`. ELECTRON-1HQ regressed because we
     /// silently swallowed this case during warmup, leaving every
     /// subsequent `session/prompt` to surface the same error to the user.
-    pub(super) async fn open_session_resume(&self, session_id: &str) -> Result<String, AppError> {
+    pub(super) async fn open_session_resume(&self, session_id: &str) -> Result<String, AgentError> {
         if agent_metadata_uses_meta_resume(&self.params.metadata) {
             let mut meta = serde_json::Map::new();
             let mut claude_code = serde_json::Map::new();
@@ -119,12 +123,12 @@ impl AcpAgentManager {
             meta.insert("claudeCode".into(), Value::Object(claude_code));
 
             let req = self.params.new_session_request().meta(meta);
-            let new_response = match self.protocol.new_session(req).await.map_err(AppError::from) {
+            let new_response = match self.protocol.new_session(req).await {
                 Ok(r) => r,
-                Err(e) if is_session_not_found(&e) => {
-                    return self.rebuild_after_session_not_found(session_id, &e).await;
+                Err(e) if is_acp_session_not_found(&e) => {
+                    return self.rebuild_after_acp_session_not_found(session_id, e).await;
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             };
             let new_sid = new_response.session_id.to_string();
 
@@ -153,17 +157,16 @@ impl AcpAgentManager {
 
             return match self.reconcile_session(&new_sid).await {
                 Ok(()) => Ok(new_sid),
-                Err(e) if is_session_not_found(&e) => self.rebuild_after_session_not_found(&new_sid, &e).await,
-                Err(e) => Err(e),
+                Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(&new_sid, &e).await,
+                Err(e) => Err(e.into()),
             };
         }
 
-        let (supports_load, preloaded_mode, preloaded_model) = {
+        let (supports_load, preloaded_mode) = {
             let session = self.session.read().await;
             (
                 session.agent_capabilities().map(|c| c.load_session).unwrap_or(false),
                 session.modes().map(|m| m.current_mode_id.to_string()),
-                session.model_info().map(|m| m.current_model_id.to_string()),
             )
         };
 
@@ -172,20 +175,17 @@ impl AcpAgentManager {
             if !self.params.mcp_servers.is_empty() {
                 load_req = load_req.mcp_servers(self.params.mcp_servers.clone());
             }
-            let load_response = match self.protocol.load_session(load_req).await.map_err(AppError::from) {
+            let load_response = match self.protocol.load_session(load_req).await {
                 Ok(r) => r,
-                Err(e) if is_session_not_found(&e) => {
-                    return self.rebuild_after_session_not_found(session_id, &e).await;
+                Err(e) if is_acp_session_not_found(&e) => {
+                    return self.rebuild_after_acp_session_not_found(session_id, e).await;
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             };
 
             {
                 let mut session = self.session.write().await;
-                if let Some(mut models) = load_response.models {
-                    if let Some(db_current) = preloaded_model {
-                        models.current_model_id = db_current.into();
-                    }
+                if let Some(models) = load_response.models {
                     session.apply_advertised_models(models);
                 }
                 if let Some(mut modes) = load_response.modes {
@@ -204,8 +204,8 @@ impl AcpAgentManager {
 
             return match self.reconcile_session(session_id).await {
                 Ok(()) => Ok(session_id.to_owned()),
-                Err(e) if is_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
-                Err(e) => Err(e),
+                Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
+                Err(e) => Err(e.into()),
             };
         }
 
@@ -220,8 +220,8 @@ impl AcpAgentManager {
         self.emit_snapshot_events().await;
         match self.reconcile_session(session_id).await {
             Ok(()) => Ok(session_id.to_owned()),
-            Err(e) if is_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
-            Err(e) => Err(e),
+            Err(e) if is_acp_session_not_found(&e) => self.rebuild_after_session_not_found(session_id, &e).await,
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -230,8 +230,10 @@ impl AcpAgentManager {
         &self,
         data: &SendMessageData,
         session_id: Option<&str>,
-    ) -> Result<(), AppError> {
-        let sid = session_id.ok_or_else(|| AppError::Internal("Cannot prompt: no session ID available".into()))?;
+    ) -> Result<PromptOutcome, AcpSendFailure> {
+        let sid = session_id
+            .ok_or_else(|| AgentError::internal("Cannot prompt: no session ID available"))
+            .map_err(AcpSendFailure::from)?;
 
         let content = data.content.clone();
 
@@ -253,26 +255,13 @@ impl AcpAgentManager {
                 vec![ContentBlock::from(content)],
             ))
             .await
-            .map_err(AppError::from)?;
+            .map_err(AcpSendFailure::from)?;
 
-        // Diagnose the "blank reply" case: the agent finished a turn without
-        // producing any user-visible output. We surface a structured error to
-        // the renderer so the user gets actionable feedback instead of a
-        // silent success. Cancelled turns are deliberately excluded — the
-        // user already initiated the cancel and doesn't need a second
-        // notification.
-        if !matches!(prompt_response.stop_reason, StopReason::Cancelled) && is_empty_turn(&mut probe_rx) {
-            self.runtime.emit(AgentStreamEvent::Error(empty_finish_diagnostic_error(
-                prompt_response.stop_reason,
-            )));
-        }
-
-        // Emit Finish event
-        self.runtime.emit(AgentStreamEvent::Finish(FinishEventData {
-            session_id: Some(sid.to_owned()),
-        }));
-
-        Ok(())
+        Ok(prompt_outcome_from_stop_reason(
+            sid,
+            prompt_response.stop_reason,
+            is_empty_turn(&mut probe_rx),
+        ))
     }
 
     /// Emit model/mode/config events from the session aggregate so the frontend
@@ -376,6 +365,25 @@ fn event_is_user_visible_output(event: &AgentStreamEvent) -> bool {
     )
 }
 
+fn prompt_outcome_from_stop_reason(session_id: &str, stop_reason: StopReason, empty_turn: bool) -> PromptOutcome {
+    if matches!(stop_reason, StopReason::Cancelled) {
+        return PromptOutcome::Cancelled {
+            session_id: session_id.to_owned(),
+        };
+    }
+
+    if empty_turn {
+        return PromptOutcome::EmptyResponse {
+            session_id: session_id.to_owned(),
+            error: empty_finish_diagnostic_error(stop_reason),
+        };
+    }
+
+    PromptOutcome::Completed {
+        session_id: session_id.to_owned(),
+    }
+}
+
 fn empty_finish_diagnostic_error(stop_reason: StopReason) -> ErrorEventData {
     ErrorEventData::classified(
         // TODO(i18n): wire to a frontend translation key once a
@@ -429,8 +437,10 @@ mod tests {
     //! `session_id()` — the same terminal state the real `open_session_new`
     //! / `open_session_resume` helpers leave behind.
     use crate::manager::acp::{AcpSession, AcpSessionEvent};
+    use crate::protocol::error::AcpError;
     use crate::shared_kernel::SessionId as DomainSessionId;
     use agent_client_protocol::schema::AgentCapabilities;
+    use aionui_api_types::AgentErrorCode;
 
     fn make_session() -> AcpSession {
         AcpSession::new(None, None, Default::default())
@@ -571,23 +581,25 @@ mod tests {
         );
     }
 
-    /// The `is_session_not_found` discriminator powers
+    /// The `is_acp_session_not_found` discriminator powers
     /// `open_session_resume`'s rescue path. Match strictly on the
-    /// `AcpError::SessionNotFound -> AppError::NotFound` rendering;
-    /// other 404s (e.g. workspace lookup) must surface to callers
-    /// instead of triggering a phantom session rebuild.
+    /// structured `AcpError::SessionNotFound` variant; other ACP failures
+    /// must surface to callers instead of triggering a phantom session
+    /// rebuild.
     #[test]
-    fn is_session_not_found_matches_session_not_found_only() {
-        use aionui_common::AppError;
+    fn is_acp_session_not_found_matches_session_not_found_only() {
+        let session_err = AcpError::SessionNotFound {
+            session_id: "ses-1".into(),
+        };
+        assert!(super::is_acp_session_not_found(&session_err));
 
-        let session_err = AppError::NotFound("Session not found: ses-1".into());
-        assert!(super::is_session_not_found(&session_err));
+        let invalid_params = AcpError::InvalidParams {
+            message: "Workspace not found".into(),
+        };
+        assert!(!super::is_acp_session_not_found(&invalid_params));
 
-        let workspace_err = AppError::NotFound("Workspace not found".into());
-        assert!(!super::is_session_not_found(&workspace_err));
-
-        let bad_request = AppError::BadRequest("anything".into());
-        assert!(!super::is_session_not_found(&bad_request));
+        let auth_required = AcpError::AuthRequired;
+        assert!(!super::is_acp_session_not_found(&auth_required));
     }
 
     // -- empty-finish diagnostic (ELECTRON-1JG) -------------------------------
@@ -699,5 +711,43 @@ mod tests {
             .expect("empty-finish classified errors must include a resolution");
         assert_eq!(resolution.kind, AgentErrorResolutionKind::SendFeedback);
         assert_eq!(resolution.target, Some(AgentErrorResolutionTarget::Feedback));
+    }
+
+    #[test]
+    fn prompt_outcome_empty_response_maps_to_error_without_finish() {
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, true);
+
+        match outcome {
+            super::PromptOutcome::EmptyResponse { session_id, error } => {
+                assert_eq!(session_id, "sess-1");
+                assert_eq!(error.code, Some(AgentErrorCode::UnknownUpstreamError));
+                assert_eq!(error.feedback_recommended, Some(true));
+            }
+            other => panic!("expected EmptyResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_outcome_cancelled_takes_priority_over_empty_response() {
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::Cancelled, true);
+
+        match outcome {
+            super::PromptOutcome::Cancelled { session_id } => {
+                assert_eq!(session_id, "sess-1");
+            }
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prompt_outcome_completed_when_visible_output_exists() {
+        let outcome = super::prompt_outcome_from_stop_reason("sess-1", StopReason::EndTurn, false);
+
+        match outcome {
+            super::PromptOutcome::Completed { session_id } => {
+                assert_eq!(session_id, "sess-1");
+            }
+            other => panic!("expected Completed, got {other:?}"),
+        }
     }
 }

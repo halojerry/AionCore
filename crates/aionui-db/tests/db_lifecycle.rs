@@ -268,6 +268,7 @@ async fn creates_parent_directories() {
 fn copy_legacy_noop_when_no_legacy_db() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("pounding-backend.db");
+    let target = dir.path().join("pounding-backend.db");
 
     maybe_copy_legacy_database(&target).unwrap();
     assert!(!target.exists(), "target should not be created when no legacy db");
@@ -276,6 +277,7 @@ fn copy_legacy_noop_when_no_legacy_db() {
 #[test]
 fn copy_legacy_noop_when_target_exists() {
     let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pounding-backend.db");
     let target = dir.path().join("pounding-backend.db");
     let legacy = dir.path().join("aionui.db");
 
@@ -291,6 +293,7 @@ fn copy_legacy_noop_when_target_exists() {
 #[test]
 fn copy_legacy_copies_when_target_missing() {
     let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pounding-backend.db");
     let target = dir.path().join("pounding-backend.db");
     let legacy = dir.path().join("aionui.db");
 
@@ -312,6 +315,7 @@ fn copy_legacy_copies_when_target_missing() {
 #[test]
 fn copy_legacy_removes_wal_sidecars() {
     let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pounding-backend.db");
     let target = dir.path().join("pounding-backend.db");
     let legacy = dir.path().join("aionui.db");
 
@@ -335,6 +339,7 @@ fn copy_legacy_removes_wal_sidecars() {
 fn copy_legacy_overwrites_leftover_tmp() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("pounding-backend.db");
+    let target = dir.path().join("pounding-backend.db");
     let legacy = dir.path().join("aionui.db");
     let tmp = target.with_extension("db.tmp");
 
@@ -352,6 +357,7 @@ fn copy_legacy_overwrites_leftover_tmp() {
 #[tokio::test]
 async fn copy_legacy_then_init_database_works() {
     let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pounding-backend.db");
     let target = dir.path().join("pounding-backend.db");
     let legacy = dir.path().join("aionui.db");
 

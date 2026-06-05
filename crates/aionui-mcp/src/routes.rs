@@ -1,21 +1,42 @@
+#![allow(clippy::disallowed_types)]
+
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 
 use aionui_api_types::{
-    ApiResponse, BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerResponse,
-    McpConnectionTestResult, McpServerResponse, OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse,
+    ApiResponse, BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerResponse, ErrorResponse,
+    McpConnectionTestErrorCode, McpServerResponse, OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse,
     OAuthLogoutRequest, OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
-use aionui_common::AppError;
+use aionui_common::ApiError;
 
 use crate::connection_test::McpConnectionTestService;
+use crate::error::McpError;
 use crate::oauth_service::McpOAuthService;
 use crate::service::McpConfigService;
 use crate::sync_service::McpSyncService;
 use crate::types::McpServerTransport;
+
+impl From<McpError> for ApiError {
+    fn from(err: McpError) -> Self {
+        match err {
+            McpError::NotFound(msg) => ApiError::NotFound(msg),
+            McpError::Conflict(msg) => ApiError::Conflict(msg),
+            McpError::InvalidEdit(msg) => ApiError::BadRequest(msg),
+            McpError::InvalidTransport(msg) => ApiError::BadRequest(msg),
+            McpError::AgentNotInstalled(msg) => ApiError::BadRequest(msg),
+            McpError::AgentOperationFailed(msg) => ApiError::Internal(msg),
+            McpError::ConnectionFailed(msg) => ApiError::BadGateway(msg),
+            McpError::OAuth(msg) => ApiError::Internal(format!("OAuth error: {msg}")),
+            McpError::Database(db_err) => ApiError::Internal(db_err.to_string()),
+            McpError::Json(e) => ApiError::Internal(format!("JSON error: {e}")),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Router state
@@ -66,8 +87,8 @@ pub fn mcp_routes(state: McpRouterState) -> Router {
 /// `GET /api/mcp/servers` — list all MCP servers.
 async fn list_servers(
     State(state): State<McpRouterState>,
-) -> Result<Json<ApiResponse<Vec<McpServerResponse>>>, AppError> {
-    let servers = state.config_service.list_servers().await?;
+) -> Result<Json<ApiResponse<Vec<McpServerResponse>>>, ApiError> {
+    let servers = state.config_service.list_servers().await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(servers)))
 }
 
@@ -75,8 +96,8 @@ async fn list_servers(
 async fn get_server(
     State(state): State<McpRouterState>,
     Path(id): Path<String>,
-) -> Result<Json<ApiResponse<McpServerResponse>>, AppError> {
-    let server = state.config_service.get_server(&id).await?;
+) -> Result<Json<ApiResponse<McpServerResponse>>, ApiError> {
+    let server = state.config_service.get_server(&id).await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(server)))
 }
 
@@ -84,9 +105,9 @@ async fn get_server(
 async fn add_server(
     State(state): State<McpRouterState>,
     body: Result<Json<CreateMcpServerRequest>, JsonRejection>,
-) -> Result<(StatusCode, Json<ApiResponse<McpServerResponse>>), AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let server = state.config_service.add_server(req).await?;
+) -> Result<(StatusCode, Json<ApiResponse<McpServerResponse>>), ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let server = state.config_service.add_server(req).await.map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(server))))
 }
 
@@ -95,9 +116,13 @@ async fn edit_server(
     State(state): State<McpRouterState>,
     Path(id): Path<String>,
     body: Result<Json<UpdateMcpServerRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<McpServerResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let server = state.config_service.edit_server(&id, req).await?;
+) -> Result<Json<ApiResponse<McpServerResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let server = state
+        .config_service
+        .edit_server(&id, req)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(server)))
 }
 
@@ -105,8 +130,8 @@ async fn edit_server(
 async fn delete_server(
     State(state): State<McpRouterState>,
     Path(id): Path<String>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    state.config_service.delete_server(&id).await?;
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    state.config_service.delete_server(&id).await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::success()))
 }
 
@@ -114,8 +139,8 @@ async fn delete_server(
 async fn toggle_server(
     State(state): State<McpRouterState>,
     Path(id): Path<String>,
-) -> Result<Json<ApiResponse<McpServerResponse>>, AppError> {
-    let server = state.config_service.toggle_server(&id).await?;
+) -> Result<Json<ApiResponse<McpServerResponse>>, ApiError> {
+    let server = state.config_service.toggle_server(&id).await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(server)))
 }
 
@@ -123,9 +148,9 @@ async fn toggle_server(
 async fn batch_import(
     State(state): State<McpRouterState>,
     body: Result<Json<BatchImportMcpServersRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Vec<McpServerResponse>>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let servers = state.config_service.batch_import(req).await?;
+) -> Result<Json<ApiResponse<Vec<McpServerResponse>>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let servers = state.config_service.batch_import(req).await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(servers)))
 }
 
@@ -136,21 +161,62 @@ async fn batch_import(
 /// `POST /api/mcp/test-connection` — test MCP server connectivity.
 ///
 /// Creates a temporary MCP client, connects, lists tools, and closes.
-/// Always returns 200; failures are encoded in the response body.
 async fn test_connection(
     State(state): State<McpRouterState>,
     body: Result<Json<TestMcpConnectionRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<McpConnectionTestResult>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Response, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let transport = McpServerTransport::from(req.transport);
     let result = state
         .connection_test_service
-        .test_connection(&req.name, &transport)
+        .test_connection_with_runtime_scope(
+            &req.name,
+            &transport,
+            req.runtime_scope_id.as_deref().or(req.id.as_deref()),
+        )
         .await;
     if let Some(server_id) = req.id.as_deref() {
-        state.config_service.persist_test_result(server_id, &result).await?;
+        state
+            .config_service
+            .persist_test_result(server_id, &result)
+            .await
+            .map_err(ApiError::from)?;
     }
-    Ok(Json(ApiResponse::ok(result)))
+    if result.success || result.needs_auth == Some(true) {
+        return Ok(Json(ApiResponse::ok(result)).into_response());
+    }
+
+    let status = result
+        .code
+        .map(connection_test_failure_status)
+        .unwrap_or(StatusCode::BAD_GATEWAY);
+    let error = result
+        .error
+        .clone()
+        .unwrap_or_else(|| "MCP connection test failed".to_string());
+    let code = result
+        .code
+        .map(McpConnectionTestErrorCode::as_str)
+        .unwrap_or("MCP_CONNECTION_FAILED");
+
+    Ok((
+        status,
+        Json(ErrorResponse::new_with_details(error, code, result.details.clone())),
+    )
+        .into_response())
+}
+
+fn connection_test_failure_status(code: McpConnectionTestErrorCode) -> StatusCode {
+    match code {
+        McpConnectionTestErrorCode::CommandNotFound
+        | McpConnectionTestErrorCode::CommandPermissionDenied
+        | McpConnectionTestErrorCode::CommandStartFailed => StatusCode::UNPROCESSABLE_ENTITY,
+        McpConnectionTestErrorCode::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        McpConnectionTestErrorCode::ConnectionFailed
+        | McpConnectionTestErrorCode::HttpError
+        | McpConnectionTestErrorCode::RpcError
+        | McpConnectionTestErrorCode::ProtocolError => StatusCode::BAD_GATEWAY,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +227,8 @@ async fn test_connection(
 /// and return their current MCP server configurations.
 async fn get_agent_configs(
     State(state): State<McpRouterState>,
-) -> Result<Json<ApiResponse<Vec<DetectedMcpServerResponse>>>, AppError> {
-    let configs = state.sync_service.get_agent_configs().await?;
+) -> Result<Json<ApiResponse<Vec<DetectedMcpServerResponse>>>, ApiError> {
+    let configs = state.sync_service.get_agent_configs().await.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(configs)))
 }
 
@@ -174,9 +240,13 @@ async fn get_agent_configs(
 async fn oauth_check_status(
     State(state): State<McpRouterState>,
     body: Result<Json<OAuthCheckStatusRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<OAuthStatusResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let status = state.oauth_service.check_oauth_status(&req.server_url).await?;
+) -> Result<Json<ApiResponse<OAuthStatusResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let status = state
+        .oauth_service
+        .check_oauth_status(&req.server_url)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(status)))
 }
 
@@ -187,9 +257,13 @@ async fn oauth_check_status(
 async fn oauth_login(
     State(state): State<McpRouterState>,
     body: Result<Json<OAuthLoginRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<OAuthLoginResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    let result = state.oauth_service.login(&req.server_url).await?;
+) -> Result<Json<ApiResponse<OAuthLoginResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let result = state
+        .oauth_service
+        .login(&req.server_url)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(result)))
 }
 
@@ -197,14 +271,82 @@ async fn oauth_login(
 async fn oauth_logout(
     State(state): State<McpRouterState>,
     body: Result<Json<OAuthLogoutRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
-    state.oauth_service.logout(&req.server_url).await?;
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    state
+        .oauth_service
+        .logout(&req.server_url)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::success()))
 }
 
 /// `GET /api/mcp/oauth/authenticated` — list server URLs with stored tokens.
-async fn oauth_authenticated(State(state): State<McpRouterState>) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
-    let urls = state.oauth_service.get_authenticated_servers().await?;
+async fn oauth_authenticated(State(state): State<McpRouterState>) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
+    let urls = state
+        .oauth_service
+        .get_authenticated_servers()
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(urls)))
+}
+
+#[cfg(test)]
+mod error_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn not_found_maps_to_app_not_found() {
+        let err = ApiError::from(McpError::NotFound("mcp_123".into()));
+        assert!(matches!(err, ApiError::NotFound(msg) if msg == "mcp_123"));
+    }
+
+    #[test]
+    fn conflict_maps_to_app_conflict() {
+        let err = ApiError::from(McpError::Conflict("test-server".into()));
+        assert!(matches!(err, ApiError::Conflict(_)));
+    }
+
+    #[test]
+    fn invalid_transport_maps_to_bad_request() {
+        let err = ApiError::from(McpError::InvalidTransport("missing command".into()));
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn invalid_edit_maps_to_bad_request() {
+        let err = ApiError::from(McpError::InvalidEdit("rename forbidden".into()));
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn agent_not_installed_maps_to_bad_request() {
+        let err = ApiError::from(McpError::AgentNotInstalled("claude".into()));
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn agent_operation_failed_maps_to_internal() {
+        let err = ApiError::from(McpError::AgentOperationFailed("exit code 1".into()));
+        assert!(matches!(err, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn connection_failed_maps_to_bad_gateway() {
+        let err = ApiError::from(McpError::ConnectionFailed("timeout".into()));
+        assert!(matches!(err, ApiError::BadGateway(_)));
+    }
+
+    #[test]
+    fn oauth_maps_to_internal() {
+        let err = ApiError::from(McpError::OAuth("discovery failed".into()));
+        assert!(matches!(err, ApiError::Internal(_)));
+    }
+
+    #[test]
+    fn json_error_maps_to_internal() {
+        let json_err = serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = ApiError::from(McpError::Json(json_err));
+        assert!(matches!(err, ApiError::Internal(_)));
+    }
 }

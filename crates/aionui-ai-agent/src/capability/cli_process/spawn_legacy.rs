@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
-use aionui_common::{AppError, CommandSpec, ErrorChain};
+use aionui_common::{CommandSpec, ErrorChain};
 use aionui_runtime::Builder as CmdBuilder;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{debug, error, info, trace, warn};
 
-use super::{CliAgentProcess, EVENT_CHANNEL_CAPACITY, STDERR_BUFFER_MAX};
+use crate::error::AgentError;
+
+use super::{
+    CliAgentProcess, EVENT_CHANNEL_CAPACITY, STDERR_BUFFER_MAX, prepare_command_cwd, tracked_process_group_id,
+};
 
 impl CliAgentProcess {
     /// Spawn a new CLI subprocess in **legacy mode**.
@@ -19,7 +23,7 @@ impl CliAgentProcess {
     /// - Monitor process exit
     ///
     /// This is used by Gemini, OpenClaw, Nanobot agents.
-    pub async fn spawn(config: CommandSpec) -> Result<Self, AppError> {
+    pub async fn spawn(config: CommandSpec) -> Result<Self, AgentError> {
         let mut cmd = CmdBuilder::new(&config.command);
         cmd.args(&config.args)
             .envs(config.env.iter().map(|e| (&e.name, &e.value)))
@@ -28,33 +32,33 @@ impl CliAgentProcess {
             .stderr(std::process::Stdio::piped());
 
         if let Some(ref cwd) = config.cwd {
-            cmd.current_dir(cwd);
+            cmd.current_dir(prepare_command_cwd(cwd)?);
         }
 
         let preview = cmd.to_string();
         info!(command = %preview, "Spawning CLI process");
         let mut child: Child = cmd.spawn().map_err(|e| {
             error!(command = %preview, error = %ErrorChain(&e), "Failed to spawn CLI process");
-            AppError::Internal(format!("Failed to spawn CLI process '{preview}': {e}"))
+            AgentError::internal(format!("Failed to spawn CLI process '{preview}': {e}"))
         })?;
 
         let pid = child
             .id()
-            .ok_or_else(|| AppError::Internal("Failed to obtain PID from spawned process".into()))?;
+            .ok_or_else(|| AgentError::internal("Failed to obtain PID from spawned process"))?;
         info!(pid, command = %preview, "CLI process spawned");
 
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| AppError::Internal("Failed to capture stdout from child process".into()))?;
+            .ok_or_else(|| AgentError::internal("Failed to capture stdout from child process"))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| AppError::Internal("Failed to capture stderr from child process".into()))?;
+            .ok_or_else(|| AgentError::internal("Failed to capture stderr from child process"))?;
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| AppError::Internal("Failed to capture stdin for child process".into()))?;
+            .ok_or_else(|| AgentError::internal("Failed to capture stdin for child process"))?;
 
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         // Pre-subscribe before spawning background tasks to guarantee no events are lost
@@ -130,6 +134,7 @@ impl CliAgentProcess {
             stdin: Mutex::new(Some(stdin)),
             stdout: Mutex::new(None), // stdout consumed by reader task
             pid,
+            process_group_id: tracked_process_group_id(pid),
             event_tx,
             exit_rx,
             initial_rx: std::sync::Mutex::new(Some(initial_rx)),

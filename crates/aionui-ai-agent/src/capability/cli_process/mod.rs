@@ -1,12 +1,15 @@
+use std::fs;
+use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aionui_common::AppError;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{ChildStdin, ChildStdout};
 use tokio::sync::{Mutex, broadcast, watch};
 use tracing::{debug, error, warn};
+
+use crate::error::AgentError;
 
 mod spawn_legacy;
 mod spawn_sdk;
@@ -23,6 +26,20 @@ pub(super) const EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Maximum stderr ring-buffer size in bytes.
 pub(super) const STDERR_BUFFER_MAX: usize = 8192;
+
+pub(super) fn prepare_command_cwd(cwd: &str) -> Result<PathBuf, AgentError> {
+    if cwd.trim().is_empty() {
+        return Err(AgentError::bad_request("Workspace directory is empty"));
+    }
+
+    let workspace_path = PathBuf::from(cwd);
+    match fs::metadata(&workspace_path) {
+        Ok(metadata) if metadata.is_dir() => Ok(workspace_path),
+        Ok(_) | Err(_) => Err(AgentError::workspace_path_runtime_unavailable(
+            workspace_path.display().to_string(),
+        )),
+    }
+}
 
 /// Manages a CLI subprocess with optional JSON-over-stdin/stdout communication.
 ///
@@ -43,6 +60,9 @@ pub struct CliAgentProcess {
     stdout: Mutex<Option<ChildStdout>>,
     /// OS-level process ID.
     pid: u32,
+    /// Process group ID captured at spawn time so teardown can still target
+    /// the whole tree after the direct child exits.
+    process_group_id: Option<u32>,
     /// Broadcast sender for parsed stdout events (legacy mode only).
     #[allow(dead_code)] // Part of the complete CliProcess API; used in legacy mode via subscribe()
     event_tx: broadcast::Sender<serde_json::Value>,
@@ -79,24 +99,24 @@ impl CliAgentProcess {
     /// The message is serialized as a single line followed by a newline.
     /// Returns an error if stdin has been closed (process exited) or taken
     /// by [`take_stdio`](Self::take_stdio).
-    pub async fn send(&self, message: &serde_json::Value) -> Result<(), AppError> {
+    pub async fn send(&self, message: &serde_json::Value) -> Result<(), AgentError> {
         let mut guard = self.stdin.lock().await;
         let stdin = guard
             .as_mut()
-            .ok_or_else(|| AppError::Internal("Cannot send: stdin is closed (process exited or taken)".into()))?;
+            .ok_or_else(|| AgentError::internal("Cannot send: stdin is closed (process exited or taken)"))?;
 
-        let mut buf =
-            serde_json::to_vec(message).map_err(|e| AppError::Internal(format!("Failed to serialize message: {e}")))?;
+        let mut buf = serde_json::to_vec(message)
+            .map_err(|e| AgentError::internal(format!("Failed to serialize message: {e}")))?;
         buf.push(b'\n');
 
         stdin.write_all(&buf).await.map_err(|e| {
             error!(pid = self.pid, error = %e, "Failed to write to stdin");
-            AppError::Internal(format!("Failed to write to stdin: {e}"))
+            AgentError::internal(format!("Failed to write to stdin: {e}"))
         })?;
 
         stdin.flush().await.map_err(|e| {
             error!(pid = self.pid, error = %e, "Failed to flush stdin");
-            AppError::Internal(format!("Failed to flush stdin: {e}"))
+            AgentError::internal(format!("Failed to flush stdin: {e}"))
         })?;
 
         Ok(())
@@ -133,7 +153,7 @@ impl CliAgentProcess {
     /// 1. Close stdin
     /// 2. Wait up to `grace_period` for the process to exit on its own
     /// 3. If still running after grace period, send SIGKILL
-    pub async fn kill(&self, grace_period: Duration) -> Result<(), AppError> {
+    pub async fn kill(&self, grace_period: Duration) -> Result<(), AgentError> {
         // Close stdin first to signal the child
         self.close_stdin().await;
 
@@ -156,7 +176,7 @@ impl CliAgentProcess {
 
         // Force kill
         warn!(pid = self.pid, "Grace period expired, sending SIGKILL");
-        force_kill(self.pid)?;
+        force_kill(self.pid, self.process_group_id)?;
 
         // Wait for the exit monitor to observe process termination so callers
         // do not race a still-live child after force-kill returns.
@@ -168,7 +188,7 @@ impl CliAgentProcess {
             let _ = rx.changed().await;
         })
         .await
-        .map_err(|_| AppError::Internal(format!("Process {} did not exit after force_kill", self.pid)))?;
+        .map_err(|_| AgentError::internal(format!("Process {} did not exit after force_kill", self.pid)))?;
 
         Ok(())
     }
@@ -189,6 +209,11 @@ impl CliAgentProcess {
     #[allow(dead_code)] // Complete CliProcess lifecycle API
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// Get the cached process group ID captured when the child was spawned.
+    pub fn process_group_id(&self) -> Option<u32> {
+        self.process_group_id
     }
 
     /// Wait for the process to exit (blocks until exit or cancellation).
@@ -242,6 +267,16 @@ impl CliAgentProcess {
         tail.reverse();
         tail.join("\n")
     }
+}
+
+#[cfg(unix)]
+pub(super) fn tracked_process_group_id(pid: u32) -> Option<u32> {
+    Some(pid)
+}
+
+#[cfg(not(unix))]
+pub(super) fn tracked_process_group_id(_pid: u32) -> Option<u32> {
+    None
 }
 
 #[cfg(test)]
@@ -328,6 +363,118 @@ pub(super) mod tests {
             .expect("Timed out")
             .expect("Channel closed");
         assert_eq!(event["val"], "hello_env");
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_unavailable_cwd_with_trailing_whitespace_in_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("workspace");
+        fs::create_dir(&cwd).unwrap();
+        let cwd_with_trailing_space = format!("{} ", cwd.to_string_lossy());
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo \"{\\\"cwd\\\":\\\"$PWD\\\"}\"".into()],
+            env: vec![],
+            cwd: Some(cwd_with_trailing_space.clone()),
+        };
+        let result = CliAgentProcess::spawn(config).await;
+        assert!(matches!(
+            result,
+            Err(AgentError::WorkspacePathRuntimeUnavailable(message)) if message == cwd_with_trailing_space
+        ));
+    }
+
+    #[tokio::test]
+    async fn spawn_allows_cwd_with_whitespace_in_any_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_parent = dir.path().join("my workspace");
+        fs::create_dir(&workspace_parent).unwrap();
+        let cwd = workspace_parent.join("project");
+        fs::create_dir(&cwd).unwrap();
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo \"{\\\"cwd\\\":\\\"$PWD\\\"}\"".into()],
+            env: vec![],
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+        };
+
+        let proc = CliAgentProcess::spawn(config).await.unwrap();
+        let mut rx = proc.subscribe();
+        let event = timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("Timed out")
+            .expect("Channel closed");
+        assert_eq!(
+            event["cwd"],
+            std::fs::canonicalize(&cwd).unwrap().to_string_lossy().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_for_sdk_allows_cwd_with_whitespace_in_any_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace_parent = dir.path().join("my workspace");
+        fs::create_dir(&workspace_parent).unwrap();
+        let cwd = workspace_parent.join("project");
+        fs::create_dir(&cwd).unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo ready".into()],
+            env: vec![],
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+        };
+
+        let proc = CliAgentProcess::spawn_for_sdk(config, data_dir.path()).await.unwrap();
+        proc.kill(Duration::from_millis(100)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_missing_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_cwd = dir.path().join("missing").join("workspace");
+        assert!(!missing_cwd.exists());
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo \"{\\\"cwd\\\":\\\"$PWD\\\"}\"".into()],
+            env: vec![],
+            cwd: Some(missing_cwd.to_string_lossy().into_owned()),
+        };
+
+        let result = CliAgentProcess::spawn(config).await;
+        assert!(matches!(
+            result,
+            Err(AgentError::WorkspacePathRuntimeUnavailable(message))
+                if message == missing_cwd.to_string_lossy()
+        ));
+        assert!(!missing_cwd.exists());
+    }
+
+    #[tokio::test]
+    async fn spawn_for_sdk_rejects_missing_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let missing_cwd = dir.path().join("missing-sdk").join("workspace");
+        assert!(!missing_cwd.exists());
+
+        let config = CommandSpec {
+            command: "sh".into(),
+            args: vec!["-c".into(), "sleep 10".into()],
+            env: vec![],
+            cwd: Some(missing_cwd.to_string_lossy().into_owned()),
+        };
+
+        let result = CliAgentProcess::spawn_for_sdk(config, data_dir.path()).await;
+        assert!(matches!(
+            result,
+            Err(AgentError::WorkspacePathRuntimeUnavailable(message))
+                if message == missing_cwd.to_string_lossy()
+        ));
+        assert!(!missing_cwd.exists());
     }
 
     #[tokio::test]

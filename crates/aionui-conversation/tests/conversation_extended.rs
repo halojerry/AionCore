@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use aionui_ai_agent::IWorkerTaskManager;
+use aionui_ai_agent::{AgentError, IWorkerTaskManager};
 use aionui_api_types::{
     CloneConversationRequest, CreateConversationRequest, ListMessagesQuery, SearchMessagesQuery, WebSocketMessage,
 };
-use aionui_common::{AgentKillReason, AppError, ConversationStatus, TimestampMs, generate_prefixed_id, now_ms};
-use aionui_conversation::ConversationService;
+use aionui_common::{AgentKillReason, ConversationStatus, TimestampMs, generate_prefixed_id, now_ms};
 use aionui_conversation::skill_resolver::SkillResolver;
+use aionui_conversation::{ConversationError, ConversationService};
 use aionui_db::models::MessageRow;
 use aionui_db::{IConversationRepository, SqliteConversationRepository, init_database_memory};
 use aionui_realtime::EventBroadcaster;
@@ -44,10 +44,10 @@ impl IWorkerTaskManager for NoopTaskManager {
         &self,
         _: &str,
         _: aionui_ai_agent::types::BuildTaskOptions,
-    ) -> Result<aionui_ai_agent::AgentInstance, AppError> {
-        Err(AppError::Internal("noop".into()))
+    ) -> Result<aionui_ai_agent::AgentInstance, AgentError> {
+        Err(AgentError::internal("noop"))
     }
-    fn kill(&self, _: &str, _: Option<AgentKillReason>) -> Result<(), AppError> {
+    fn kill(&self, _: &str, _: Option<AgentKillReason>) -> Result<(), AgentError> {
         Ok(())
     }
     fn kill_and_wait(
@@ -115,10 +115,21 @@ async fn setup() -> (
 
 const USER_ID: &str = "system_default_user";
 
+fn ensure_test_workspace_path() -> String {
+    ensure_named_workspace_path("aionui-conversation-extended-test-project")
+}
+
+fn ensure_named_workspace_path(name: &str) -> String {
+    let workspace = std::env::temp_dir().join(name);
+    std::fs::create_dir_all(&workspace).unwrap();
+    workspace.to_string_lossy().to_string()
+}
+
 fn make_create_req() -> CreateConversationRequest {
+    let workspace = ensure_test_workspace_path();
     serde_json::from_value(json!({
         "type": "acp",
-        "extra": { "workspace": "/home/user/project" }
+        "extra": { "workspace": workspace }
     }))
     .unwrap()
 }
@@ -218,7 +229,7 @@ async fn t7_1_reset_clears_messages_and_status() {
 async fn t7_3_reset_not_found() {
     let (svc, _repo, _b) = setup().await;
     let err = svc.reset(USER_ID, "nonexistent").await.unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::NotFound(_)));
+    assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
 // ── T8: Message list ───────────────────────────────────────────────
@@ -306,7 +317,7 @@ async fn t8_5_conversation_not_found() {
         .list_messages(USER_ID, "nonexistent", ListMessagesQuery::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::NotFound(_)));
+    assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
 // ── T9: Message search ─────────────────────────────────────────────
@@ -387,8 +398,22 @@ async fn t8_7_get_message_returns_full_tool_content_after_compact_list() {
 }
 
 #[tokio::test]
+async fn t8_8_get_message_not_found() {
+    let (svc, _repo, _b) = setup().await;
+    let conv = svc.create(USER_ID, make_create_req()).await.unwrap();
+
+    let err = svc.get_message(USER_ID, &conv.id, "missing-message").await.unwrap_err();
+
+    assert!(matches!(
+        err,
+        ConversationError::MessageNotFound { id } if id == "missing-message"
+    ));
+}
+
+#[tokio::test]
 async fn t9_1_keyword_match() {
     let (svc, repo, _b) = setup().await;
+    let workspace = ensure_test_workspace_path();
     let conv = svc.create(USER_ID, make_create_req()).await.unwrap();
 
     repo.insert_message(&make_message(&conv.id, "Rust review report", 0))
@@ -414,7 +439,7 @@ async fn t9_1_keyword_match() {
 
     assert_eq!(item.conversation.id, conv.id);
     assert_eq!(item.conversation.name, conv.name);
-    assert_eq!(item.conversation.extra["workspace"], "/home/user/project");
+    assert_eq!(item.conversation.extra["workspace"], workspace);
 }
 
 #[tokio::test]
@@ -467,7 +492,7 @@ async fn t9_4_empty_keyword() {
         page_size: None,
     };
     let err = svc.search_messages(USER_ID, query).await.unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::BadRequest(_)));
+    assert!(matches!(err, ConversationError::BadRequest { .. }));
 }
 
 #[tokio::test]
@@ -506,13 +531,14 @@ async fn t9_5_preview_text_extracts_from_json_content() {
 #[tokio::test]
 async fn t9_6_search_result_includes_conversation_model() {
     let (svc, repo, _b) = setup().await;
+    let workspace = ensure_test_workspace_path();
 
     // Search surfaces conversation.model only for aionrs (the only type that
     // carries a top-level model under the aionrs-only rule).
     let aionrs_req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "aionrs",
         "model": { "provider_id": "p1", "model": "claude-sonnet-4-20250514" },
-        "extra": { "workspace": "/home/user/project" }
+        "extra": { "workspace": workspace }
     }))
     .unwrap();
     let conv = svc.create(USER_ID, aionrs_req).await.unwrap();
@@ -559,11 +585,13 @@ async fn t9_7_search_does_not_leak_other_users_messages() {
 #[tokio::test]
 async fn t10_1_same_workspace() {
     let (svc, _repo, _b) = setup().await;
+    let shared_workspace = ensure_named_workspace_path("aionui-conversation-extended-shared-workspace");
+    let other_workspace = ensure_named_workspace_path("aionui-conversation-extended-other-workspace");
 
     let req1: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
         "name": "Conv A",
-        "extra": { "workspace": "/shared/path" }
+        "extra": { "workspace": shared_workspace }
     }))
     .unwrap();
     let conv1 = svc.create(USER_ID, req1).await.unwrap();
@@ -571,7 +599,7 @@ async fn t10_1_same_workspace() {
     let req2: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
         "name": "Conv B",
-        "extra": { "workspace": "/shared/path" }
+        "extra": { "workspace": shared_workspace }
     }))
     .unwrap();
     let conv2 = svc.create(USER_ID, req2).await.unwrap();
@@ -580,7 +608,7 @@ async fn t10_1_same_workspace() {
     let req3: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
         "name": "Conv C",
-        "extra": { "workspace": "/other/path" }
+        "extra": { "workspace": other_workspace }
     }))
     .unwrap();
     svc.create(USER_ID, req3).await.unwrap();
@@ -593,10 +621,11 @@ async fn t10_1_same_workspace() {
 #[tokio::test]
 async fn t10_2_no_associated() {
     let (svc, _repo, _b) = setup().await;
+    let workspace = ensure_named_workspace_path("aionui-conversation-extended-unique-workspace");
 
     let req: CreateConversationRequest = serde_json::from_value(json!({
         "type": "acp",
-        "extra": { "workspace": "/unique/path" }
+        "extra": { "workspace": workspace }
     }))
     .unwrap();
     let conv = svc.create(USER_ID, req).await.unwrap();
@@ -609,7 +638,7 @@ async fn t10_2_no_associated() {
 async fn t10_3_associated_not_found() {
     let (svc, _repo, _b) = setup().await;
     let err = svc.list_associated(USER_ID, "nonexistent").await.unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::NotFound(_)));
+    assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
 // ── T12: Boundary scenarios ────────────────────────────────────────
@@ -644,7 +673,7 @@ async fn messages_wrong_user_returns_not_found() {
         .list_messages("other_user", &conv.id, ListMessagesQuery::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::NotFound(_)));
+    assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
 #[tokio::test]
@@ -653,5 +682,5 @@ async fn reset_wrong_user_returns_not_found() {
     let conv = svc.create(USER_ID, make_create_req()).await.unwrap();
 
     let err = svc.reset("other_user", &conv.id).await.unwrap_err();
-    assert!(matches!(err, aionui_common::AppError::NotFound(_)));
+    assert!(matches!(err, ConversationError::NotFound { .. }));
 }

@@ -282,6 +282,7 @@ mod tests {
         // Sanity-check a couple of known ids from the committed manifest.
         assert!(reg.has("word-creator"));
         assert!(reg.has("cowork"));
+        assert!(reg.has("ozon-assistants"));
     }
 
     #[test]
@@ -303,6 +304,21 @@ mod tests {
             .skill_bytes("cowork", "en-US")
             .expect("cowork en-US skill should resolve from the embedded bundle");
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn load_embedded_ozon_assistant_binds_pounding_ozon_skill() {
+        let reg = BuiltinAssistantRegistry::load_embedded();
+        let assistant = reg
+            .get("ozon-assistants")
+            .expect("ozon assistant should exist in embedded registry");
+        assert_eq!(assistant.preset_agent_type, "aionrs");
+        assert_eq!(assistant.enabled_skills, vec!["pounding-ozon"]);
+        let bytes = reg
+            .rule_bytes("ozon-assistants", "en-US")
+            .expect("ozon assistant rule should resolve regardless of requested locale");
+        let text = std::str::from_utf8(&bytes).expect("rule file should be valid utf-8");
+        assert!(text.contains("pounding-ozon"));
     }
 
     #[test]

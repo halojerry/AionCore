@@ -1,4 +1,6 @@
-use aionui_common::AppError;
+#![allow(clippy::disallowed_types)]
+
+use aionui_common::ApiError;
 use serde::{Deserialize, Serialize};
 
 /// Standard API success response envelope.
@@ -56,31 +58,43 @@ impl ApiResponse<()> {
 
 /// Standard API error response.
 ///
-/// Matches the JSON format produced by `AppError::IntoResponse`:
-/// `{ "success": false, "error": "...", "code": "..." }`.
+/// Matches the JSON format produced by `ApiError::IntoResponse`:
+/// `{ "success": false, "error": "...", "code": "...", "details": ... }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub success: bool,
     pub error: String,
     pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl ErrorResponse {
     pub fn new(error: impl Into<String>, code: impl Into<String>) -> Self {
+        Self::new_with_details(error, code, None)
+    }
+
+    pub fn new_with_details(
+        error: impl Into<String>,
+        code: impl Into<String>,
+        details: impl Into<Option<serde_json::Value>>,
+    ) -> Self {
         Self {
             success: false,
             error: error.into(),
             code: code.into(),
+            details: details.into(),
         }
     }
 }
 
-impl From<AppError> for ErrorResponse {
-    fn from(err: AppError) -> Self {
+impl From<ApiError> for ErrorResponse {
+    fn from(err: ApiError) -> Self {
         Self {
             success: false,
             error: err.to_string(),
             code: err.error_code().to_owned(),
+            details: err.error_details(),
         }
     }
 }
@@ -154,6 +168,7 @@ mod tests {
         assert!(!resp.success);
         assert_eq!(resp.error, "Not found");
         assert_eq!(resp.code, "NOT_FOUND");
+        assert!(resp.details.is_none());
     }
 
     #[test]
@@ -163,23 +178,67 @@ mod tests {
         assert_eq!(json["success"], false);
         assert_eq!(json["error"], "Bad request: missing field");
         assert_eq!(json["code"], "BAD_REQUEST");
+        assert!(json.get("details").is_none());
     }
 
     #[test]
-    fn test_error_response_from_app_error() {
-        let err = AppError::Unauthorized("invalid token".into());
+    fn test_error_response_from_api_error() {
+        let err = ApiError::Unauthorized("invalid token".into());
         let resp = ErrorResponse::from(err);
         assert!(!resp.success);
         assert_eq!(resp.error, "Unauthorized: invalid token");
         assert_eq!(resp.code, "UNAUTHORIZED");
+        assert!(resp.details.is_none());
     }
 
     #[test]
     fn test_error_response_from_rate_limited() {
-        let resp = ErrorResponse::from(AppError::RateLimited);
+        let resp = ErrorResponse::from(ApiError::RateLimited);
         assert!(!resp.success);
         assert_eq!(resp.error, "Rate limited");
         assert_eq!(resp.code, "RATE_LIMITED");
+        assert!(resp.details.is_none());
+    }
+
+    #[test]
+    fn test_error_response_new_with_details() {
+        let resp = ErrorResponse::new_with_details(
+            "Bad request: invalid workspace",
+            "WORKSPACE_PATH_UNAVAILABLE",
+            serde_json::json!({ "workspace_path": "/tmp/Archive " }),
+        );
+        assert_eq!(
+            resp.details,
+            Some(serde_json::json!({ "workspace_path": "/tmp/Archive " }))
+        );
+    }
+
+    #[test]
+    fn test_error_response_from_workspace_error_includes_details() {
+        let resp = ErrorResponse::from(ApiError::WorkspacePathUnavailable("/tmp/Archive ".into()));
+        assert_eq!(resp.code, "WORKSPACE_PATH_UNAVAILABLE");
+        assert_eq!(
+            resp.details.as_ref().and_then(|details| details.get("workspace_path")),
+            Some(&serde_json::json!("/tmp/Archive "))
+        );
+        assert_eq!(
+            resp.details.as_ref().and_then(|details| details.get("operation")),
+            Some(&serde_json::json!("create"))
+        );
+    }
+
+    #[test]
+    fn test_error_response_from_runtime_workspace_error_includes_details() {
+        let resp = ErrorResponse::from(ApiError::WorkspacePathRuntimeUnavailable("/tmp/Archive ".into()));
+        assert_eq!(resp.code, "WORKSPACE_PATH_RUNTIME_UNAVAILABLE");
+        assert_eq!(
+            resp.details.as_ref().and_then(|details| details.get("workspace_path")),
+            Some(&serde_json::json!("/tmp/Archive "))
+        );
+        assert_eq!(
+            resp.details.as_ref().and_then(|details| details.get("operation")),
+            Some(&serde_json::json!("runtime"))
+        );
     }
 
     #[test]
@@ -198,5 +257,17 @@ mod tests {
         assert!(!resp.success);
         assert_eq!(resp.error, "Not found");
         assert_eq!(resp.code, "NOT_FOUND");
+        assert!(resp.details.is_none());
+    }
+
+    #[test]
+    fn test_error_response_with_details() {
+        let resp = ErrorResponse::new_with_details(
+            "Command not found: npx",
+            "MCP_COMMAND_NOT_FOUND",
+            Some(serde_json::json!({ "command": "npx" })),
+        );
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["details"]["command"], "npx");
     }
 }
