@@ -481,10 +481,7 @@
       },
       "avatar": "🔧",
       "preset_agent_type": "aionrs",
-      "enabled_skills": [
-        "openclaw-setup",
-        "aionui-webui-setup"
-      ],
+      "enabled_skills": [],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
       "rule_file": "rules/pounding-expert.{locale}.md",

@@ -1,4 +1,4 @@
-//! CLI argument definitions for the `aioncore` binary.
+//! CLI argument definitions for the `poundingcore` binary.
 //!
 //! Kept separate from `main.rs` to isolate the clap surface (struct + enum +
 //! attribute soup) from the runtime entry point. Visibility is `pub(crate)`
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "aioncore", about = "AionUi Backend Server", version)]
+#[command(name = "poundingcore", about = "POUNDING Backend Server", version)]
 pub(crate) struct Cli {
     /// Host address to listen on.
     #[arg(long, default_value_t = String::from(aionui_common::constants::DEFAULT_HOST))]
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn long_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "--version"]);
+        let result = Cli::try_parse_from(["poundingcore", "--version"]);
         let err = match result {
             Ok(_) => panic!("expected --version to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -86,7 +86,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn short_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "-V"]);
+        let result = Cli::try_parse_from(["poundingcore", "-V"]);
         let err = match result {
             Ok(_) => panic!("expected -V to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(

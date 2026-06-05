@@ -1,4 +1,4 @@
-//! `aioncore mcp-guide-stdio` subcommand: MCP stdio server for team-guide tools.
+//! `poundingcore mcp-guide-stdio` subcommand: MCP stdio server for team-guide tools.
 //!
 //! Uses the `rmcp` crate (Rust MCP SDK) for protocol handling, ensuring full
 //! compatibility with Claude CLI's MCP client implementation.

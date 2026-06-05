@@ -657,7 +657,7 @@ fn setup_with_factory_and_metadata(
         agent_metadata_repo.clone(),
         acp_session_repo,
     );
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/poundingcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new(
         team_repo,
@@ -693,7 +693,7 @@ fn setup_with_recording_broadcaster() -> (Arc<TeamSessionService>, Arc<Recording
         agent_metadata_repo.clone(),
         acp_session_repo,
     );
-    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/aioncore-test"));
+    let backend_binary_path = Arc::new(std::path::PathBuf::from("/tmp/poundingcore-test"));
     let provider_repo: Arc<dyn IProviderRepository> = Arc::new(EmptyProviderRepo);
     let svc = TeamSessionService::new(
         team_repo,

@@ -1,4 +1,4 @@
-//! `aioncore` (no subcommand): the main HTTP server.
+//! `poundingcore` (no subcommand): the main HTTP server.
 
 use std::process::ExitCode;
 use std::time::Instant;

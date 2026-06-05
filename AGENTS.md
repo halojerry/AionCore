@@ -246,7 +246,7 @@ main (stable — triggers release builds via tag)
 - After upstream sync, manually diff and restore all POUNDING customizations (see checklist below).
 - POUNDING-specific features are developed on `feature/*` branches, PR'd to `dev`.
 - Tag format: `v<version>-Pounding` (e.g. `v0.1.15-Pounding`).
-- The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion`).
+- The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion` field, value is a poundingcore release tag).
 
 ## POUNDING Custom Features
 
@@ -258,7 +258,7 @@ Features unique to the POUNDING fork that must be preserved during upstream sync
 | POUNDING builtin skill | `crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/` |
 | POUNDING DB migration | `crates/aionui-db/migrations/007_add_pounding_cli.sql` |
 | Brand logo asset | `crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png` |
-| Binary name | Binary must remain `aioncore` (restored from upstream rename) |
+| Binary name | Binary name is `poundingcore` |
 | CC-Switch integration tests | `crates/aionui-ai-agent/tests/cc_switch_integration.rs` |
 
 ## POUNDING Branding Checklist
@@ -269,6 +269,6 @@ When merging ANY upstream changes, verify these are not overwritten:
 - [ ] `cc_switch/` module exists under `aionui-ai-agent/src/`
 - [ ] `pounding-ozon-v0.1.0-lite/` builtin skill exists
 - [ ] `pounding-heart-solid.png` brand asset exists
-- [ ] Binary name is `aioncore` (not renamed)
+- [ ] Binary name is `poundingcore`
 - [ ] Legacy DB name `aionui.db` preserved in copy/migration functions
 - [ ] CC-Switch integration tests pass (`cargo test -p aionui-ai-agent --test cc_switch_integration`)
