@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types)]
+
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Json, Path, State};
@@ -12,12 +14,40 @@ use aionui_api_types::{
     StartPreviewRequest, StopPreviewRequest,
 };
 use aionui_auth::CurrentUser;
-use aionui_common::AppError;
-use aionui_file::path_safety::validate_path_with_extra_root;
+use aionui_common::ApiError;
+use aionui_file::{FileError, path_safety::validate_path_with_extra_root};
 
 use crate::error::OfficeError;
+use crate::proxy::ProxyError;
 use crate::state::OfficeRouterState;
 use crate::types::DocType;
+
+impl From<OfficeError> for ApiError {
+    fn from(err: OfficeError) -> Self {
+        match err {
+            OfficeError::OfficecliNotFound => ApiError::BadRequest("officecli not found".into()),
+            OfficeError::InstallFailed(msg) => ApiError::Internal(format!("officecli install failed: {msg}")),
+            OfficeError::StartFailed(msg) => ApiError::Internal(format!("preview start failed: {msg}")),
+            OfficeError::PortTimeout(path) => ApiError::Timeout(format!("port readiness timeout for {path}")),
+            OfficeError::Io(e) => ApiError::Internal(format!("IO error: {e}")),
+            OfficeError::Snapshot(msg) => ApiError::Internal(format!("snapshot error: {msg}")),
+            OfficeError::Json(e) => ApiError::Internal(format!("JSON error: {e}")),
+            OfficeError::Conversion(msg) => ApiError::Internal(format!("conversion error: {msg}")),
+            OfficeError::ToolNotFound(tool) => ApiError::BadRequest(format!("{tool} is not installed")),
+        }
+    }
+}
+
+impl From<ProxyError> for ApiError {
+    fn from(err: ProxyError) -> Self {
+        match err {
+            ProxyError::PortNotActive(_) => ApiError::Forbidden(err.to_string()),
+            ProxyError::Timeout => ApiError::Timeout(err.to_string()),
+            ProxyError::ConnectionFailed(msg) => ApiError::BadGateway(msg),
+            ProxyError::RequestFailed(msg) => ApiError::BadGateway(msg),
+        }
+    }
+}
 
 pub fn office_routes(state: OfficeRouterState) -> Router {
     Router::new()
@@ -56,7 +86,7 @@ async fn start_word_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StartPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<PreviewUrlResponse>>, AppError> {
+) -> Result<Json<ApiResponse<PreviewUrlResponse>>, ApiError> {
     start_preview(state, body, DocType::Word).await
 }
 
@@ -64,7 +94,7 @@ async fn stop_word_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StopPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     stop_preview(state, body, DocType::Word).await
 }
 
@@ -72,7 +102,7 @@ async fn start_excel_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StartPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<PreviewUrlResponse>>, AppError> {
+) -> Result<Json<ApiResponse<PreviewUrlResponse>>, ApiError> {
     start_preview(state, body, DocType::Excel).await
 }
 
@@ -80,7 +110,7 @@ async fn stop_excel_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StopPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     stop_preview(state, body, DocType::Excel).await
 }
 
@@ -88,7 +118,7 @@ async fn start_ppt_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StartPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<PreviewUrlResponse>>, AppError> {
+) -> Result<Json<ApiResponse<PreviewUrlResponse>>, ApiError> {
     start_preview(state, body, DocType::Ppt).await
 }
 
@@ -96,7 +126,7 @@ async fn stop_ppt_preview(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<StopPreviewRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
+) -> Result<Json<ApiResponse<()>>, ApiError> {
     stop_preview(state, body, DocType::Ppt).await
 }
 
@@ -104,8 +134,8 @@ async fn start_preview(
     state: OfficeRouterState,
     body: Result<Json<StartPreviewRequest>, JsonRejection>,
     doc_type: DocType,
-) -> Result<Json<ApiResponse<PreviewUrlResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<PreviewUrlResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let validated_path = validate_office_path(&state, &req.file_path, req.workspace.as_deref())?;
     let validated_path = validated_path.to_string_lossy().into_owned();
 
@@ -129,8 +159,8 @@ async fn stop_preview(
     state: OfficeRouterState,
     body: Result<Json<StopPreviewRequest>, JsonRejection>,
     doc_type: DocType,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     state.watch_manager.stop(&req.file_path, doc_type).await;
     Ok(Json(ApiResponse::success()))
 }
@@ -141,8 +171,8 @@ async fn list_snapshots(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<ListSnapshotsRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Vec<PreviewSnapshotInfoDto>>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<Vec<PreviewSnapshotInfoDto>>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let snapshots = state.snapshot_service.list(&req.target).await?;
     Ok(Json(ApiResponse::ok(snapshots)))
 }
@@ -151,8 +181,8 @@ async fn save_snapshot(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<SaveSnapshotRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<PreviewSnapshotInfoDto>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<PreviewSnapshotInfoDto>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let info = state.snapshot_service.save(&req.target, &req.content).await?;
     Ok(Json(ApiResponse::ok(info)))
 }
@@ -161,8 +191,8 @@ async fn get_snapshot_content(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<GetSnapshotContentRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<Option<SnapshotContentResponse>>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<Option<SnapshotContentResponse>>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let result = state
         .snapshot_service
         .get_content(&req.target, &req.snapshot_id)
@@ -176,8 +206,8 @@ async fn detect_star_office(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<DetectStarOfficeRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<StarOfficeDetectResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<StarOfficeDetectResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let url = state
         .star_office_detector
         .detect(req.preferred_url.as_deref(), req.force.unwrap_or(false), req.timeout_ms)
@@ -191,8 +221,8 @@ async fn convert_document(
     State(state): State<OfficeRouterState>,
     Extension(_user): Extension<CurrentUser>,
     body: Result<Json<DocumentConversionRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<aionui_api_types::DocumentConversionResponse>>, AppError> {
-    let Json(req) = body.map_err(|e| AppError::BadRequest(e.to_string()))?;
+) -> Result<Json<ApiResponse<aionui_api_types::DocumentConversionResponse>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let validated_path = validate_office_path(&state, &req.file_path, req.workspace.as_deref())?;
     let resp = state
         .conversion_service
@@ -205,9 +235,19 @@ fn validate_office_path(
     state: &OfficeRouterState,
     file_path: &str,
     workspace: Option<&str>,
-) -> Result<PathBuf, AppError> {
+) -> Result<PathBuf, ApiError> {
     let allowed_roots: Vec<&FsPath> = state.allowed_roots.iter().map(PathBuf::as_path).collect();
     validate_path_with_extra_root(file_path, &allowed_roots, workspace.map(FsPath::new))
+        .map_err(file_error_to_api_error)
+}
+
+fn file_error_to_api_error(error: FileError) -> ApiError {
+    match error {
+        FileError::BadRequest(message) => ApiError::BadRequest(message),
+        FileError::Forbidden(message) => ApiError::Forbidden(message),
+        FileError::NotFound(message) => ApiError::NotFound(message),
+        FileError::Internal(message) => ApiError::Internal(message),
+    }
 }
 
 fn preview_error_code(error: &OfficeError) -> &'static str {
@@ -230,7 +270,7 @@ async fn ppt_proxy(
     State(state): State<OfficeRouterState>,
     Path(params): Path<ProxyPortPath>,
     headers: HeaderMap,
-) -> Result<Response, AppError> {
+) -> Result<Response, ApiError> {
     let path = params.path.as_deref().unwrap_or("/");
     proxy_forward(state, params.port, path, DocType::Ppt, &headers).await
 }
@@ -239,7 +279,7 @@ async fn office_watch_proxy(
     State(state): State<OfficeRouterState>,
     Path(params): Path<ProxyPortPath>,
     headers: HeaderMap,
-) -> Result<Response, AppError> {
+) -> Result<Response, ApiError> {
     let path = params.path.as_deref().unwrap_or("/");
     let request_headers: Vec<(String, String)> = headers
         .iter()
@@ -269,7 +309,7 @@ async fn proxy_forward(
     path: &str,
     doc_type: DocType,
     headers: &HeaderMap,
-) -> Result<Response, AppError> {
+) -> Result<Response, ApiError> {
     let request_headers: Vec<(String, String)> = headers
         .iter()
         .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.as_str().to_owned(), val.to_owned())))
@@ -298,14 +338,14 @@ mod tests {
 
     use crate::conversion::ConversionService;
     use crate::error::OfficeError;
-    use crate::proxy::ProxyService;
+    use crate::proxy::{ProxyError, ProxyService};
     use crate::snapshot::SnapshotService;
     use crate::star_office::StarOfficeDetector;
     use crate::state::OfficeRouterState;
     use crate::types::DocType;
     use crate::watch_manager::{OfficecliWatchManager, ProcessHandle, ProcessSpawner};
 
-    use super::{office_proxy_routes, office_routes};
+    use super::{ApiError, office_proxy_routes, office_routes};
 
     #[test]
     fn office_routes_builds_without_panic() {
@@ -317,6 +357,73 @@ mod tests {
     fn office_proxy_routes_builds_without_panic() {
         let state = build_test_state();
         let _router = office_proxy_routes(state);
+    }
+
+    #[test]
+    fn officecli_not_found_maps_to_bad_request() {
+        let err = ApiError::from(OfficeError::OfficecliNotFound);
+        assert!(matches!(err, ApiError::BadRequest(_)));
+    }
+
+    #[test]
+    fn install_failed_maps_to_internal() {
+        let err = ApiError::from(OfficeError::InstallFailed("npm error".into()));
+        assert!(matches!(err, ApiError::Internal(msg) if msg.contains("npm error")));
+    }
+
+    #[test]
+    fn start_failed_maps_to_internal() {
+        let err = ApiError::from(OfficeError::StartFailed("spawn error".into()));
+        assert!(matches!(err, ApiError::Internal(msg) if msg.contains("spawn error")));
+    }
+
+    #[test]
+    fn port_timeout_maps_to_timeout() {
+        let err = ApiError::from(OfficeError::PortTimeout("/a.docx".into()));
+        assert!(matches!(err, ApiError::Timeout(msg) if msg.contains("/a.docx")));
+    }
+
+    #[test]
+    fn io_error_maps_to_internal() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let err = ApiError::from(OfficeError::Io(io_err));
+        assert!(matches!(err, ApiError::Internal(msg) if msg.contains("file missing")));
+    }
+
+    #[test]
+    fn conversion_error_maps_to_internal() {
+        let err = ApiError::from(OfficeError::Conversion("bad format".into()));
+        assert!(matches!(err, ApiError::Internal(msg) if msg.contains("bad format")));
+    }
+
+    #[test]
+    fn tool_not_found_maps_to_bad_request() {
+        let err = ApiError::from(OfficeError::ToolNotFound("pandoc".into()));
+        assert!(matches!(err, ApiError::BadRequest(msg) if msg.contains("pandoc")));
+    }
+
+    #[test]
+    fn proxy_error_port_not_active_maps_to_forbidden() {
+        let err = ApiError::from(ProxyError::PortNotActive(8080));
+        assert!(matches!(err, ApiError::Forbidden(_)));
+    }
+
+    #[test]
+    fn proxy_error_timeout_maps_to_timeout() {
+        let err = ApiError::from(ProxyError::Timeout);
+        assert!(matches!(err, ApiError::Timeout(_)));
+    }
+
+    #[test]
+    fn proxy_error_connection_failed_maps_to_bad_gateway() {
+        let err = ApiError::from(ProxyError::ConnectionFailed("refused".into()));
+        assert!(matches!(err, ApiError::BadGateway(_)));
+    }
+
+    #[test]
+    fn proxy_error_request_failed_maps_to_bad_gateway() {
+        let err = ApiError::from(ProxyError::RequestFailed("network error".into()));
+        assert!(matches!(err, ApiError::BadGateway(_)));
     }
 
     fn build_test_state() -> OfficeRouterState {

@@ -38,10 +38,12 @@ jobs:
 
   update-pr:
     runs-on: ubuntu-latest
+    continue-on-error: true
     if: "!startsWith(github.event.head_commit.message, 'chore: release') && !startsWith(github.event.head_commit.message, 'chore(main): release')"
     steps:
       - uses: googleapis/release-please-action@v5
         id: release-please
+        continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json

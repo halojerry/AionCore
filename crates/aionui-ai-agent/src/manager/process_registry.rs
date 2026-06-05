@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aionui_common::{AgentType, AppError, ErrorChain};
+use aionui_common::{AgentType, ErrorChain};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::capability::cli_process::CliAgentProcess;
+use crate::error::AgentError;
 
 pub(crate) const AGENT_PROCESS_REGISTRY_RELATIVE_PATH: &str = "runtime/agent-process-registry.json";
 
@@ -55,11 +56,12 @@ pub(crate) fn register_session_process(
     agent_type: AgentType,
     backend: Option<String>,
     command_preview: Option<String>,
-) -> Result<(), AppError> {
+) -> Result<(), AgentError> {
     let pid = process.pid();
+    let process_group_id = process.process_group_id();
     let entry = RegisteredAgentProcess {
         pid,
-        process_group_id: process_group_id(pid),
+        process_group_id,
         conversation_id: conversation_id.into(),
         agent_type: agent_type.serde_name().to_owned(),
         backend,
@@ -68,7 +70,7 @@ pub(crate) fn register_session_process(
     };
 
     register_agent_process(data_dir, entry).map_err(|e| {
-        AppError::Internal(format!(
+        AgentError::internal(format!(
             "Failed to register agent process {pid} in runtime registry: {e}"
         ))
     })?;
@@ -76,7 +78,7 @@ pub(crate) fn register_session_process(
     let data_dir = data_dir.to_path_buf();
     tokio::spawn(async move {
         let _ = process.wait_for_exit().await;
-        wait_for_process_tree_exit(pid, process_group_id(pid)).await;
+        wait_for_process_tree_exit(pid, process_group_id).await;
         if let Err(e) = unregister_agent_process(&data_dir, pid) {
             warn!(
                 pid,
@@ -163,16 +165,6 @@ fn is_registered_process_tree_alive(pid: u32, process_group_id: Option<u32>) -> 
         .filter(|group_id| *group_id > 1)
         .is_some_and(is_unix_process_group_alive)
         || is_unix_process_alive(pid)
-}
-
-#[cfg(unix)]
-fn process_group_id(pid: u32) -> Option<u32> {
-    Some(pid)
-}
-
-#[cfg(not(unix))]
-fn process_group_id(_pid: u32) -> Option<u32> {
-    None
 }
 
 #[cfg(unix)]

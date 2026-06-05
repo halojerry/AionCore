@@ -1,29 +1,32 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use aionui_ai_agent::types::{BuildTaskOptions, SendMessageData};
-use aionui_ai_agent::{AgentInstance, IWorkerTaskManager};
+use aionui_ai_agent::{AgentError, AgentInstance, AgentSendError, IWorkerTaskManager};
 
 use crate::response_middleware::ICronService;
+use crate::runtime_state::ConversationRuntimeStateService;
 use aionui_api_types::{
     ApprovalCheckResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
     ConversationArtifactKind, ConversationArtifactListResponse, ConversationArtifactResponse,
     ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
-    ConversationResponse, CreateConversationRequest, ListConversationsQuery, ListMessagesQuery, MessageListResponse,
-    MessageResponse, MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SessionMcpServer,
-    SessionMcpTransport, UpdateConversationArtifactRequest, UpdateConversationRequest, WebSocketMessage,
+    ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest, ListConversationsQuery,
+    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
+    SendMessageRequest, SessionMcpServer, SessionMcpTransport, UpdateConversationArtifactRequest,
+    UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
-    AgentType, AppError, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
-    PaginatedResult, generate_short_id, now_ms,
+    AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete, PaginatedResult,
+    WorkspacePathValidationError, generate_short_id, now_ms, validate_workspace_path_availability,
 };
-use aionui_db::models::MessageRow;
+use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
 };
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_realtime::EventBroadcaster;
-use aionui_runtime::resolve_command_path;
+use aionui_runtime::{RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path};
 use std::collections::{HashMap, HashSet};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
@@ -32,6 +35,7 @@ use crate::convert::{
     TOOL_CONTENT_COMPACT_THRESHOLD_BYTES, row_to_artifact_response, row_to_message_response,
     row_to_message_response_compact, row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
 };
+use crate::error::ConversationError;
 use crate::skill_resolver::SkillResolver;
 use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
 use crate::stream_relay::StreamRelay;
@@ -86,11 +90,11 @@ impl McpSupportPolicy {
 
 #[derive(Clone)]
 pub struct ConversationService {
-    workspace_root: std::path::PathBuf,
+    workspace_root: PathBuf,
     broadcaster: Arc<dyn EventBroadcaster>,
     skill_resolver: Arc<dyn SkillResolver>,
     task_manager: Arc<dyn IWorkerTaskManager>,
-    /// Hooks invoked at the end of `delete()` so other services
+    /// Hooks invoked during `delete()` before the DB row is removed so other services
     /// (`WorkerTaskManagerImpl`, `CronService`, …) can clean up their
     /// per-conversation state. Wrapped in `Arc<RwLock<…>>` so registration
     /// can happen post-construction without breaking the `Clone` impl —
@@ -98,6 +102,7 @@ pub struct ConversationService {
     delete_hooks: Arc<RwLock<Vec<Arc<dyn OnConversationDelete>>>>,
     cron_service: Arc<RwLock<Option<Arc<dyn ICronService>>>>,
     mcp_server_repo: Arc<RwLock<Option<Arc<dyn IMcpServerRepository>>>>,
+    runtime_state: Arc<ConversationRuntimeStateService>,
 
     // Repos for conversation, acp_session and agent_metadata access.
     conversation_repo: Arc<dyn IConversationRepository>,
@@ -109,7 +114,7 @@ pub struct ConversationService {
 
 impl ConversationService {
     pub fn new(
-        workspace_root: std::path::PathBuf,
+        workspace_root: PathBuf,
         broadcaster: Arc<dyn EventBroadcaster>,
         skill_resolver: Arc<dyn SkillResolver>,
         task_manager: Arc<dyn IWorkerTaskManager>,
@@ -126,11 +131,17 @@ impl ConversationService {
             delete_hooks: Arc::new(RwLock::new(Vec::new())),
             cron_service: Arc::new(RwLock::new(None)),
             mcp_server_repo: Arc::new(RwLock::new(None)),
+            runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
             conversation_repo,
             agent_metadata_repo,
             acp_session_repo,
         }
+    }
+
+    pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
+        self.runtime_state = runtime_state;
+        self
     }
 
     pub fn with_cron_service(&self, cron_service: Option<Arc<dyn ICronService>>) {
@@ -147,8 +158,8 @@ impl ConversationService {
 
     /// Register a hook to be notified when a conversation is deleted.
     ///
-    /// Hooks are dispatched sequentially in registration order from
-    /// `delete()`. Used by `aionui-app` to wire up `WorkerTaskManagerImpl`
+    /// Hooks are dispatched sequentially in registration order before
+    /// `delete()` removes the conversation row. Used by `aionui-app` to wire up `WorkerTaskManagerImpl`
     /// (kill the agent process) and `CronService` (cascade-delete cron jobs).
     pub fn with_delete_hook(&self, hook: Arc<dyn OnConversationDelete>) {
         if let Ok(mut guard) = self.delete_hooks.write() {
@@ -174,10 +185,61 @@ impl ConversationService {
         &self.conversation_repo
     }
 
-    pub(crate) fn task(&self, conversation_id: &str) -> Result<AgentInstance, AppError> {
+    pub(crate) fn acp_session_repo(&self) -> &Arc<dyn IAcpSessionRepository> {
+        &self.acp_session_repo
+    }
+
+    pub fn runtime_state(&self) -> Arc<ConversationRuntimeStateService> {
+        self.runtime_state.clone()
+    }
+
+    pub(crate) fn task(&self, conversation_id: &str) -> Result<AgentInstance, ConversationError> {
         self.task_manager
             .get_task(conversation_id)
-            .ok_or_else(|| AppError::NotFound(format!("No active agent for conversation '{conversation_id}'")))
+            .ok_or_else(|| ConversationError::ActiveAgentNotFound {
+                conversation_id: conversation_id.to_owned(),
+            })
+    }
+
+    pub async fn runtime_summary_for(&self, conversation_id: &str) -> ConversationRuntimeSummary {
+        let agent = self.task_manager.get_task(conversation_id);
+        let has_task = agent.is_some();
+        let task_status = agent.as_ref().and_then(|agent| agent.status());
+        let pending_confirmations = agent.as_ref().map(|agent| agent.get_confirmations().len()).unwrap_or(0);
+
+        self.runtime_state
+            .summary_from_parts(conversation_id, task_status, has_task, pending_confirmations)
+    }
+
+    pub async fn complete_turn(&self, conversation_id: &str) {
+        if self.runtime_state.is_deleting(conversation_id) {
+            debug!(
+                conversation_id,
+                "Skipping turn completion because conversation is deleting"
+            );
+            return;
+        }
+
+        let runtime = self.runtime_summary_for(conversation_id).await;
+        StreamRelay::complete_conversation_with_runtime(
+            &self.conversation_repo,
+            &self.broadcaster,
+            conversation_id,
+            Some(runtime),
+        )
+        .await;
+    }
+
+    async fn complete_released_turn(&self, conversation_id: &str, was_deleting: bool) {
+        if was_deleting {
+            debug!(
+                conversation_id,
+                "Skipping turn completion because conversation was deleting at claim release"
+            );
+            return;
+        }
+
+        self.complete_turn(conversation_id).await;
     }
 }
 
@@ -193,7 +255,7 @@ impl ConversationService {
         &self,
         user_id: &str,
         req: CreateConversationRequest,
-    ) -> Result<ConversationResponse, AppError> {
+    ) -> Result<ConversationResponse, ConversationError> {
         let id = generate_short_id();
         let now = now_ms();
         let source = req.source.unwrap_or(ConversationSource::Aionui);
@@ -203,10 +265,12 @@ impl ConversationService {
         // clients that still ship the legacy shape get a loud 400 instead of
         // a silent write to a column nobody reads.
         if req.r#type != AgentType::Aionrs && req.model.is_some() {
-            return Err(AppError::BadRequest(format!(
-                "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
-                req.r#type.serde_name()
-            )));
+            return Err(ConversationError::BadRequest {
+                reason: format!(
+                    "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
+                    req.r#type.serde_name()
+                ),
+            });
         }
 
         let mut extra = req.extra;
@@ -226,12 +290,18 @@ impl ConversationService {
         // `is_custom_workspace` is the authoritative signal consumed later to
         // decide whether we should wire skill symlinks (temp workspaces only
         // — user-chosen paths must not be mutated).
-        let user_supplied_workspace = extra
+        let user_supplied_workspace = match extra
             .get("workspace")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_owned());
+        {
+            Some(workspace) => Some(normalize_workspace_path(workspace)?),
+            None => None,
+        };
         let is_custom_workspace = user_supplied_workspace.is_some();
+        if let Some(workspace) = user_supplied_workspace.as_ref() {
+            extra["workspace"] = serde_json::Value::String(workspace.clone());
+        }
 
         let auto_provisioned_workspace = if user_supplied_workspace.is_none() {
             // Per-conversation temp workspaces live under
@@ -244,7 +314,7 @@ impl ConversationService {
                 .join("conversations")
                 .join(format!("{label}-temp-{id}"));
             std::fs::create_dir_all(&ws_path)
-                .map_err(|e| AppError::Internal(format!("Failed to create workspace: {e}")))?;
+                .map_err(|e| ConversationError::internal(format!("Failed to create workspace: {e}")))?;
             extra["workspace"] = serde_json::Value::String(ws_path.to_string_lossy().into_owned());
             Some(ws_path)
         } else {
@@ -330,10 +400,11 @@ impl ConversationService {
         };
         let selected_session_mcp_servers = match extra.as_object_mut() {
             Some(obj) => match obj.remove("selected_session_mcp_servers") {
-                Some(value) => Some(
-                    serde_json::from_value::<Vec<SessionMcpServer>>(value)
-                        .map_err(|e| AppError::BadRequest(format!("Invalid selected_session_mcp_servers: {e}")))?,
-                ),
+                Some(value) => Some(serde_json::from_value::<Vec<SessionMcpServer>>(value).map_err(|e| {
+                    ConversationError::BadRequest {
+                        reason: format!("Invalid selected_session_mcp_servers: {e}"),
+                    }
+                })?),
                 None => None,
             },
             None => None,
@@ -355,11 +426,11 @@ impl ConversationService {
                 Some(ids) => repo
                     .list_by_ids_any(ids)
                     .await
-                    .map_err(|e| AppError::Internal(format!("Failed to load selected MCP servers: {e}")))?,
+                    .map_err(|e| ConversationError::internal(format!("Failed to load selected MCP servers: {e}")))?,
                 None => repo
                     .list()
                     .await
-                    .map_err(|e| AppError::Internal(format!("Failed to list MCP servers: {e}")))?,
+                    .map_err(|e| ConversationError::internal(format!("Failed to list MCP servers: {e}")))?,
             };
             let selected_rows = rows
                 .into_iter()
@@ -406,14 +477,16 @@ impl ConversationService {
             );
             obj.insert(
                 "mcp_statuses".to_owned(),
-                serde_json::to_value(&selected_mcp_statuses)
-                    .map_err(|e| AppError::Internal(format!("Failed to serialize MCP status snapshot: {e}")))?,
+                serde_json::to_value(&selected_mcp_statuses).map_err(|e| {
+                    ConversationError::internal(format!("Failed to serialize MCP status snapshot: {e}"))
+                })?,
             );
             if let Some(session_servers) = selected_session_mcp_servers.as_ref() {
                 obj.insert(
                     "session_mcp_servers".to_owned(),
-                    serde_json::to_value(session_servers)
-                        .map_err(|e| AppError::Internal(format!("Failed to serialize session MCP snapshot: {e}")))?,
+                    serde_json::to_value(session_servers).map_err(|e| {
+                        ConversationError::internal(format!("Failed to serialize session MCP snapshot: {e}"))
+                    })?,
                 );
             }
         }
@@ -424,13 +497,13 @@ impl ConversationService {
             name: req.name.unwrap_or_default(),
             r#type: enum_to_db(&req.r#type)?,
             extra: serde_json::to_string(&extra)
-                .map_err(|e| AppError::Internal(format!("Failed to serialize extra: {e}")))?,
+                .map_err(|e| ConversationError::internal(format!("Failed to serialize extra: {e}")))?,
             model: req
                 .model
                 .as_ref()
                 .map(serde_json::to_string)
                 .transpose()
-                .map_err(|e| AppError::Internal(format!("Failed to serialize model: {e}")))?,
+                .map_err(|e| ConversationError::internal(format!("Failed to serialize model: {e}")))?,
             status: Some(enum_to_db(&ConversationStatus::Pending)?),
             source: Some(enum_to_db(&source)?),
             channel_chat_id: req.channel_chat_id,
@@ -459,7 +532,11 @@ impl ConversationService {
     }
 
     #[tracing::instrument(skip_all, fields(conversation_id = %conversation_id))]
-    async fn create_acp_session_row(&self, conversation_id: &str, extra: &serde_json::Value) -> Result<(), AppError> {
+    async fn create_acp_session_row(
+        &self,
+        conversation_id: &str,
+        extra: &serde_json::Value,
+    ) -> Result<(), ConversationError> {
         debug!("Creating acp_session row");
 
         // Identity comes from the user's agent choice in `extra`.
@@ -483,7 +560,7 @@ impl ConversationService {
                 .agent_metadata_repo
                 .find_builtin_by_backend(backend)
                 .await
-                .map_err(|e| AppError::Internal(format!("agent_metadata lookup: {e}")))?
+                .map_err(|e| ConversationError::internal(format!("agent_metadata lookup: {e}")))?
                 .map(|row| row.id)
                 .unwrap_or_default(),
             None => String::new(),
@@ -498,7 +575,7 @@ impl ConversationService {
         self.acp_session_repo
             .create(&params)
             .await
-            .map_err(|e| AppError::Internal(format!("Failed to create acp_session row: {e}")))?;
+            .map_err(|e| ConversationError::internal(format!("Failed to create acp_session row: {e}")))?;
 
         // Seed optional runtime state from create payload. Empty strings are
         // treated as absent, matching the "send key only when value present"
@@ -522,7 +599,7 @@ impl ConversationService {
             self.acp_session_repo
                 .save_runtime_state(conversation_id, &params)
                 .await
-                .map_err(|e| AppError::Internal(format!("Failed to seed acp_session runtime state: {e}")))?;
+                .map_err(|e| ConversationError::internal(format!("Failed to seed acp_session runtime state: {e}")))?;
         }
         Ok(())
     }
@@ -532,18 +609,20 @@ impl ConversationService {
     /// Returns `NotFound` if the conversation does not exist or does not
     /// belong to the given user (avoids leaking existence to other users).
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %id))]
-    pub async fn get(&self, user_id: &str, id: &str) -> Result<ConversationResponse, AppError> {
+    pub async fn get(&self, user_id: &str, id: &str) -> Result<ConversationResponse, ConversationError> {
         let row = self
             .conversation_repo
             .get(id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound { id: id.to_owned() })?;
 
-        let mut extra: serde_json::Value =
-            serde_json::from_str(&row.extra).map_err(|e| AppError::Internal(format!("Invalid extra JSON: {e}")))?;
+        let mut extra: serde_json::Value = serde_json::from_str(&row.extra)
+            .map_err(|e| ConversationError::internal(format!("Invalid extra JSON: {e}")))?;
         self.backfill_extra_inplace(&row.id, &mut extra).await;
-        row_to_response_with_extra(row, extra, &self.workspace_root)
+        let mut response = row_to_response_with_extra(row, extra, &self.workspace_root)?;
+        response.runtime = Some(self.runtime_summary_for(id).await);
+        Ok(response)
     }
 
     /// List conversations with cursor-based pagination and optional filters.
@@ -552,7 +631,7 @@ impl ConversationService {
         &self,
         user_id: &str,
         query: ListConversationsQuery,
-    ) -> Result<ConversationListResponse, AppError> {
+    ) -> Result<ConversationListResponse, ConversationError> {
         let filters = ConversationFilters {
             cursor: query.cursor,
             limit: query.limit.unwrap_or(0),
@@ -611,13 +690,15 @@ impl ConversationService {
         id: &str,
         req: UpdateConversationRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<ConversationResponse, AppError> {
+    ) -> Result<ConversationResponse, ConversationError> {
         let existing = self
             .conversation_repo
             .get(id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound { id: id.to_owned() })?;
+
+        let existing_type: AgentType = string_to_enum(&existing.r#type)?;
 
         // Snapshot invariant: once written at create time, `extra.skills`
         // must not be re-shaped by PATCH. The frontend must clone the
@@ -629,20 +710,35 @@ impl ConversationService {
                 || incoming.get("mcp_statuses").is_some()
                 || incoming.get("session_mcp_servers").is_some())
         {
-            return Err(AppError::BadRequest(
-                "extra.skills and MCP snapshots are immutable post-creation".into(),
-            ));
+            return Err(ConversationError::BadRequest {
+                reason: "extra.skills and MCP snapshots are immutable post-creation".into(),
+            });
+        }
+
+        if existing_type == AgentType::Acp
+            && let Some(incoming) = &req.extra
+            && (incoming.get("current_model_id").is_some() || incoming.get("current_mode_id").is_some())
+        {
+            warn!(
+                conversation_id = %id,
+                "Rejected ACP runtime current-state write through conversation.extra"
+            );
+            return Err(ConversationError::BadRequest {
+                reason: "ACP runtime current mode/model must be changed via /mode or /model, not conversation.extra"
+                    .into(),
+            });
         }
 
         // Type-aware rule: top-level `model` is aionrs-only. For non-aionrs
         // conversations, model/mode must be updated via `extra` (see spec
         // 2026-05-12).
-        let existing_type: AgentType = string_to_enum(&existing.r#type)?;
         if existing_type != AgentType::Aionrs && req.model.is_some() {
-            return Err(AppError::BadRequest(format!(
-                "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
-                existing.r#type
-            )));
+            return Err(ConversationError::BadRequest {
+                reason: format!(
+                    "top-level `model` is only accepted for aionrs conversations; pass model via `extra` for {}",
+                    existing.r#type
+                ),
+            });
         }
 
         let now = now_ms();
@@ -659,9 +755,12 @@ impl ConversationService {
             {
                 warn!("aionrs update: stripped legacy `extra.model` from merged extra");
             }
+            if new_extra.get("workspace").is_some() {
+                normalize_workspace_extra(&mut existing_extra)?;
+            }
             Some(
                 serde_json::to_string(&existing_extra)
-                    .map_err(|e| AppError::Internal(format!("Failed to serialize merged extra: {e}")))?,
+                    .map_err(|e| ConversationError::internal(format!("Failed to serialize merged extra: {e}")))?,
             )
         } else {
             None
@@ -681,7 +780,7 @@ impl ConversationService {
             .map(|m| {
                 serde_json::to_string(m)
                     .map(Some)
-                    .map_err(|e| AppError::Internal(format!("Failed to serialize model: {e}")))
+                    .map_err(|e| ConversationError::internal(format!("Failed to serialize model: {e}")))
             })
             .transpose()?;
 
@@ -712,7 +811,7 @@ impl ConversationService {
             .conversation_repo
             .get(id)
             .await?
-            .ok_or_else(|| AppError::Internal("Conversation vanished after update".into()))?;
+            .ok_or_else(|| ConversationError::internal("Conversation vanished after update"))?;
 
         let response = row_to_response(updated, &self.workspace_root)?;
 
@@ -728,21 +827,26 @@ impl ConversationService {
     /// `team_mcp_stdio_config`) where a full `update()` would kill the agent
     /// on a spurious model comparison.
     #[tracing::instrument(skip_all, fields(conversation_id = %conversation_id))]
-    pub async fn update_extra(&self, conversation_id: &str, patch: serde_json::Value) -> Result<(), AppError> {
-        let existing = self
-            .conversation_repo
-            .get(conversation_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+    pub async fn update_extra(&self, conversation_id: &str, patch: serde_json::Value) -> Result<(), ConversationError> {
+        let existing =
+            self.conversation_repo
+                .get(conversation_id)
+                .await?
+                .ok_or_else(|| ConversationError::NotFound {
+                    id: conversation_id.to_owned(),
+                })?;
 
         let mut merged: serde_json::Value =
             serde_json::from_str(&existing.extra).unwrap_or_else(|_| serde_json::json!({}));
         merge_json(&mut merged, &patch);
+        if patch.get("workspace").is_some() {
+            normalize_workspace_extra(&mut merged)?;
+        }
 
         let updates = ConversationRowUpdate {
             extra: Some(
                 serde_json::to_string(&merged)
-                    .map_err(|e| AppError::Internal(format!("Failed to serialize merged extra: {e}")))?,
+                    .map_err(|e| ConversationError::internal(format!("Failed to serialize merged extra: {e}")))?,
             ),
             updated_at: Some(now_ms()),
             ..Default::default()
@@ -752,7 +856,7 @@ impl ConversationService {
         Ok(())
     }
 
-    pub async fn save_acp_runtime_mode(&self, conversation_id: &str, mode: &str) -> Result<(), AppError> {
+    pub async fn save_acp_runtime_mode(&self, conversation_id: &str, mode: &str) -> Result<(), ConversationError> {
         let params = SaveRuntimeStateParams {
             current_mode_id: Some(Some(mode)),
             ..Default::default()
@@ -760,7 +864,7 @@ impl ConversationService {
         self.acp_session_repo
             .save_runtime_state(conversation_id, &params)
             .await
-            .map_err(|e| AppError::Internal(format!("Failed to persist runtime mode: {e}")))?;
+            .map_err(|e| ConversationError::internal(format!("Failed to persist runtime mode: {e}")))?;
         Ok(())
     }
 
@@ -768,30 +872,21 @@ impl ConversationService {
     ///
     /// Broadcasts `conversation.listChanged(deleted)`.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %id))]
-    pub async fn delete(&self, user_id: &str, id: &str) -> Result<(), AppError> {
+    pub async fn delete(&self, user_id: &str, id: &str) -> Result<(), ConversationError> {
         // Get existing to retrieve source for broadcast and verify ownership
         let existing = self
             .conversation_repo
             .get(id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound { id: id.to_owned() })?;
 
         let source: Option<ConversationSource> = existing
             .source
             .as_deref()
             .and_then(|s| string_to_enum::<ConversationSource>(s).ok());
 
-        self.conversation_repo.delete(id).await?;
-        // No FK / CASCADE on `acp_session`: clean it up here so non-ACP
-        // conversations that used to be ACP (shouldn't happen but is
-        // cheap to cover) still drop their orphaned session row.
-        if let Err(err) = self.acp_session_repo.delete(id).await {
-            warn!(
-                error = %ErrorChain(&err),
-                "Failed to delete acp_session row on conversation delete"
-            );
-        }
+        let had_active_turn = self.runtime_state.mark_deleting(id);
 
         // Snapshot the hook list under the read lock, then drop the guard
         // before awaiting — `RwLockReadGuard` is not `Send`, so holding it
@@ -800,6 +895,23 @@ impl ConversationService {
             self.delete_hooks.read().map(|guard| guard.clone()).unwrap_or_default();
         for hook in hooks {
             hook.on_conversation_deleted(id).await;
+        }
+
+        if let Err(err) = self.conversation_repo.delete(id).await {
+            self.runtime_state.clear_deleting(id);
+            return Err(err.into());
+        }
+        if !had_active_turn {
+            self.runtime_state.clear_deleting(id);
+        }
+        // No FK / CASCADE on `acp_session`: clean it up here so non-ACP
+        // conversations that used to be ACP (shouldn't happen but is
+        // cheap to cover) still drop their orphaned session row.
+        if let Err(err) = self.acp_session_repo.delete(id).await {
+            warn!(
+                error = %ErrorChain(&err),
+                "Failed to delete acp_session row on conversation delete"
+            );
         }
 
         info!("Conversation deleted");
@@ -820,19 +932,19 @@ impl ConversationService {
         &self,
         user_id: &str,
         req: CloneConversationRequest,
-    ) -> Result<ConversationResponse, AppError> {
+    ) -> Result<ConversationResponse, ConversationError> {
         self.create(user_id, req.conversation).await
     }
 
     /// Reset a conversation: clear messages and set status back to pending.
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %id))]
-    pub async fn reset(&self, user_id: &str, id: &str) -> Result<(), AppError> {
+    pub async fn reset(&self, user_id: &str, id: &str) -> Result<(), ConversationError> {
         // Verify existence and ownership
         self.conversation_repo
             .get(id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound { id: id.to_owned() })?;
 
         // Delete all messages
         self.conversation_repo.delete_messages_by_conversation(id).await?;
@@ -852,11 +964,21 @@ impl ConversationService {
     }
 
     /// List conversations associated by the same workspace.
-    pub async fn list_associated(&self, user_id: &str, id: &str) -> Result<Vec<ConversationResponse>, AppError> {
+    pub async fn list_associated(
+        &self,
+        user_id: &str,
+        id: &str,
+    ) -> Result<Vec<ConversationResponse>, ConversationError> {
+        self.conversation_repo
+            .get(id)
+            .await?
+            .filter(|r| r.user_id == user_id)
+            .ok_or_else(|| ConversationError::NotFound { id: id.to_owned() })?;
+
         let rows = self.conversation_repo.list_associated(user_id, id).await?;
         rows.into_iter()
             .map(|row| row_to_response(row, &self.workspace_root))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
     }
 
     /// List conversations spawned by a specific cron job.
@@ -864,11 +986,11 @@ impl ConversationService {
         &self,
         user_id: &str,
         cron_job_id: &str,
-    ) -> Result<Vec<ConversationResponse>, AppError> {
+    ) -> Result<Vec<ConversationResponse>, ConversationError> {
         let rows = self.conversation_repo.list_by_cron_job(user_id, cron_job_id).await?;
         rows.into_iter()
             .map(|row| row_to_response(row, &self.workspace_root))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()
     }
 }
 
@@ -881,13 +1003,15 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         query: ListMessagesQuery,
-    ) -> Result<MessageListResponse, AppError> {
+    ) -> Result<MessageListResponse, ConversationError> {
         // Verify conversation exists and belongs to user
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let page = query.page.unwrap_or(1);
         let page_size = query.page_size.unwrap_or(50);
@@ -958,18 +1082,22 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         message_id: &str,
-    ) -> Result<MessageResponse, AppError> {
+    ) -> Result<MessageResponse, ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let row = self
             .conversation_repo
             .get_message(conversation_id, message_id)
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("Message {message_id} not found")))?;
+            .ok_or_else(|| ConversationError::MessageNotFound {
+                id: message_id.to_owned(),
+            })?;
 
         let content_bytes = row.content.len();
         let response = row_to_message_response(row)?;
@@ -991,12 +1119,14 @@ impl ConversationService {
         &self,
         user_id: &str,
         conversation_id: &str,
-    ) -> Result<ConversationArtifactListResponse, AppError> {
+    ) -> Result<ConversationArtifactListResponse, ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let mut items = self
             .conversation_repo
@@ -1031,29 +1161,33 @@ impl ConversationService {
         conversation_id: &str,
         artifact_id: &str,
         req: UpdateConversationArtifactRequest,
-    ) -> Result<ConversationArtifactResponse, AppError> {
+    ) -> Result<ConversationArtifactResponse, ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let status = serde_json::to_value(req.status)
             .ok()
             .and_then(|value| value.as_str().map(str::to_owned))
-            .ok_or_else(|| AppError::Internal("Failed to serialize artifact status".into()))?;
+            .ok_or_else(|| ConversationError::internal("Failed to serialize artifact status"))?;
 
         let row = self
             .conversation_repo
             .update_artifact_status(conversation_id, artifact_id, &status, now_ms())
             .await?
-            .ok_or_else(|| AppError::NotFound(format!("Artifact {artifact_id} not found")))?;
+            .ok_or_else(|| ConversationError::ArtifactNotFound {
+                id: artifact_id.to_owned(),
+            })?;
 
         let response = row_to_artifact_response(row)?;
         self.broadcaster.broadcast(WebSocketMessage::new(
             "conversation.artifact",
             serde_json::to_value(&response)
-                .map_err(|e| AppError::Internal(format!("Failed to serialize artifact event: {e}")))?,
+                .map_err(|e| ConversationError::internal(format!("Failed to serialize artifact event: {e}")))?,
         ));
 
         Ok(response)
@@ -1064,9 +1198,11 @@ impl ConversationService {
         &self,
         user_id: &str,
         query: SearchMessagesQuery,
-    ) -> Result<MessageSearchResponse, AppError> {
+    ) -> Result<MessageSearchResponse, ConversationError> {
         if query.keyword.trim().is_empty() {
-            return Err(AppError::BadRequest("keyword must not be empty".into()));
+            return Err(ConversationError::BadRequest {
+                reason: "keyword must not be empty".into(),
+            });
         }
 
         let page = query.page.unwrap_or(1);
@@ -1100,12 +1236,14 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<ConfirmationListResponse, AppError> {
+    ) -> Result<ConfirmationListResponse, ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let agent = match task_manager.get_task(conversation_id) {
             Some(a) => a,
@@ -1126,16 +1264,20 @@ impl ConversationService {
         call_id: &str,
         req: ConfirmRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let agent = task_manager
             .get_task(conversation_id)
-            .ok_or_else(|| AppError::NotFound("No active agent for this conversation".into()))?;
+            .ok_or_else(|| ConversationError::ActiveAgentNotFound {
+                conversation_id: conversation_id.to_owned(),
+            })?;
 
         let confirmations = agent.get_confirmations();
         let conf_id = confirmations
@@ -1165,12 +1307,14 @@ impl ConversationService {
         action: &str,
         command_type: Option<&str>,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<ApprovalCheckResponse, AppError> {
+    ) -> Result<ApprovalCheckResponse, ConversationError> {
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let approved = task_manager
             .get_task(conversation_id)
@@ -1187,7 +1331,7 @@ impl ConversationService {
     ///
     /// 1. Validates the conversation belongs to the user
     /// 2. Stores the user message (position: "right", status: "finish")
-    /// 3. Marks the conversation as running
+    /// 3. Claims the conversation in runtime state
     /// 4. Spawns background agent build/send and stream relay work
     /// 5. Returns immediately (202 Accepted semantics)
     #[tracing::instrument(skip_all, fields(user_id = %user_id, conversation_id = %conversation_id))]
@@ -1197,9 +1341,11 @@ impl ConversationService {
         conversation_id: &str,
         req: SendMessageRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<String, AppError> {
+    ) -> Result<String, ConversationError> {
         if req.content.trim().is_empty() {
-            return Err(AppError::BadRequest("Message content must not be empty".into()));
+            return Err(ConversationError::BadRequest {
+                reason: "Message content must not be empty".into(),
+            });
         }
         let send_started_at = now_ms();
 
@@ -1209,7 +1355,9 @@ impl ConversationService {
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         // Short-circuit for legacy Gemini conversations: the dedicated Gemini
         // runtime has been removed, so we cannot build an agent for this row.
@@ -1218,23 +1366,15 @@ impl ConversationService {
         // deserialize. The client identifies this case by `code` and renders
         // a dedicated archived-conversation UI rather than a generic banner.
         if row.r#type == "gemini" {
-            return Err(AppError::ConversationArchived(
-                "This conversation was created with the legacy Gemini runtime, which has been \
-                 removed. Please start a new conversation with the Gemini ACP backend to continue."
+            return Err(ConversationError::Archived {
+                id: conversation_id.to_owned(),
+                reason: "This conversation was created with the legacy Gemini runtime, which has been \
+                         removed. Please start a new conversation with the Gemini ACP backend to continue."
                     .into(),
-            ));
+            });
         }
 
-        // Check if conversation is already processing (simple guard)
-        let status: ConversationStatus = match row.status.as_deref() {
-            None | Some("") => ConversationStatus::Finished,
-            Some(s) => string_to_enum(s)?,
-        };
-        if status == ConversationStatus::Running {
-            return Err(AppError::Conflict(
-                "Conversation is already processing a message".into(),
-            ));
-        }
+        let turn_claim = self.runtime_state.try_claim_turn(conversation_id)?;
 
         // Store user message. `msg_id` is server-generated so the WebSocket
         // stream, DB row, and client-side message index all agree on the same
@@ -1281,27 +1421,24 @@ impl ConversationService {
                     error = %ErrorChain(&err),
                     "Failed to build task options for message send"
                 );
-                let _ = self.persist_send_failure_tip(conversation_id, &err).await;
-                return Err(err);
+                let top_level_code = err.error_code();
+                let send_error = AgentSendError::from_agent_error(err.to_agent_error());
+                self.persist_and_broadcast_send_failure_tip(conversation_id, &send_error, Some(top_level_code))
+                    .await;
+                let mut turn_claim = turn_claim;
+                let was_deleting = turn_claim.release();
+                self.complete_released_turn(conversation_id, was_deleting).await;
+                return Ok(user_msg_id);
             }
         };
+        self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
         let stored_workspace = build_opts.workspace.clone();
 
-        // TODO: 好蠢的设计, status 写数据库, 最好干掉啦
-        let update = ConversationRowUpdate {
-            status: Some(enum_to_db(&ConversationStatus::Running)?),
-            updated_at: Some(now_ms()),
-            ..Default::default()
-        };
-
-        if let Err(e) = self.conversation_repo.update(conversation_id, &update).await {
-            warn!(error = %ErrorChain(&e), "Failed to set conversation status to Running");
-            return Err(e.into());
-        }
         let conv_id = conversation_id.to_owned();
         let repo = Arc::clone(&self.conversation_repo);
         let broadcaster = Arc::clone(&self.broadcaster);
         let cron_service = self.current_cron_service();
+        let runtime_state = self.runtime_state();
         let user_id_owned = user_id.to_owned();
         let service = self.clone();
         let task_manager = Arc::clone(task_manager);
@@ -1315,19 +1452,32 @@ impl ConversationService {
         // agent-internal tracing all share one identifier per turn.
         let user_msg_id_ret = user_msg_id.clone();
         tokio::spawn(async move {
+            let mut turn_claim = turn_claim;
             let build_started_at = now_ms();
             info!(conversation_id = %conv_id, "Agent task build started");
             let agent = match task_manager.get_or_build_task(&conv_id, build_opts).await {
                 Ok(agent) => agent,
                 Err(err) => {
+                    let top_level_code = agent_error_top_level_code(&err);
+                    let send_error = AgentSendError::from_agent_error_ref(&err);
                     error!(
                         conversation_id = %conv_id,
-                        error_code = err.error_code(),
+                        error_code = ?send_error.code(),
                         error = %ErrorChain(&err),
                         "Agent task build failed"
                     );
-                    service.persist_and_broadcast_send_failure_tip(&conv_id, &err).await;
-                    StreamRelay::complete_conversation(&repo, &broadcaster, &conv_id).await;
+                    if service.runtime_state.is_deleting(&conv_id) {
+                        debug!(
+                            conversation_id = %conv_id,
+                            "Skipping send failure persistence because conversation is deleting"
+                        );
+                    } else {
+                        service
+                            .persist_and_broadcast_send_failure_tip(&conv_id, &send_error, Some(top_level_code))
+                            .await;
+                    }
+                    let was_deleting = turn_claim.release();
+                    service.complete_released_turn(&conv_id, was_deleting).await;
                     return;
                 }
             };
@@ -1338,14 +1488,26 @@ impl ConversationService {
                 .maybe_persist_workspace(&conv_id, &stored_workspace, agent.workspace())
                 .await
             {
+                let top_level_code = err.error_code();
+                let send_error = AgentSendError::from_agent_error(err.to_agent_error());
                 error!(
                     conversation_id = %conv_id,
                     error_code = err.error_code(),
                     error = %ErrorChain(&err),
                     "Failed to persist resolved workspace"
                 );
-                service.persist_and_broadcast_send_failure_tip(&conv_id, &err).await;
-                StreamRelay::complete_conversation(&repo, &broadcaster, &conv_id).await;
+                if service.runtime_state.is_deleting(&conv_id) {
+                    debug!(
+                        conversation_id = %conv_id,
+                        "Skipping workspace failure persistence because conversation is deleting"
+                    );
+                } else {
+                    service
+                        .persist_and_broadcast_send_failure_tip(&conv_id, &send_error, Some(top_level_code))
+                        .await;
+                }
+                let was_deleting = turn_claim.release();
+                service.complete_released_turn(&conv_id, was_deleting).await;
                 return;
             }
 
@@ -1386,6 +1548,7 @@ impl ConversationService {
                     Arc::clone(&broadcaster),
                     cron_service.clone(),
                 )
+                .with_runtime_state(Arc::clone(&runtime_state))
                 .with_turn_completion(false);
 
                 let rx = agent.subscribe();
@@ -1395,15 +1558,53 @@ impl ConversationService {
                 // 1. Send the message to the agent and concurrently run the relay to stream events.
                 tokio::spawn(async move {
                     if let Err(e) = send_agent.send_message(current_send).await {
-                        error!(conversation_id = %conv_id_send, error = %ErrorChain(&e), "Agent send_message failed");
-                        let _ = send_error_tx.send(e);
+                        let task_status = send_agent.status();
+                        let agent_type = send_agent.agent_type();
+                        error!(
+                            conversation_id = %conv_id_send,
+                            ?agent_type,
+                            ?task_status,
+                            error = %ErrorChain(&e),
+                            "Agent send_message failed"
+                        );
+                        if task_status == Some(ConversationStatus::Finished) {
+                            debug!(
+                                conversation_id = %conv_id_send,
+                                ?agent_type,
+                                "Agent send_message failure already published runtime terminal; skipping fallback stream error"
+                            );
+                        } else {
+                            warn!(
+                                conversation_id = %conv_id_send,
+                                ?agent_type,
+                                code = ?e.code(),
+                                ownership = ?e.ownership(),
+                                "Agent send_message returned error without runtime terminal; injecting fallback stream error"
+                            );
+                            let _ = send_error_tx.send(e);
+                        }
                     }
                 });
                 // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
                 let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
 
+                if runtime_state.is_deleting(&conv_id) {
+                    debug!(
+                        conversation_id = %conv_id,
+                        "Skipping post-terminal persistence because conversation is deleting"
+                    );
+                    break;
+                }
+
                 if let Some(session_key) = agent.get_session_key() {
                     persist_session_key(&repo, &conv_id, &session_key).await;
+                }
+
+                if service
+                    .evict_acp_task_after_terminal_error(&conv_id, agent.agent_type(), &outcome, &task_manager)
+                    .await
+                {
+                    break;
                 }
 
                 if outcome.system_responses.is_empty() {
@@ -1422,7 +1623,8 @@ impl ConversationService {
                 ));
             }
 
-            StreamRelay::complete_conversation(&repo, &broadcaster, &conv_id).await;
+            let was_deleting = turn_claim.release();
+            service.complete_released_turn(&conv_id, was_deleting).await;
         });
 
         info!(
@@ -1433,8 +1635,16 @@ impl ConversationService {
         Ok(user_msg_id_ret)
     }
 
-    async fn persist_and_broadcast_send_failure_tip(&self, conversation_id: &str, err: &AppError) {
-        let Some(row) = self.persist_send_failure_tip(conversation_id, err).await else {
+    async fn persist_and_broadcast_send_failure_tip(
+        &self,
+        conversation_id: &str,
+        err: &AgentSendError,
+        top_level_code: Option<&'static str>,
+    ) {
+        let Some(row) = self
+            .persist_send_failure_tip(conversation_id, err, top_level_code)
+            .await
+        else {
             return;
         };
 
@@ -1463,7 +1673,7 @@ impl ConversationService {
     /// Used by paths outside the normal user→agent turn (e.g. the team
     /// scheduler writing an incoming teammate message as a left bubble in the
     /// target agent's conversation so the UI shows who spoke).
-    pub async fn insert_raw_message(&self, row: &MessageRow) -> Result<(), AppError> {
+    pub async fn insert_raw_message(&self, row: &MessageRow) -> Result<(), ConversationError> {
         self.conversation_repo.insert_message(row).await?;
 
         let msg_id = row.msg_id.clone().unwrap_or_else(|| row.id.clone());
@@ -1491,13 +1701,15 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ConversationError> {
         // Verify conversation exists and belongs to user
         self.conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let Some(agent) = task_manager.get_task(conversation_id) else {
             info!("No active agent to cancel; treating as idempotent success");
@@ -1506,7 +1718,7 @@ impl ConversationService {
 
         if let Err(e) = agent.cancel().await {
             warn!(error = %ErrorChain(&e), "Failed to cancel agent");
-            return Err(e);
+            return Err(e.into());
         }
 
         info!("Stream canceled");
@@ -1523,15 +1735,18 @@ impl ConversationService {
         user_id: &str,
         conversation_id: &str,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ConversationError> {
         let row = self
             .conversation_repo
             .get(conversation_id)
             .await?
             .filter(|r| r.user_id == user_id)
-            .ok_or_else(|| AppError::NotFound(format!("Conversation {conversation_id} not found")))?;
+            .ok_or_else(|| ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            })?;
 
         let build_opts = self.build_task_options(&row)?;
+        self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
         let stored_workspace = build_opts.workspace.clone();
         let agent = task_manager.get_or_build_task(conversation_id, build_opts).await?;
 
@@ -1546,6 +1761,23 @@ impl ConversationService {
 
 // ── Internal Helpers ────────────────────────────────────────────────
 
+fn agent_error_top_level_code(error: &AgentError) -> &'static str {
+    match error {
+        AgentError::BadRequest(_) => "BAD_REQUEST",
+        AgentError::Unauthorized(_) => "UNAUTHORIZED",
+        AgentError::Forbidden(_) => "FORBIDDEN",
+        AgentError::NotFound(_) => "NOT_FOUND",
+        AgentError::Conflict(_) => "CONFLICT",
+        AgentError::BadGateway(_) | AgentError::Acp(_) => "BAD_GATEWAY",
+        AgentError::Timeout(_) => "TIMEOUT",
+        AgentError::RateLimited => "RATE_LIMITED",
+        AgentError::ConversationArchived(_) => "CONVERSATION_ARCHIVED",
+        AgentError::WorkspacePathRuntimeUnavailable(_) => "WORKSPACE_PATH_RUNTIME_UNAVAILABLE",
+        AgentError::Internal(_) => "INTERNAL_ERROR",
+        _ => "INTERNAL_ERROR",
+    }
+}
+
 impl ConversationService {
     /// Build [`BuildTaskOptions`] from a conversation database row.
     ///
@@ -1554,13 +1786,16 @@ impl ConversationService {
     /// Diverging the lookup here historically produced
     /// `Provider '<vendor>' not found` failures under cron when the
     /// interactive path worked fine (Sentry ELECTRON-1HM).
-    fn build_task_options(&self, row: &aionui_db::models::ConversationRow) -> Result<BuildTaskOptions, AppError> {
+    fn build_task_options(
+        &self,
+        row: &aionui_db::models::ConversationRow,
+    ) -> Result<BuildTaskOptions, ConversationError> {
         let agent_type = string_to_enum(&row.r#type)?;
 
         let model = crate::task_options::provider_model_from_conversation_row(row);
 
-        let mut extra: serde_json::Value =
-            serde_json::from_str(&row.extra).map_err(|e| AppError::Internal(format!("Invalid extra JSON: {e}")))?;
+        let mut extra: serde_json::Value = serde_json::from_str(&row.extra)
+            .map_err(|e| ConversationError::internal(format!("Invalid extra JSON: {e}")))?;
 
         // Inject user_id into extra so the Guide MCP bridge can pass it to
         // aion_create_team without a separate lookup. Harmless for non-ACP types.
@@ -1570,7 +1805,26 @@ impl ConversationService {
         }
 
         // Extract workspace from extra (common across agent types)
-        let workspace = extra.get("workspace").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let workspace = match extra.get("workspace").and_then(|v| v.as_str()) {
+            Some(workspace) if !workspace.is_empty() => {
+                let expected_auto_workspace =
+                    expected_auto_workspace_path(&self.workspace_root, &row.id, &agent_type, extra.get("backend"));
+                let normalized = match validate_workspace_path_availability(workspace) {
+                    Ok(normalized) => normalized,
+                    Err(WorkspacePathValidationError::DoesNotExist(path))
+                        if expected_auto_workspace.as_path() == std::path::Path::new(workspace) =>
+                    {
+                        path
+                    }
+                    Err(error) => return Err(map_runtime_workspace_validation_error(error)),
+                };
+                if normalized != workspace {
+                    extra["workspace"] = serde_json::Value::String(normalized.clone());
+                }
+                normalized
+            }
+            _ => String::new(),
+        };
 
         Ok(BuildTaskOptions {
             agent_type,
@@ -1579,6 +1833,66 @@ impl ConversationService {
             conversation_id: row.id.clone(),
             extra,
         })
+    }
+
+    async fn ensure_auto_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {
+        let expected_workspace = expected_auto_workspace_path(
+            &self.workspace_root,
+            &row.id,
+            &build_opts.agent_type,
+            build_opts.extra.get("backend"),
+        );
+
+        let stored_workspace = build_opts.workspace.trim();
+        let workspace = if stored_workspace.is_empty() {
+            expected_workspace
+        } else {
+            let workspace = PathBuf::from(stored_workspace);
+            if workspace != expected_workspace {
+                return;
+            }
+            workspace
+        };
+
+        let skill_names = build_opts
+            .extra
+            .get("skills")
+            .cloned()
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+            .unwrap_or_default();
+        if skill_names.is_empty() {
+            return;
+        }
+
+        let Some(rel_dirs) = native_skills_dirs(
+            &self.agent_metadata_repo,
+            &build_opts.agent_type,
+            build_opts.extra.get("backend"),
+        )
+        .await
+        else {
+            return;
+        };
+        if rel_dirs.is_empty() {
+            return;
+        }
+
+        let resolved = self.skill_resolver.resolve_skills(&skill_names).await;
+        if resolved.is_empty() {
+            return;
+        }
+
+        let rel_dirs_refs: Vec<&str> = rel_dirs.iter().map(String::as_str).collect();
+        let n = self
+            .skill_resolver
+            .link_workspace_skills(&workspace, &rel_dirs_refs, &resolved)
+            .await;
+        debug!(
+            conversation_id = %row.id,
+            workspace = %workspace.display(),
+            links = n,
+            "ensured skill symlinks in auto workspace"
+        );
     }
 
     /// Write the resolved workspace back to `conversation.extra.workspace` when
@@ -1592,7 +1906,7 @@ impl ConversationService {
         conversation_id: &str,
         stored_workspace: &str,
         resolved_workspace: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ConversationError> {
         if resolved_workspace.is_empty() || resolved_workspace == stored_workspace {
             return Ok(());
         }
@@ -1602,13 +1916,13 @@ impl ConversationService {
             .conversation_repo
             .get(conversation_id)
             .await?
-            .ok_or_else(|| AppError::Internal("Conversation vanished during workspace sync".into()))?;
+            .ok_or_else(|| ConversationError::internal("Conversation vanished during workspace sync"))?;
 
         let mut extra: serde_json::Value = serde_json::from_str(&row.extra).unwrap_or_else(|_| serde_json::json!({}));
         extra["workspace"] = serde_json::Value::String(resolved_workspace.to_owned());
 
-        let extra_json =
-            serde_json::to_string(&extra).map_err(|e| AppError::Internal(format!("Failed to serialize extra: {e}")))?;
+        let extra_json = serde_json::to_string(&extra)
+            .map_err(|e| ConversationError::internal(format!("Failed to serialize extra: {e}")))?;
 
         let update = ConversationRowUpdate {
             extra: Some(extra_json),
@@ -1626,7 +1940,12 @@ impl ConversationService {
     }
 
     /// Broadcast a `conversation.listChanged` WebSocket event.
-    fn broadcast_list_changed(&self, conversation_id: &str, action: &str, source: Option<&ConversationSource>) {
+    pub(crate) fn broadcast_list_changed(
+        &self,
+        conversation_id: &str,
+        action: &str,
+        source: Option<&ConversationSource>,
+    ) {
         let payload = serde_json::json!({
             "conversation_id": conversation_id,
             "action": action,
@@ -1707,6 +2026,58 @@ fn backfill_cron_job_id_alias(extra: &mut serde_json::Value) -> bool {
     mutated
 }
 
+fn normalize_workspace_extra(extra: &mut serde_json::Value) -> Result<(), ConversationError> {
+    let Some(obj) = extra.as_object_mut() else {
+        return Ok(());
+    };
+    let Some(workspace) = obj
+        .get("workspace")
+        .and_then(|value| value.as_str())
+        .map(ToOwned::to_owned)
+    else {
+        return Ok(());
+    };
+    if workspace.is_empty() {
+        return Ok(());
+    }
+
+    let normalized = normalize_workspace_path(&workspace)?;
+    if normalized != workspace.as_str() {
+        obj.insert("workspace".to_owned(), serde_json::Value::String(normalized));
+    }
+    Ok(())
+}
+
+fn normalize_workspace_path(workspace: &str) -> Result<String, ConversationError> {
+    validate_workspace_path_availability(workspace).map_err(map_create_workspace_validation_error)
+}
+
+fn map_create_workspace_validation_error(error: WorkspacePathValidationError) -> ConversationError {
+    match error {
+        WorkspacePathValidationError::Empty => ConversationError::BadRequest {
+            reason: "Workspace directory is empty".into(),
+        },
+        WorkspacePathValidationError::DoesNotExist(path)
+        | WorkspacePathValidationError::NotDirectory(path)
+        | WorkspacePathValidationError::NotAccessible { path, .. } => {
+            ConversationError::WorkspacePathUnavailable { path }
+        }
+    }
+}
+
+fn map_runtime_workspace_validation_error(error: WorkspacePathValidationError) -> ConversationError {
+    match error {
+        WorkspacePathValidationError::Empty => ConversationError::BadRequest {
+            reason: "Workspace directory is empty".into(),
+        },
+        WorkspacePathValidationError::DoesNotExist(path)
+        | WorkspacePathValidationError::NotDirectory(path)
+        | WorkspacePathValidationError::NotAccessible { path, .. } => {
+            ConversationError::WorkspacePathRuntimeUnavailable { path }
+        }
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────
 
 /// Compute the label used in auto-provisioned workspace directory names.
@@ -1723,6 +2094,18 @@ fn conversation_label(agent_type: &AgentType, backend: Option<&serde_json::Value
         return s.clone();
     }
     agent_type.serde_name().to_owned()
+}
+
+fn expected_auto_workspace_path(
+    workspace_root: &std::path::Path,
+    conversation_id: &str,
+    agent_type: &AgentType,
+    backend: Option<&serde_json::Value>,
+) -> PathBuf {
+    workspace_root.join("conversations").join(format!(
+        "{}-temp-{conversation_id}",
+        conversation_label(agent_type, backend)
+    ))
 }
 
 /// Resolve the native skills directory list for an agent by looking it
@@ -1755,7 +2138,7 @@ impl ConversationService {
         &self,
         agent_type: &AgentType,
         extra: &serde_json::Value,
-    ) -> Result<McpSupportPolicy, AppError> {
+    ) -> Result<McpSupportPolicy, ConversationError> {
         match agent_type {
             AgentType::Acp => resolve_acp_mcp_support_policy(&self.agent_metadata_repo, extra).await,
             AgentType::Aionrs => Ok(McpSupportPolicy::AIONRS),
@@ -1767,7 +2150,7 @@ impl ConversationService {
 async fn resolve_acp_mcp_support_policy(
     repo: &Arc<dyn IAgentMetadataRepository>,
     extra: &serde_json::Value,
-) -> Result<McpSupportPolicy, AppError> {
+) -> Result<McpSupportPolicy, ConversationError> {
     let agent_id = extra
         .get("agent_id")
         .and_then(serde_json::Value::as_str)
@@ -1785,12 +2168,12 @@ async fn resolve_acp_mcp_support_policy(
         Some(id) => repo
             .get(id)
             .await
-            .map_err(|e| AppError::Internal(format!("agent_metadata lookup: {e}")))?,
+            .map_err(|e| ConversationError::internal(format!("agent_metadata lookup: {e}")))?,
         None if agent_source == "builtin" => match backend {
             Some(vendor) => repo
                 .find_builtin_by_backend(vendor)
                 .await
-                .map_err(|e| AppError::Internal(format!("agent_metadata lookup: {e}")))?,
+                .map_err(|e| ConversationError::internal(format!("agent_metadata lookup: {e}")))?,
             None => None,
         },
         None => None,
@@ -1913,23 +2296,28 @@ fn validate_stdio_command(command: &str) -> Result<(), String> {
         return Err("stdio transport is missing command".to_owned());
     }
 
-    let path = std::path::Path::new(trimmed);
-    let looks_like_path = path.is_absolute()
-        || trimmed.contains(std::path::MAIN_SEPARATOR)
-        || trimmed.contains('/')
-        || trimmed.contains('\\');
-
-    if looks_like_path {
-        if path.exists() {
-            return Ok(());
+    match probe_runtime_command(trimmed) {
+        RuntimeCommandProbe::ExplicitPath { path } => {
+            if path.exists() {
+                return Ok(());
+            }
+            Err(format!("command '{trimmed}' does not exist"))
         }
-        return Err(format!("command '{trimmed}' does not exist"));
-    }
-
-    if resolve_command_path(trimmed).is_some() {
-        Ok(())
-    } else {
-        Err(format!("command '{trimmed}' was not found in PATH"))
+        RuntimeCommandProbe::NodeTool { .. } => {
+            let support = probe_node_runtime_supported();
+            if support.is_supported() {
+                Ok(())
+            } else {
+                Err(format!("command '{trimmed}' is unavailable: {}", support.detail))
+            }
+        }
+        RuntimeCommandProbe::PathLookup { command } => {
+            if resolve_command_path(&command).is_some() {
+                Ok(())
+            } else {
+                Err(format!("command '{command}' was not found in PATH"))
+            }
+        }
     }
 }
 
@@ -1943,13 +2331,13 @@ fn validate_url_field(transport: &str, url: Option<&str>) -> Result<(), String> 
 /// Serialize a serde-compatible enum to its JSON string form for DB storage.
 ///
 /// e.g. `AgentType::Acp` → `"acp"`
-fn enum_to_db<T: serde::Serialize>(val: &T) -> Result<String, AppError> {
-    let json_val =
-        serde_json::to_value(val).map_err(|e| AppError::Internal(format!("Enum serialization failed: {e}")))?;
+fn enum_to_db<T: serde::Serialize>(val: &T) -> Result<String, ConversationError> {
+    let json_val = serde_json::to_value(val)
+        .map_err(|e| ConversationError::internal(format!("Enum serialization failed: {e}")))?;
     json_val
         .as_str()
         .map(|s| s.to_owned())
-        .ok_or_else(|| AppError::Internal("Expected string enum value".into()))
+        .ok_or_else(|| ConversationError::internal("Expected string enum value"))
 }
 
 /// Persist the agent's session key into `conversation.extra.sessionKey`.
@@ -1990,9 +2378,9 @@ async fn persist_session_key(repo: &Arc<dyn IConversationRepository>, conversati
     }
 }
 
-fn legacy_cron_trigger_to_artifact(row: MessageRow) -> Result<ConversationArtifactResponse, AppError> {
+fn legacy_cron_trigger_to_artifact(row: MessageRow) -> Result<ConversationArtifactResponse, ConversationError> {
     let payload: serde_json::Value = serde_json::from_str(&row.content)
-        .map_err(|e| AppError::Internal(format!("Invalid legacy cron trigger payload JSON: {e}")))?;
+        .map_err(|e| ConversationError::internal(format!("Invalid legacy cron trigger payload JSON: {e}")))?;
     let cron_job_id = payload
         .get("cron_job_id")
         .or_else(|| payload.get("cronJobId"))
@@ -2153,6 +2541,7 @@ mod tests {
             r#type: agent_type,
             model: None,
             status: ConversationStatus::Pending,
+            runtime: None,
             source: None,
             pinned: false,
             pinned_at: None,
@@ -2220,6 +2609,15 @@ mod tests {
         let lineage = AssistantLineage::from_response_and_extra(&response, &extra);
         assert_eq!(lineage.agent_type, "acp");
         assert!(!lineage.has_any_identity());
+    }
+
+    #[test]
+    fn validate_stdio_command_accepts_bare_npx_when_runtime_supports_it() {
+        let result = validate_stdio_command("npx");
+        assert!(
+            result.is_ok(),
+            "bare npx should be accepted when managed runtime is supported"
+        );
     }
 
     #[test]
