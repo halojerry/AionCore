@@ -142,7 +142,7 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
         std::env::current_exe()
             .ok()
             .and_then(|p| p.canonicalize().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from("aioncore")),
+            .unwrap_or_else(|| std::path::PathBuf::from("poundingcore")),
     );
 
     let pool = services.database.pool().clone();
