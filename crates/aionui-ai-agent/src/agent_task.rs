@@ -356,7 +356,7 @@ impl AgentInstance {
             Self::Acp(m) => {
                 let sdk_model = m.model().await;
                 let sdk_info = sdk_model.map(map_sdk_model_to_payload);
-                let cc_switch_info = if m.is_claude_backend() {
+                let cc_switch_info = if m.is_managed_backend() {
                     crate::cc_switch::read_claude_model_info()
                 } else {
                     None

@@ -84,7 +84,7 @@ pub(super) async fn build(
 
     let mut command_spec =
         resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone()).await?;
-    if meta.backend.as_deref() == Some("claude") {
+    if meta.backend.as_deref() == Some("claude") || meta.backend.as_deref() == Some("hermes") {
         let cc_switch_env = crate::cc_switch::read_claude_provider_env();
         if !cc_switch_env.is_empty() {
             let keys: Vec<&str> = cc_switch_env.keys().map(|k| k.as_str()).collect();
