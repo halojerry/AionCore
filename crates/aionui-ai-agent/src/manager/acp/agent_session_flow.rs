@@ -1,4 +1,4 @@
-use super::agent::sdk_to_snake_value;
+use super::agent::{exit_status_parts, sdk_to_snake_value};
 use super::error_mapping::{AcpSendFailure, is_acp_session_not_found};
 use crate::error::AgentError;
 use crate::manager::acp::AcpAgentManager;
@@ -243,6 +243,18 @@ impl AcpAgentManager {
         self.runtime.emit(AgentStreamEvent::Start(StartEventData {
             session_id: Some(sid.to_owned()),
         }));
+
+        // Guard: if the CLI process has already exited (crashed, OOM-killed, etc.),
+        // attempting to write to its stdin will fail with EIO. Return a clean error
+        // so the frontend shows a helpful message instead of a raw stream error.
+        if !self.process.is_running() {
+            let (exit_code, signal) = exit_status_parts(self.process.exit_status());
+            return Err(AcpSendFailure::from(AcpError::Disconnected {
+                exit_code,
+                signal,
+                message: "Agent process exited before prompt could be sent".into(),
+            }));
+        }
 
         let prompt_response = self
             .protocol
