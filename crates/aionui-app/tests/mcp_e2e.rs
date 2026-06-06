@@ -1,6 +1,6 @@
-//! MCP E2E tests beyond CRUD: connection test, agent sync, OAuth, auth.
+//! MCP E2E tests beyond CRUD: connection test, agent config discovery, OAuth, auth.
 //!
-//! Covers test-plan sections 2 (connection test error paths), 3 (agent sync),
+//! Covers test-plan sections 2 (connection test error paths), 3 (agent config discovery),
 //! 4 (OAuth status), and 6 (authentication).
 
 mod common;
@@ -34,13 +34,13 @@ async fn connection_test_enoent_command() {
         &csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let json = body_json(resp).await;
-    assert!(json["success"].as_bool().unwrap());
-    let data = &json["data"];
-    assert!(!data["success"].as_bool().unwrap());
-    assert!(!data["error"].as_str().unwrap().is_empty());
+    assert!(!json["success"].as_bool().unwrap());
+    assert_eq!(json["code"], "MCP_COMMAND_NOT_FOUND");
+    assert_eq!(json["details"]["command"], "nonexistent-mcp-command-xyz-12345");
+    assert!(!json["error"].as_str().unwrap().is_empty());
 }
 
 // ===========================================================================
@@ -66,13 +66,13 @@ async fn connection_test_unreachable_url() {
         &csrf,
     );
     let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 
     let json = body_json(resp).await;
-    assert!(json["success"].as_bool().unwrap());
-    let data = &json["data"];
-    assert!(!data["success"].as_bool().unwrap());
-    assert!(!data["error"].as_str().unwrap().is_empty());
+    assert!(!json["success"].as_bool().unwrap());
+    assert_eq!(json["code"], "MCP_CONNECTION_FAILED");
+    assert_eq!(json["details"]["transport"], "http");
+    assert!(!json["error"].as_str().unwrap().is_empty());
 }
 
 // ===========================================================================
@@ -95,52 +95,6 @@ async fn get_agent_configs() {
     assert!(json["success"].as_bool().unwrap());
     // In test env, data is an array (may be empty or contain aionui adapter)
     assert!(json["data"].is_array());
-}
-
-// ===========================================================================
-// AS-4: Sync empty list to agents
-// ===========================================================================
-
-#[tokio::test]
-async fn sync_empty_list_to_agents() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
-
-    let req = json_with_token(
-        "POST",
-        "/api/mcp/sync-to-agents",
-        json!({ "servers": [] }),
-        &token,
-        &csrf,
-    );
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let json = body_json(resp).await;
-    assert!(json["success"].as_bool().unwrap());
-}
-
-// ===========================================================================
-// AS-6: Remove from agents with unknown names
-// ===========================================================================
-
-#[tokio::test]
-async fn remove_unknown_names_from_agents() {
-    let (mut app, services) = build_app().await;
-    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
-
-    let req = json_with_token(
-        "POST",
-        "/api/mcp/remove-from-agents",
-        json!({ "server_names": ["nonexistent-server"] }),
-        &token,
-        &csrf,
-    );
-    let resp = app.clone().oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let json = body_json(resp).await;
-    assert!(json["success"].as_bool().unwrap());
 }
 
 // ===========================================================================

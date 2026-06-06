@@ -2,14 +2,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aionui_common::{AgentKillReason, AgentType, AppError, Confirmation, ConversationStatus, ErrorChain, TimestampMs};
+use aionui_common::{AgentKillReason, AgentType, Confirmation, ConversationStatus, ErrorChain, TimestampMs};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tracing::{debug, error, info, warn};
 
 use crate::agent_runtime::AgentRuntime;
 use crate::capability::cli_process::CliAgentProcess;
+use crate::error::AgentError;
+use crate::manager::process_registry::register_session_process;
 use crate::protocol::events::AgentStreamEvent;
+use crate::protocol::send_error::AgentSendError;
 use crate::types::SendMessageData;
 use aionui_api_types::OpenClawBuildExtra;
 
@@ -56,7 +59,8 @@ impl OpenClawAgentManager {
         workspace: String,
         config: OpenClawBuildExtra,
         resume_session_key: Option<String>,
-    ) -> Result<Self, AppError> {
+        data_dir: std::path::PathBuf,
+    ) -> Result<Self, AgentError> {
         let file_config = load_openclaw_config();
 
         let host = config.gateway.host.as_deref().unwrap_or("127.0.0.1");
@@ -76,12 +80,20 @@ impl OpenClawAgentManager {
                 .gateway
                 .cli_path
                 .as_deref()
-                .ok_or_else(|| AppError::BadRequest("OpenClaw CLI path is required".into()))?;
+                .ok_or_else(|| AgentError::bad_request("OpenClaw CLI path is required"))?;
 
             if !is_port_listening(host, port).await {
                 let spawn_config = build_spawn_config(cli_path, &workspace, &config.gateway);
-                let process = CliAgentProcess::spawn(spawn_config).await?;
-                let process = Arc::new(process);
+                let command_preview = spawn_config.command.display().to_string();
+                let process = Arc::new(CliAgentProcess::spawn(spawn_config).await?);
+                register_session_process(
+                    &data_dir,
+                    Arc::clone(&process),
+                    conversation_id.clone(),
+                    AgentType::OpenclawGateway,
+                    None,
+                    Some(command_preview),
+                )?;
 
                 wait_for_gateway_ready(host, port).await?;
 
@@ -262,7 +274,7 @@ impl OpenClawAgentManager {
         }
     }
 
-    async fn do_send_message(&self, is_first: bool, data: SendMessageData) -> Result<(), AppError> {
+    async fn do_send_message(&self, is_first: bool, data: SendMessageData) -> Result<(), AgentError> {
         if is_first {
             self.resolve_session().await?;
         }
@@ -273,7 +285,7 @@ impl OpenClawAgentManager {
             .await
             .session_key
             .clone()
-            .ok_or_else(|| AppError::Internal("No active session key".into()))?;
+            .ok_or_else(|| AgentError::internal("No active session key"))?;
 
         let params = ChatSendParams {
             session_key,
@@ -295,7 +307,7 @@ impl OpenClawAgentManager {
 
     /// Resolve gateway session: try to resume an existing session first,
     /// then fall back to creating a new one via sessions.reset.
-    async fn resolve_session(&self) -> Result<(), AppError> {
+    async fn resolve_session(&self) -> Result<(), AgentError> {
         let resume_key = self.state.read().await.session_key.clone();
 
         if let Some(ref key) = resume_key {
@@ -393,7 +405,7 @@ impl crate::agent_task::IAgentTask for OpenClawAgentManager {
         self.runtime.subscribe()
     }
 
-    async fn send_message(&self, data: SendMessageData) -> Result<(), AppError> {
+    async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
 
         let is_first = {
@@ -409,20 +421,23 @@ impl crate::agent_task::IAgentTask for OpenClawAgentManager {
             text_state.reset_for_new_turn();
         }
 
-        let result = self.do_send_message(is_first, data).await;
-        if let Err(ref e) = result {
-            error!(
-                conversation_id = %self.runtime.conversation_id(),
-                error = %ErrorChain(e),
-                "OpenClaw send_message failed, emitting Error+Finish"
-            );
-            self.runtime.emit_error(format!("OpenClaw send failed: {e}"));
-            self.runtime.emit_finish(None);
+        match self.do_send_message(is_first, data).await {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                error!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    error = %ErrorChain(&err),
+                    "OpenClaw send_message failed, emitting Error+Finish"
+                );
+                let send_error = AgentSendError::from_agent_error(err);
+                self.runtime.emit_error_data(send_error.stream_error().clone());
+                self.runtime.emit_finish(None);
+                Err(send_error)
+            }
         }
-        result
     }
 
-    async fn cancel(&self) -> Result<(), AppError> {
+    async fn cancel(&self) -> Result<(), AgentError> {
         let session_key = self.state.read().await.session_key.clone();
         if let Some(ref key) = session_key {
             let params = ChatAbortParams {
@@ -461,7 +476,7 @@ impl crate::agent_task::IAgentTask for OpenClawAgentManager {
         Ok(())
     }
 
-    fn kill(&self, reason: Option<AgentKillReason>) -> Result<(), AppError> {
+    fn kill(&self, reason: Option<AgentKillReason>) -> Result<(), AgentError> {
         info!(
             conversation_id = %self.runtime.conversation_id(),
             ?reason,

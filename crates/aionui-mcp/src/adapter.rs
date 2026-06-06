@@ -19,6 +19,10 @@ pub struct DetectedServer {
     pub name: String,
     /// Transport configuration detected from the Agent CLI.
     pub transport: McpServerTransport,
+    /// Whether this detected MCP can be imported without extra intervention.
+    pub importable: bool,
+    /// Human-readable reason when the MCP is not currently importable.
+    pub import_skip_reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +42,7 @@ pub struct DetectedServer {
 ///
 /// # Error handling
 ///
-/// Methods return `McpError` rather than `AppError` to keep the adapter
+/// Methods return `McpError` rather than `ApiError` to keep the adapter
 /// layer independent of HTTP concerns.
 #[async_trait::async_trait]
 pub trait McpAgentAdapter: Send + Sync {
@@ -120,6 +124,8 @@ mod tests {
             servers.push(DetectedServer {
                 name: name.to_owned(),
                 transport: transport.clone(),
+                importable: true,
+                import_skip_reason: None,
             });
             Ok(())
         }

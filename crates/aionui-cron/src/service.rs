@@ -6,7 +6,9 @@ use aionui_api_types::{
     CreateCronJobRequest, CronJobResponse, CronScheduleDto, HasSkillResponse, ListCronJobsQuery, RunNowResponse,
     SaveCronSkillRequest, UpdateCronJobRequest,
 };
-use aionui_common::{AgentType, generate_prefixed_id, now_ms};
+use aionui_common::{
+    AgentType, WorkspacePathValidationError, generate_prefixed_id, now_ms, validate_workspace_path_availability,
+};
 use aionui_db::{ICronRepository, UpdateCronJobParams};
 use tracing::{error, info, warn};
 
@@ -114,6 +116,8 @@ impl CronService {
             max_retries: 3,
         };
 
+        self.validate_job_workspace(&job).await?;
+
         let row = cron_job_to_row(&job)?;
         self.repo.insert(&row).await?;
         self.bind_existing_conversation_if_needed(&job).await;
@@ -179,6 +183,7 @@ impl CronService {
         }
 
         job.updated_at = now_ms();
+        self.validate_job_workspace(&job).await?;
 
         let params = build_update_params(&job, &req);
         self.repo.update(job_id, &params).await?;
@@ -474,6 +479,19 @@ impl CronService {
                     "Failed to verify cron conversation during orphan cleanup"
                 );
                 false
+            }
+        }
+    }
+
+    async fn validate_job_workspace(&self, job: &CronJob) -> Result<(), CronError> {
+        let workspace = self.executor.resolve_job_workspace_raw(job).await?;
+        match validate_workspace_path_availability(&workspace) {
+            Ok(_) => Ok(()),
+            Err(WorkspacePathValidationError::Empty) => Ok(()),
+            Err(WorkspacePathValidationError::DoesNotExist(path))
+            | Err(WorkspacePathValidationError::NotDirectory(path))
+            | Err(WorkspacePathValidationError::NotAccessible { path, .. }) => {
+                Err(CronError::WorkspacePathUnavailable(path))
             }
         }
     }

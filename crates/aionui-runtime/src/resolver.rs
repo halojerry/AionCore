@@ -51,14 +51,22 @@ pub fn resolve_bun() -> Result<PathBuf, ResolveError> {
     Ok(resolved)
 }
 
-/// Returns the directory that holds `bun` and `bunx`, if a bundled
-/// runtime was extracted. `None` when no embed + no override was used.
+/// Returns the directory that should be injected for `bun` / `bunx`.
+///
+/// This only reports an explicit `AIONUI_BUN_PATH` override or an extracted
+/// embedded runtime. It must not mirror the ambient system bun directory back
+/// into `PATH`, otherwise bun/bunx regain implicit priority.
 pub fn bun_bin_dir() -> Option<PathBuf> {
     BUN_DIR
         .get_or_init(|| {
-            resolve_with(&ProductionEmbed)
-                .ok()
-                .and_then(|p| p.parent().map(PathBuf::from))
+            env_override().and_then(|p| p.parent().map(PathBuf::from)).or_else(|| {
+                if !ProductionEmbed.has() {
+                    return None;
+                }
+                resolve_with(&ProductionEmbed)
+                    .ok()
+                    .and_then(|p| p.parent().map(PathBuf::from))
+            })
         })
         .clone()
 }
@@ -223,6 +231,9 @@ mod tests {
     use super::*;
     use crate::embed::FakeEmbed;
     use std::io::Write as _;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_blob(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -241,8 +252,9 @@ mod tests {
 
     #[test]
     fn no_embed_falls_back_to_which() {
+        let _guard = ENV_LOCK.lock().unwrap();
         // Safety: unset to avoid env override winning.
-        // SAFETY: single-threaded test, `cargo test` default is per-process.
+        // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
             std::env::remove_var("AIONUI_BUN_PATH");
         }
@@ -264,9 +276,10 @@ mod tests {
 
     #[test]
     fn env_override_wins_over_embed() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
-        // SAFETY: single-threaded test.
+        // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
             std::env::set_var("AIONUI_BUN_PATH", &path);
         }
@@ -284,7 +297,7 @@ mod tests {
         let result = resolve_with(&fake).unwrap();
         assert_eq!(result, path);
 
-        // SAFETY: single-threaded test cleanup.
+        // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
             std::env::remove_var("AIONUI_BUN_PATH");
         }
@@ -312,7 +325,8 @@ mod tests {
 
     #[test]
     fn bad_env_override_falls_through_to_embed() {
-        // SAFETY: single-threaded test.
+        let _guard = ENV_LOCK.lock().unwrap();
+        // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
             std::env::set_var("AIONUI_BUN_PATH", "/definitely/does/not/exist");
         }
@@ -331,7 +345,7 @@ mod tests {
             Err(e) => panic!("unexpected error: {e:?}"),
         }
 
-        // SAFETY: single-threaded test cleanup.
+        // SAFETY: ENV_LOCK serializes tests that mutate AIONUI_BUN_PATH.
         unsafe {
             std::env::remove_var("AIONUI_BUN_PATH");
         }

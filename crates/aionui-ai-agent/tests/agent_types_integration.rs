@@ -71,13 +71,13 @@ impl IAgentTask for TypedMockAgent {
     fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
         self.event_tx.subscribe()
     }
-    async fn send_message(&self, _data: SendMessageData) -> Result<(), aionui_common::AppError> {
+    async fn send_message(&self, _data: SendMessageData) -> Result<(), aionui_ai_agent::AgentSendError> {
         Ok(())
     }
-    async fn cancel(&self) -> Result<(), aionui_common::AppError> {
+    async fn cancel(&self) -> Result<(), aionui_ai_agent::AgentError> {
         Ok(())
     }
-    fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), aionui_common::AppError> {
+    fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), aionui_ai_agent::AgentError> {
         Ok(())
     }
 }

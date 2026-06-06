@@ -23,7 +23,7 @@ use aionui_extension::{
     HubIndexManager, HubInstaller, HubRouterState, SkillRouterState, resolve_install_target_dir_for_data_dir,
     resolve_scan_paths_for_data_dir, resolve_state_file_path,
 };
-use aionui_file::{FileRouterState, FileService, FileWatchService, SnapshotService};
+use aionui_file::{BrowseRoots, FileRouterState, FileService, FileWatchService, SnapshotService};
 use aionui_mcp::{
     AionrsAdapter, AionuiAdapter, ClaudeAdapter, CodeBuddyAdapter, CodexAdapter, GeminiAdapter, McpAgentAdapter,
     McpConfigService, McpConnectionTestService, McpRouterState, McpSyncService, OpencodeAdapter, QwenAdapter,
@@ -36,7 +36,7 @@ use aionui_realtime::{NoopMessageRouter, WsHandlerState};
 use aionui_shell::ShellRouterState;
 use aionui_system::{
     ClientPrefService, ConnectionTestRouterState, ConnectionTestService, ModelFetchService, ProtocolDetectionService,
-    ProviderService, SettingsService, SystemRouterState, VersionCheckService,
+    ProviderService, RuntimePrepareService, SettingsService, SystemRouterState, VersionCheckService,
 };
 use aionui_team::{TeamRouterState, TeamSessionService};
 
@@ -88,6 +88,22 @@ fn default_allowed_roots(work_dir: Option<&std::path::Path>) -> Vec<std::path::P
     }
     roots
 }
+
+fn build_module_state_phase<T>(boot: &Instant, phase: &'static str, build: impl FnOnce() -> T) -> T {
+    tracing::info!(
+        elapsed_ms = boot.elapsed().as_millis(),
+        phase,
+        "startup: module state phase started"
+    );
+    let value = build();
+    tracing::info!(
+        elapsed_ms = boot.elapsed().as_millis(),
+        phase,
+        "startup: module state phase completed"
+    );
+    value
+}
+
 /// Components needed to start the channel orchestrator.
 ///
 /// Returned alongside `ChannelRouterState` by `build_channel_state`.
@@ -144,33 +160,55 @@ pub async fn build_module_states(services: &AppServices) -> (ModuleStates, Chann
             .and_then(|p| p.canonicalize().ok())
             .unwrap_or_else(|| std::path::PathBuf::from("aionui-backend")),
     );
+    tracing::info!(
+        elapsed_ms = boot.elapsed().as_millis(),
+        "startup: backend binary path resolved"
+    );
 
-    let agent_service = AgentService::new(services.agent_registry.clone(), services.data_dir.clone());
+    let pool = services.database.pool().clone();
+    let provider_repo: Arc<dyn IProviderRepository> = Arc::new(SqliteProviderRepository::new(pool));
+    let encryption_key = derive_encryption_key(&services.jwt_secret_raw);
+    let agent_service = AgentService::new(
+        services.agent_registry.clone(),
+        services.event_bus.clone(),
+        provider_repo,
+        encryption_key,
+        services.data_dir.clone(),
+    );
+    tracing::info!(elapsed_ms = boot.elapsed().as_millis(), "startup: agent service built");
 
+    tracing::info!(
+        elapsed_ms = boot.elapsed().as_millis(),
+        "startup: module states bundle started"
+    );
     let states = ModuleStates {
-        system: build_system_state(services),
-        conversation: build_conversation_state(services, Some(cron.cron_service.clone())),
-        remote_agent: build_remote_agent_state(services),
-        agent: AgentRouterState {
+        system: build_module_state_phase(&boot, "system", || build_system_state(services)),
+        conversation: build_module_state_phase(&boot, "conversation", || {
+            build_conversation_state(services, Some(cron.cron_service.clone()))
+        }),
+        remote_agent: build_module_state_phase(&boot, "remote_agent", || build_remote_agent_state(services)),
+        agent: build_module_state_phase(&boot, "agent", || AgentRouterState {
             agent_registry: services.agent_registry.clone(),
             service: agent_service,
-        },
-        connection_test: build_connection_test_state(),
-        file: build_file_state(services),
-        mcp: build_mcp_state(services),
+        }),
+        connection_test: build_module_state_phase(&boot, "connection_test", build_connection_test_state),
+        file: build_module_state_phase(&boot, "file", || build_file_state(services)),
+        mcp: build_module_state_phase(&boot, "mcp", || build_mcp_state(services)),
         extension: ext_state,
         hub: hub_state,
         skill: skill_state,
         channel: channel_state,
-        team: build_team_state(
-            services,
-            Some(cron.cron_service.clone()),
-            backend_binary_path.clone(),
-            services.guide_mcp_config.clone(),
-        ),
+        team: build_module_state_phase(&boot, "team", || {
+            build_team_state(
+                services,
+                Some(cron.cron_service.clone()),
+                backend_binary_path.clone(),
+                services.guide_mcp_config.clone(),
+            )
+        }),
         cron,
-        office: build_office_state(services),
-        shell: build_shell_state(services),
+        office: build_module_state_phase(&boot, "office", || build_office_state(services)),
+        shell: build_module_state_phase(&boot, "shell", || build_shell_state(services)),
         assistant,
     };
     tracing::info!(
@@ -222,6 +260,7 @@ pub fn build_system_state(services: &AppServices) -> SystemRouterState {
         model_fetch_service: ModelFetchService::new(provider_repo, encryption_key, http_client.clone()),
         protocol_detection_service: ProtocolDetectionService::new(http_client.clone()),
         version_check_service: VersionCheckService::new(http_client, env!("CARGO_PKG_VERSION").to_owned()),
+        runtime_prepare_service: RuntimePrepareService::new(services.event_bus.clone()),
     }
 }
 
@@ -246,7 +285,11 @@ pub fn build_conversation_state(
         conversaion_repo,
         agent_metadata_repo,
         acp_session_repo,
-    );
+    )
+    .with_runtime_state(services.conversation_runtime_state.clone());
+    conversation_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conversation_service.with_delete_hook(hook);
     }
@@ -281,7 +324,7 @@ pub fn build_connection_test_state() -> ConnectionTestRouterState {
 pub fn build_file_state(services: &AppServices) -> FileRouterState {
     let broadcaster = services.event_bus.clone();
     let allowed_roots = default_allowed_roots(Some(services.work_dir.as_path()));
-    let browse_roots = aionui_file::browse::default_browse_roots();
+    let browse_roots = BrowseRoots::new();
     let file_service = Arc::new(FileService::new(broadcaster.clone(), allowed_roots.clone()));
     let watch_service = Arc::new(FileWatchService::new(broadcaster).expect("file watch service initialization"));
     let snapshot_service = Arc::new(SnapshotService::new());
@@ -318,7 +361,7 @@ pub fn build_mcp_state(services: &AppServices) -> McpRouterState {
     McpRouterState {
         config_service: McpConfigService::new(repo.clone()),
         sync_service: McpSyncService::new(repo, adapters),
-        connection_test_service: McpConnectionTestService::new(http_client.clone()),
+        connection_test_service: McpConnectionTestService::new(http_client.clone(), services.event_bus.clone()),
         oauth_service: aionui_mcp::McpOAuthService::new(oauth_token_repo, http_client),
     }
 }
@@ -379,15 +422,21 @@ pub async fn build_channel_state(
     let acp_session_repo: Arc<dyn aionui_db::IAcpSessionRepository> = Arc::new(
         aionui_db::SqliteAcpSessionRepository::new(services.database.pool().clone()),
     );
-    let conversation_svc = Arc::new(ConversationService::new(
-        services.work_dir.clone(),
-        services.event_bus.clone(),
-        skill_resolver,
-        services.worker_task_manager.clone(),
-        conv_repo,
-        agent_metadata_repo,
-        acp_session_repo,
-    ));
+    let conversation_svc = Arc::new(
+        ConversationService::new(
+            services.work_dir.clone(),
+            services.event_bus.clone(),
+            skill_resolver,
+            services.worker_task_manager.clone(),
+            conv_repo,
+            agent_metadata_repo,
+            acp_session_repo,
+        )
+        .with_runtime_state(services.conversation_runtime_state.clone()),
+    );
+    conversation_svc.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conversation_svc.with_delete_hook(hook);
     }
@@ -465,7 +514,11 @@ pub fn build_team_state(
         conv_repo,
         agent_metadata_repo,
         acp_session_repo,
-    );
+    )
+    .with_runtime_state(services.conversation_runtime_state.clone());
+    conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conv_service.with_delete_hook(hook);
     }
@@ -507,7 +560,11 @@ pub fn build_cron_state(services: &AppServices) -> CronRouterState {
         conv_repo.clone(),
         agent_metadata_repo,
         acp_session_repo,
-    );
+    )
+    .with_runtime_state(services.conversation_runtime_state.clone());
+    conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
+        services.database.pool().clone(),
+    )));
 
     let busy_guard = Arc::new(aionui_cron::busy_guard::CronBusyGuard::new());
     let executor = Arc::new(aionui_cron::executor::JobExecutor::new(
@@ -556,12 +613,13 @@ pub fn build_office_state(services: &AppServices) -> OfficeRouterState {
     let data_dir = services.data_dir.as_path();
     let allowed_roots = default_allowed_roots(Some(services.work_dir.as_path()));
 
-    let spawner: Arc<dyn aionui_office::ProcessSpawner> = Arc::new(aionui_office::DefaultProcessSpawner);
+    let spawner: Arc<dyn aionui_office::ProcessSpawner> =
+        Arc::new(aionui_office::DefaultProcessSpawner::new(data_dir.to_path_buf()));
     let watch_manager = Arc::new(OfficecliWatchManager::new(spawner, services.event_bus.clone()));
 
     let snapshot_service = Arc::new(OfficeSnapshotService::new(data_dir));
     let star_office_detector = Arc::new(StarOfficeDetector::new(reqwest::Client::new()));
-    let conversion_service = Arc::new(ConversionService::new(None));
+    let conversion_service = Arc::new(ConversionService::with_data_dir(None, data_dir.to_path_buf()));
     let proxy_service = Arc::new(ProxyService::new(watch_manager.clone()));
 
     OfficeRouterState {

@@ -15,19 +15,39 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aionui_api_types::{AcpHealthCheckRequest, AcpHealthCheckResponse, AgentMetadata};
-use aionui_common::AppError;
+use aionui_api_types::{
+    AcpHealthCheckRequest, AcpHealthCheckResponse, AgentMetadata, ProviderHealthCheckRequest,
+    ProviderHealthCheckResponse,
+};
+use aionui_db::IProviderRepository;
+use aionui_realtime::EventBroadcaster;
 
+use super::provider_health::ProviderHealthCheckService;
+use crate::error::AgentError;
 use crate::registry::AgentRegistry;
 
 pub struct AgentService {
     registry: Arc<AgentRegistry>,
+    broadcaster: Arc<dyn EventBroadcaster>,
     data_dir: PathBuf,
+    provider_health: ProviderHealthCheckService,
 }
 
 impl AgentService {
-    pub fn new(registry: Arc<AgentRegistry>, data_dir: PathBuf) -> Arc<Self> {
-        Arc::new(Self { registry, data_dir })
+    pub fn new(
+        registry: Arc<AgentRegistry>,
+        broadcaster: Arc<dyn EventBroadcaster>,
+        provider_repo: Arc<dyn IProviderRepository>,
+        encryption_key: [u8; 32],
+        data_dir: PathBuf,
+    ) -> Arc<Self> {
+        let provider_health = ProviderHealthCheckService::new(provider_repo, encryption_key, data_dir.clone());
+        Arc::new(Self {
+            registry,
+            broadcaster,
+            data_dir,
+            provider_health,
+        })
     }
 
     /// Data directory used by the custom-agent probe to spawn CLI
@@ -41,20 +61,31 @@ impl AgentService {
     pub(crate) fn registry(&self) -> &Arc<AgentRegistry> {
         &self.registry
     }
+
+    pub(crate) fn broadcaster(&self) -> &Arc<dyn EventBroadcaster> {
+        &self.broadcaster
+    }
 }
 
 // Agent operations
 impl AgentService {
-    pub async fn list_agents(&self) -> Result<Vec<AgentMetadata>, AppError> {
+    pub async fn list_agents(&self) -> Result<Vec<AgentMetadata>, AgentError> {
         Ok(self.registry.list_all().await)
     }
 
-    pub async fn refresh_agents(&self) -> Result<Vec<AgentMetadata>, AppError> {
+    pub async fn refresh_agents(&self) -> Result<Vec<AgentMetadata>, AgentError> {
         self.registry.refresh_availability().await;
         Ok(self.registry.list_all().await)
     }
 
-    pub async fn acp_health_check(&self, req: AcpHealthCheckRequest) -> Result<AcpHealthCheckResponse, AppError> {
+    pub async fn acp_health_check(&self, req: AcpHealthCheckRequest) -> Result<AcpHealthCheckResponse, AgentError> {
         Ok(crate::protocol::cli_detect::health_check(&self.registry, &req.backend).await)
+    }
+
+    pub async fn provider_health_check(
+        &self,
+        req: ProviderHealthCheckRequest,
+    ) -> Result<ProviderHealthCheckResponse, AgentError> {
+        self.provider_health.health_check(req).await
     }
 }

@@ -3,15 +3,22 @@ use std::sync::Arc;
 
 use aion_agent::session::SessionManager;
 use aion_config::config::{McpServerConfig, TransportType};
-use aionui_api_types::{AionrsBuildExtra, GuideMcpConfig, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig};
-use aionui_common::AppError;
-use tracing::{debug, info};
+use aionui_api_types::{
+    AionrsBuildExtra, GuideMcpConfig, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
+};
+use aionui_db::IMcpServerRepository;
+use aionui_db::models::McpServerRow;
+use aionui_realtime::EventBroadcaster;
+use aionui_runtime::ensure_runtime_command_with_reporter;
+use tracing::{debug, info, warn};
 
 use crate::agent_task::AgentInstance;
 use crate::capability::team_guide_prompt;
+use crate::error::AgentError;
 use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::manager::aionrs::{AionrsAgentManager, sanitize_session_messages};
+use crate::runtime_status::conversation_runtime_reporter;
 use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig, BuildTaskOptions};
 
 const TEAM_CAPABLE_BACKENDS: &[&str] = &["claude", "codex", "gemini", "aionrs", "codebuddy"];
@@ -22,7 +29,7 @@ pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
     options: BuildTaskOptions,
     ctx: FactoryContext,
-) -> Result<AgentInstance, AppError> {
+) -> Result<AgentInstance, AgentError> {
     let belongs_to_team = options
         .extra
         .get("teamId")
@@ -57,7 +64,26 @@ pub(super) async fn build(
         overrides.backend.get_or_insert_with(|| "aionrs".to_owned());
     }
 
-    let extra_mcp_servers = resolve_mcp_servers(&overrides, &ctx.conversation_id);
+    let mut extra_mcp_servers = resolve_mcp_servers(&overrides, &ctx.conversation_id);
+    if let Some(repo) = deps.mcp_server_repo.as_ref() {
+        for (name, config) in load_user_mcp_servers(
+            repo.as_ref(),
+            overrides.mcp_server_ids.as_deref(),
+            &ctx.conversation_id,
+            deps.broadcaster.clone(),
+        )
+        .await
+        {
+            extra_mcp_servers.entry(name).or_insert(config);
+        }
+    }
+    merge_session_snapshot_mcp_servers(
+        &mut extra_mcp_servers,
+        &overrides.session_mcp_servers,
+        &ctx.conversation_id,
+        deps.broadcaster.clone(),
+    )
+    .await;
 
     // Inject team guide system prompt for solo sessions with guide MCP
     if overrides.team_mcp_stdio_config.is_none()
@@ -86,10 +112,11 @@ pub(super) async fn build(
         .provider_repo
         .find_by_id(provider_id)
         .await
-        .map_err(|e| AppError::Internal(format!("Failed to load provider config: {e}")))?
-        .ok_or_else(|| AppError::BadRequest(format!("Provider '{provider_id}' not found")))?;
+        .map_err(|e| AgentError::internal(format!("Failed to load provider config: {e}")))?
+        .ok_or_else(|| AgentError::bad_request(format!("Provider '{provider_id}' not found")))?;
 
-    let api_key = aionui_common::decrypt_string(&row.api_key_encrypted, &deps.encryption_key)?;
+    let api_key = aionui_common::decrypt_string(&row.api_key_encrypted, &deps.encryption_key)
+        .map_err(|e| AgentError::internal(e.to_string()))?;
 
     let model_id = options
         .model
@@ -184,7 +211,7 @@ pub(super) async fn build(
 /// Mirrors the frontend `src/process/agent/aionrs/envBuilder.ts` mapping.
 /// For `new-api` platform, per-model protocol overrides from `model_protocols`
 /// JSON take precedence.
-fn map_aionrs_provider(platform: &str, model_id: &str, model_protocols: Option<&str>) -> String {
+pub(crate) fn map_aionrs_provider(platform: &str, model_id: &str, model_protocols: Option<&str>) -> String {
     if platform == "new-api"
         && let Some(protocols_json) = model_protocols
         && let Ok(map) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(protocols_json)
@@ -209,7 +236,7 @@ fn map_aionrs_provider(platform: &str, model_id: &str, model_protocols: Option<&
 /// - Strips trailing `/v1` from base_url (aionrs appends its own path)
 /// - Gemini: prepends `/v1beta/openai` and overrides `api_path`
 /// - OpenAI official (`api.openai.com`): sets `max_completion_tokens`
-fn resolve_aionrs_url_and_compat(
+pub(crate) fn resolve_aionrs_url_and_compat(
     platform: &str,
     raw_base_url: &str,
     mapped_provider: &str,
@@ -256,7 +283,7 @@ fn normalize_aionrs_base_url(url: &str) -> String {
     trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_owned()
 }
 
-fn resolve_bedrock_config(json: Option<&str>) -> Option<aion_config::config::BedrockConfig> {
+pub(crate) fn resolve_bedrock_config(json: Option<&str>) -> Option<aion_config::config::BedrockConfig> {
     let bc: aionui_api_types::BedrockConfig = serde_json::from_str(json?).ok()?;
     Some(aion_config::config::BedrockConfig {
         region: Some(bc.region),
@@ -265,6 +292,279 @@ fn resolve_bedrock_config(json: Option<&str>) -> Option<aion_config::config::Bed
         session_token: None,
         profile: bc.profile,
     })
+}
+
+async fn load_user_mcp_servers(
+    repo: &dyn IMcpServerRepository,
+    selected_ids: Option<&[String]>,
+    conversation_id: &str,
+    broadcaster: Arc<dyn EventBroadcaster>,
+) -> HashMap<String, McpServerConfig> {
+    let rows_result = match selected_ids {
+        Some(ids) => repo.list_by_ids_any(ids).await,
+        None => repo.list().await,
+    };
+    let rows = match rows_result {
+        Ok(r) => r,
+        Err(err) => {
+            warn!(
+                conversation_id,
+                error = %err,
+                "user_mcp: list() failed; skipping injection"
+            );
+            return HashMap::new();
+        }
+    };
+
+    let mut servers = HashMap::new();
+    for row in rows {
+        let selected = selected_ids
+            .map(|ids| ids.iter().any(|id| id == &row.id))
+            .unwrap_or(row.enabled);
+        if !selected || row.builtin {
+            continue;
+        }
+
+        match row_to_mcp_server_config(&row, conversation_id, broadcaster.clone()).await {
+            Ok(config) => {
+                servers.insert(row.name.clone(), config);
+            }
+            Err(err) => {
+                warn!(
+                    conversation_id,
+                    server_id = %row.id,
+                    server_name = %row.name,
+                    error = %err,
+                    "user_mcp: failed to convert row; skipping"
+                );
+            }
+        }
+    }
+
+    servers
+}
+
+async fn row_to_mcp_server_config(
+    row: &McpServerRow,
+    conversation_id: &str,
+    broadcaster: Arc<dyn EventBroadcaster>,
+) -> Result<McpServerConfig, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&row.transport_config).map_err(|e| format!("invalid transport_config JSON: {e}"))?;
+
+    match row.transport_type.as_str() {
+        "stdio" => {
+            let command = value
+                .get("command")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "stdio: missing command".to_owned())?;
+            let args: Vec<String> = value
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(ToOwned::to_owned)).collect())
+                .unwrap_or_default();
+            let env_entries: Vec<(String, String)> = value
+                .get("env")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (resolved_command, args, env) =
+                ensure_stdio_launch(command, &args, &env_entries, conversation_id, broadcaster).await?;
+
+            Ok(McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some(resolved_command),
+                args: Some(args),
+                env: Some(env),
+                url: None,
+                headers: None,
+                deferred: Some(false),
+            })
+        }
+        "http" | "streamable_http" => {
+            let url = value
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "http: missing url".to_owned())?;
+            let headers = value
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+
+            Ok(McpServerConfig {
+                transport: TransportType::StreamableHttp,
+                command: None,
+                args: None,
+                env: None,
+                url: Some(url.to_owned()),
+                headers: Some(headers),
+                deferred: Some(false),
+            })
+        }
+        "sse" => {
+            let url = value
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "sse: missing url".to_owned())?;
+            let headers = value
+                .get("headers")
+                .and_then(|v| v.as_object())
+                .map(|obj| {
+                    obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_owned())))
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+
+            Ok(McpServerConfig {
+                transport: TransportType::Sse,
+                command: None,
+                args: None,
+                env: None,
+                url: Some(url.to_owned()),
+                headers: Some(headers),
+                deferred: Some(false),
+            })
+        }
+        other => Err(format!("unsupported transport_type: {other}")),
+    }
+}
+
+async fn session_server_to_mcp_server_config(
+    server: &SessionMcpServer,
+    conversation_id: &str,
+    broadcaster: Arc<dyn EventBroadcaster>,
+) -> Result<McpServerConfig, String> {
+    match &server.transport {
+        SessionMcpTransport::Stdio { command, args, env } => {
+            if command.is_empty() {
+                return Err("stdio: missing command".to_owned());
+            }
+            let entries: Vec<(String, String)> = env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let (command, args, env) =
+                ensure_stdio_launch(command, args, &entries, conversation_id, broadcaster).await?;
+            Ok(McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some(command),
+                args: Some(args),
+                env: Some(env),
+                url: None,
+                headers: None,
+                deferred: Some(false),
+            })
+        }
+        SessionMcpTransport::Http { url, headers } => {
+            if url.is_empty() {
+                return Err("http: missing url".to_owned());
+            }
+            Ok(McpServerConfig {
+                transport: TransportType::StreamableHttp,
+                command: None,
+                args: None,
+                env: None,
+                url: Some(url.clone()),
+                headers: Some(headers.clone()),
+                deferred: Some(false),
+            })
+        }
+        SessionMcpTransport::Sse { url, headers } => {
+            if url.is_empty() {
+                return Err("sse: missing url".to_owned());
+            }
+            Ok(McpServerConfig {
+                transport: TransportType::Sse,
+                command: None,
+                args: None,
+                env: None,
+                url: Some(url.clone()),
+                headers: Some(headers.clone()),
+                deferred: Some(false),
+            })
+        }
+        SessionMcpTransport::StreamableHttp { url, headers } => {
+            if url.is_empty() {
+                return Err("streamable_http: missing url".to_owned());
+            }
+            Ok(McpServerConfig {
+                transport: TransportType::StreamableHttp,
+                command: None,
+                args: None,
+                env: None,
+                url: Some(url.clone()),
+                headers: Some(headers.clone()),
+                deferred: Some(false),
+            })
+        }
+    }
+}
+
+async fn merge_session_snapshot_mcp_servers(
+    extra_mcp_servers: &mut HashMap<String, McpServerConfig>,
+    session_mcp_servers: &[SessionMcpServer],
+    conversation_id: &str,
+    broadcaster: Arc<dyn EventBroadcaster>,
+) {
+    for server in session_mcp_servers {
+        match session_server_to_mcp_server_config(server, conversation_id, broadcaster.clone()).await {
+            Ok(config) => {
+                if extra_mcp_servers.insert(server.name.clone(), config).is_some() {
+                    debug!(
+                        conversation_id = %conversation_id,
+                        server_name = %server.name,
+                        "session_mcp: session snapshot overrides repo-backed MCP config"
+                    );
+                }
+            }
+            Err(err) => {
+                warn!(
+                    conversation_id = %conversation_id,
+                    server_id = %server.id,
+                    server_name = %server.name,
+                    error = %err,
+                    "session_mcp: failed to convert session snapshot; skipping"
+                );
+            }
+        }
+    }
+}
+
+async fn ensure_stdio_launch(
+    command: &str,
+    args: &[String],
+    env: &[(String, String)],
+    conversation_id: &str,
+    broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
+) -> Result<(String, Vec<String>, HashMap<String, String>), String> {
+    let reporter = conversation_runtime_reporter(broadcaster, conversation_id.to_owned());
+    let resolved = ensure_runtime_command_with_reporter(command, Some(reporter.as_ref()))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let mut final_args: Vec<String> = resolved
+        .args_prefix
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    final_args.extend(args.iter().cloned());
+
+    let mut final_env: HashMap<String, String> = env.iter().cloned().collect();
+    final_env.extend(resolved.env.iter().map(|(name, value)| {
+        (
+            name.to_string_lossy().into_owned(),
+            value.to_string_lossy().into_owned(),
+        )
+    }));
+
+    Ok((resolved.program.to_string_lossy().into_owned(), final_args, final_env))
 }
 
 fn resolve_mcp_servers(overrides: &AionrsBuildExtra, conversation_id: &str) -> HashMap<String, McpServerConfig> {
@@ -329,6 +629,105 @@ fn guide_mcp_to_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aionui_realtime::BroadcastEventBus;
+    use aionui_runtime::init as init_runtime;
+    use std::sync::{Mutex, OnceLock};
+    use std::{mem, path::PathBuf};
+
+    fn path_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(unix)]
+    fn test_runtime_data_dir() -> &'static PathBuf {
+        static DIR: OnceLock<PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let path = temp.path().to_path_buf();
+            mem::forget(temp);
+            init_runtime(&path);
+            path
+        })
+    }
+
+    #[cfg(unix)]
+    fn install_fake_bundled_runtime() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let runtime_root = tmp.path().join("node").join("node-v24.11.0-darwin-arm64");
+        let bin = runtime_root.join("bin");
+        std::fs::create_dir_all(&bin).expect("create bin");
+
+        for tool in ["node", "npm", "npx"] {
+            let path = bin.join(tool);
+            std::fs::write(&path, "#!/bin/sh\necho v24.11.0\n").expect("write tool");
+            let mut perms = std::fs::metadata(&path).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).expect("chmod");
+        }
+
+        tmp
+    }
+
+    fn make_row(
+        name: &str,
+        transport_type: &str,
+        transport_config: &str,
+        enabled: bool,
+        builtin: bool,
+    ) -> McpServerRow {
+        McpServerRow {
+            id: format!("mcp_{name}"),
+            name: name.to_owned(),
+            description: None,
+            enabled,
+            transport_type: transport_type.into(),
+            transport_config: transport_config.into(),
+            tools: None,
+            last_test_status: "disconnected".into(),
+            last_connected: None,
+            original_json: None,
+            builtin,
+            deleted_at: None,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn test_broadcaster() -> Arc<dyn EventBroadcaster> {
+        Arc::new(BroadcastEventBus::new(16))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn row_to_mcp_server_config_flattens_resolved_npx_command() {
+        let _lock = path_test_lock().lock().expect("lock");
+        let runtime = install_fake_bundled_runtime();
+        let _runtime_data_dir = test_runtime_data_dir();
+        unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
+
+        let row = make_row(
+            "ctx7",
+            "stdio",
+            r#"{"command":"npx","args":["-y","@upstash/context7-mcp"],"env":{"K":"V"}}"#,
+            true,
+            false,
+        );
+
+        let config = row_to_mcp_server_config(&row, "conv-row", test_broadcaster())
+            .await
+            .expect("convert");
+        unsafe { std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES") };
+        let command = config.command.as_deref().expect("resolved command");
+        assert_ne!(command, "npx");
+        assert!(command.ends_with("/npx"), "unexpected stdio command path: {command}");
+        assert_eq!(
+            config.args.as_ref(),
+            Some(&vec!["-y".to_owned(), "@upstash/context7-mcp".to_owned()])
+        );
+    }
 
     #[test]
     fn normalize_aionrs_base_url_strips_v1() {
@@ -585,6 +984,48 @@ mod tests {
 
         let result = resolve_mcp_servers(&overrides, "conv-5");
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_snapshot_overrides_repo_backed_mcp_config() {
+        let snapshot_command = std::env::current_exe()
+            .expect("current test executable")
+            .to_string_lossy()
+            .into_owned();
+        let mut servers = HashMap::from([(
+            "demo-mcp".to_owned(),
+            McpServerConfig {
+                transport: TransportType::Stdio,
+                command: Some("npx".into()),
+                args: Some(vec!["-y".into(), "@old/server".into()]),
+                env: Some(HashMap::new()),
+                url: None,
+                headers: None,
+                deferred: Some(false),
+            },
+        )]);
+
+        let snapshot = vec![SessionMcpServer {
+            id: "mcp_1".into(),
+            name: "demo-mcp".into(),
+            transport: SessionMcpTransport::Stdio {
+                command: snapshot_command.clone(),
+                args: vec!["new-server".into()],
+                env: HashMap::from([("TOKEN".into(), "abc".into())]),
+            },
+        }];
+
+        merge_session_snapshot_mcp_servers(&mut servers, &snapshot, "conv-override", test_broadcaster()).await;
+
+        let server = servers.get("demo-mcp").expect("snapshot should remain");
+        assert_eq!(server.transport, TransportType::Stdio);
+        let command = server.command.as_deref().expect("stdio command should exist");
+        assert_eq!(command, snapshot_command);
+        assert_eq!(server.args.as_deref(), Some(&["new-server".to_owned()][..]));
+        assert_eq!(
+            server.env.as_ref().and_then(|env| env.get("TOKEN")),
+            Some(&"abc".to_owned())
+        );
     }
 
     #[test]

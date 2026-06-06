@@ -1,7 +1,9 @@
+#![allow(clippy::disallowed_types)]
+
 //! Black-box tests for API response formats (test-plan T3.1, T3.2, T3.3).
 
 use aionui_api_types::{ApiResponse, ErrorResponse};
-use aionui_common::AppError;
+use aionui_common::ApiError;
 
 // --- T3.1: Success response format ---
 
@@ -74,13 +76,14 @@ fn t3_2_error_response_has_all_fields() {
     assert!(json.get("success").is_some());
     assert!(json.get("error").is_some());
     assert!(json.get("code").is_some());
+    assert!(json.get("details").is_none());
 }
 
-// --- T3.3: AppError auto-conversion ---
+// --- T3.3: ApiError auto-conversion ---
 
 #[test]
-fn t3_3_app_error_not_found_to_error_response() {
-    let err = AppError::NotFound("user 42".into());
+fn t3_3_api_error_not_found_to_error_response() {
+    let err = ApiError::NotFound("user 42".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -89,8 +92,8 @@ fn t3_3_app_error_not_found_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_bad_request_to_error_response() {
-    let err = AppError::BadRequest("missing field: username".into());
+fn t3_3_api_error_bad_request_to_error_response() {
+    let err = ApiError::BadRequest("missing field: username".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -99,8 +102,8 @@ fn t3_3_app_error_bad_request_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_unauthorized_to_error_response() {
-    let err = AppError::Unauthorized("invalid token".into());
+fn t3_3_api_error_unauthorized_to_error_response() {
+    let err = ApiError::Unauthorized("invalid token".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -108,8 +111,8 @@ fn t3_3_app_error_unauthorized_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_forbidden_to_error_response() {
-    let err = AppError::Forbidden("access denied".into());
+fn t3_3_api_error_forbidden_to_error_response() {
+    let err = ApiError::Forbidden("access denied".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -117,8 +120,8 @@ fn t3_3_app_error_forbidden_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_conflict_to_error_response() {
-    let err = AppError::Conflict("username taken".into());
+fn t3_3_api_error_conflict_to_error_response() {
+    let err = ApiError::Conflict("username taken".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -126,8 +129,8 @@ fn t3_3_app_error_conflict_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_rate_limited_to_error_response() {
-    let resp = ErrorResponse::from(AppError::RateLimited);
+fn t3_3_api_error_rate_limited_to_error_response() {
+    let resp = ErrorResponse::from(ApiError::RateLimited);
 
     assert!(!resp.success);
     assert_eq!(resp.error, "Rate limited");
@@ -135,8 +138,8 @@ fn t3_3_app_error_rate_limited_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_internal_to_error_response() {
-    let err = AppError::Internal("db connection lost".into());
+fn t3_3_api_error_internal_to_error_response() {
+    let err = ApiError::Internal("db connection lost".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -144,8 +147,8 @@ fn t3_3_app_error_internal_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_bad_gateway_to_error_response() {
-    let err = AppError::BadGateway("upstream timeout".into());
+fn t3_3_api_error_bad_gateway_to_error_response() {
+    let err = ApiError::BadGateway("upstream timeout".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
@@ -153,10 +156,44 @@ fn t3_3_app_error_bad_gateway_to_error_response() {
 }
 
 #[test]
-fn t3_3_app_error_timeout_to_error_response() {
-    let err = AppError::Timeout("request timed out".into());
+fn t3_3_api_error_timeout_to_error_response() {
+    let err = ApiError::Timeout("request timed out".into());
     let resp = ErrorResponse::from(err);
 
     assert!(!resp.success);
     assert_eq!(resp.code, "TIMEOUT");
+}
+
+#[test]
+fn t3_3_workspace_error_exposes_structured_details() {
+    let err = ApiError::WorkspacePathUnavailable("/tmp/Archive ".into());
+    let resp = ErrorResponse::from(err);
+
+    assert!(!resp.success);
+    assert_eq!(resp.code, "WORKSPACE_PATH_UNAVAILABLE");
+    assert_eq!(
+        resp.details.as_ref().and_then(|details| details.get("workspace_path")),
+        Some(&serde_json::json!("/tmp/Archive "))
+    );
+    assert_eq!(
+        resp.details.as_ref().and_then(|details| details.get("operation")),
+        Some(&serde_json::json!("create"))
+    );
+}
+
+#[test]
+fn t3_3_runtime_workspace_error_exposes_structured_details() {
+    let err = ApiError::WorkspacePathRuntimeUnavailable("/tmp/Archive ".into());
+    let resp = ErrorResponse::from(err);
+
+    assert!(!resp.success);
+    assert_eq!(resp.code, "WORKSPACE_PATH_RUNTIME_UNAVAILABLE");
+    assert_eq!(
+        resp.details.as_ref().and_then(|details| details.get("workspace_path")),
+        Some(&serde_json::json!("/tmp/Archive "))
+    );
+    assert_eq!(
+        resp.details.as_ref().and_then(|details| details.get("operation")),
+        Some(&serde_json::json!("runtime"))
+    );
 }
