@@ -14,9 +14,9 @@ on:
         default: 'main'
         type: string
       target_branch:
-        description: 'Target branch to sync into'
+        description: 'Target branch to sync into (never main or dev directly)'
         required: false
-        default: 'main'
+        default: 'feature/upstream-sync'
         type: string
 
 permissions:
@@ -24,12 +24,31 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: "sync-upstream-${{ inputs.target_branch || 'main' }}"
+  group: "sync-upstream-${{ inputs.target_branch || 'feature/upstream-sync' }}"
   cancel-in-progress: true
 
 jobs:
+  validate:
+    name: Validate target
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check target branch
+        shell: bash
+        env:
+          TARGET: "${{ inputs.target_branch || 'feature/upstream-sync' }}"
+        run: |
+          if [ "$TARGET" = "main" ]; then
+            echo "::error::Syncing directly to main is forbidden. Use a feature branch (e.g. feature/upstream-sync) and PR to dev instead."
+            exit 1
+          fi
+          if [ "$TARGET" = "dev" ]; then
+            echo "::error::Syncing directly to dev is forbidden. Use a feature branch (e.g. feature/upstream-sync) and PR to dev instead."
+            exit 1
+          fi
+
   sync:
     name: Sync upstream branch
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout target branch

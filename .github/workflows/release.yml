@@ -195,3 +195,17 @@ jobs:
               --generate-notes
           fi
           echo "Uploaded assets to ${release_url}"
+
+          # Also create a -Pounding tag so the frontend (AionUi) can pin to it.
+          # AionUi's package.json > aioncoreVersion expects tags like v0.1.22-Pounding.
+          POUNDING_TAG="${RELEASE_TAG}-Pounding"
+          if ! gh release view "${POUNDING_TAG}" --repo "${REPOSITORY}" > /dev/null 2>&1; then
+            gh release create "${POUNDING_TAG}" artifacts/* \
+              --repo "${REPOSITORY}" \
+              --title "${POUNDING_TAG}" \
+              --notes "POUNDING release of ${RELEASE_TAG}. Assets are identical to ${RELEASE_TAG}."
+            echo "Created -Pounding tag: ${POUNDING_TAG}"
+          else
+            gh release upload "${POUNDING_TAG}" artifacts/* --repo "${REPOSITORY}" --clobber
+            echo "Updated -Pounding tag: ${POUNDING_TAG}"
+          fi
