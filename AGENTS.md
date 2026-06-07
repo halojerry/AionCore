@@ -232,14 +232,30 @@ just push                                             # fmt → clippy → test 
 
 ```
 iOfficeAI/AionCore (上游)
-    ↓ sync-upstream workflow
-halojerry/AionCore (开发复刻 — 此仓库)
-    ↓ PR: dev → release/pounding-v*.*.x → main
-halojerry/poundingcore (发布仓库 — 最终产物)
+    ↓ sync-upstream (此仓库的 workflow)
+halojerry/AionCore (开发仓库 — 此仓库，POUNDING 保护层)
+    ↓ sync-downstream (poundingcore 发布仓库的 workflow)
+halojerry/poundingcore (发布仓库 — 最终产物，二进制发布)
 ```
 
 **`halojerry/poundingcore` 是最终发布仓库**，只接收 `halojerry/AionCore` 的稳定代码。
 **永远不要**从 `iOfficeAI/AionCore` 直接同步到 `halojerry/poundingcore`。
+
+### Sync Downstream (Dev → Release)
+
+代码从开发仓库同步到发布仓库由 `halojerry/poundingcore` 的 `sync-downstream.yml` 负责。
+该 workflow 从 `halojerry/AionCore`（此仓库）拉取代码，经过 branding 检查后创建 PR。
+
+**触发方式**: 在 `halojerry/poundingcore` 仓库手动 `workflow_dispatch` → `sync-downstream.yml`。
+
+**流程**:
+1. 验证目标分支（阻止直接同步到 main/dev）
+2. 运行 `check-branding.sh` 作为预检门禁
+3. Fast-forward 合并到 `feature/downstream-sync` 分支
+4. 再次运行 branding 检查
+5. 创建 PR 供人工审核
+
+**发布仓库永远不直接从 iOfficeAI 同步** — 所有上游变更必须先经过此开发仓库处理。
 
 **main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
 
@@ -266,7 +282,7 @@ main (stable — triggers release builds via tag)
 
 **Trigger**: Manual `workflow_dispatch` via GitHub Actions → `sync-upstream.yml`.
 
-**⚠️ AionCore sync-upstream.yml lacks the `validate` job** that AionUi has. It does NOT block direct sync to `main`/`dev`. Always manually specify `feature/upstream-sync` as the target branch.
+The `sync-upstream.yml` workflow blocks direct sync to `main`/`dev` via its `validate` job. Always use `feature/upstream-sync` as the target branch.
 
 **What the workflow does automatically**:
 1. Fetches from `iOfficeAI/AionCore` upstream
