@@ -1,0 +1,152 @@
+name: Sync Downstream (from Dev)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_repo:
+        description: 'Source dev repository (owner/name)'
+        required: false
+        default: 'halojerry/AionCore'
+        type: string
+      source_branch:
+        description: 'Source branch to sync from'
+        required: false
+        default: 'main'
+        type: string
+      target_branch:
+        description: 'Target branch in this release repo (never main directly)'
+        required: false
+        default: 'feature/downstream-sync'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: "sync-downstream-${{ inputs.target_branch || 'feature/downstream-sync' }}"
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate target
+    runs-on: ubuntu-latest
+    steps:
+      - name: Block direct sync to main
+        shell: bash
+        env:
+          TARGET: "${{ inputs.target_branch || 'feature/downstream-sync' }}"
+        run: |
+          if [ "$TARGET" = "main" ]; then
+            echo "::error::Syncing directly to main is forbidden. Use a feature branch (e.g. feature/downstream-sync) and PR to main instead."
+            exit 1
+          fi
+          if [ "$TARGET" = "dev" ]; then
+            echo "::error::Syncing directly to dev is forbidden. Use a feature branch (e.g. feature/downstream-sync) and PR to dev instead."
+            exit 1
+          fi
+          echo "Target branch: $TARGET — allowed"
+
+  branding-check:
+    name: Branding check
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: "${{ inputs.target_branch || 'feature/downstream-sync' }}"
+      - name: Run branding checks
+        shell: bash
+        run: |
+          if [ -f scripts/check-branding.sh ]; then
+            bash scripts/check-branding.sh
+          else
+            echo "::warning::check-branding.sh not found — skipping branding gate"
+          fi
+
+  sync:
+    name: Sync from dev repo
+    needs: branding-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: "${{ inputs.target_branch || 'main' }}"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add source remote (dev repo)
+        shell: bash
+        env:
+          SOURCE_REPO: "${{ inputs.source_repo || 'halojerry/AionCore' }}"
+        run: |
+          set -euo pipefail
+          if git remote get-url dev-source >/dev/null 2>&1; then
+            git remote set-url dev-source "https://github.com/${SOURCE_REPO}.git"
+          else
+            git remote add dev-source "https://github.com/${SOURCE_REPO}.git"
+          fi
+          git fetch origin --prune
+          git fetch dev-source --prune
+
+      - name: Build sync branch
+        id: sync
+        shell: bash
+        env:
+          TARGET_BRANCH: "${{ inputs.target_branch || 'main' }}"
+          SOURCE_BRANCH: "${{ inputs.source_branch || 'main' }}"
+        run: |
+          set -euo pipefail
+          source_head=$(git rev-parse --short "dev-source/${SOURCE_BRANCH}")
+          sync_branch="sync/downstream-${TARGET_BRANCH}-${source_head}"
+          base_ref="origin/${TARGET_BRANCH}"
+
+          git checkout -B "$sync_branch" "$base_ref"
+
+          if git merge --ff-only "dev-source/${SOURCE_BRANCH}"; then
+            echo "branch=$sync_branch" >> "$GITHUB_OUTPUT"
+            echo "source_head=$source_head" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::${TARGET_BRANCH} is not a fast-forward of dev-source/${SOURCE_BRANCH}. Manual reconciliation is required."
+            echo "This means the release repo has diverged from the dev repo. Review the diff and resolve manually."
+            git log --oneline --decorate --graph --max-count=30 "$base_ref" "dev-source/${SOURCE_BRANCH}"
+            exit 1
+          fi
+
+      - name: Run branding checks on sync result
+        shell: bash
+        run: |
+          if [ -f scripts/check-branding.sh ]; then
+            bash scripts/check-branding.sh || {
+              echo "::error::Branding check failed on sync result! POUNDING customizations may have been lost."
+              exit 1
+            }
+          fi
+
+      - name: Push sync branch
+        shell: bash
+        run: git push origin "HEAD:${{ steps.sync.outputs.branch }}" --force-with-lease
+
+      - name: Create or update pull request
+        env:
+          GH_TOKEN: "${{ github.token }}"
+          TARGET_BRANCH: "${{ inputs.target_branch || 'main' }}"
+          SOURCE_BRANCH: "${{ inputs.source_branch || 'main' }}"
+          SOURCE_REPO: "${{ inputs.source_repo || 'halojerry/AionCore' }}"
+          SYNC_BRANCH: "${{ steps.sync.outputs.branch }}"
+          SOURCE_HEAD: "${{ steps.sync.outputs.source_head }}"
+        run: |
+          set -euo pipefail
+          title="chore: sync from dev/${SOURCE_BRANCH} (${SOURCE_HEAD})"
+          body=$(printf 'Sync generated by GitHub Actions.\n\n- Source (dev): `%s`\n- Source branch: `%s`\n- Source head: `%s`\n- Target branch: `%s`\n- Sync branch: `%s`\n\n⚠️ **This is a release repo.** Code comes from the dev repo. Do NOT merge upstream (iOfficeAI) changes directly.' "$SOURCE_REPO" "$SOURCE_BRANCH" "$SOURCE_HEAD" "$TARGET_BRANCH" "$SYNC_BRANCH")
+          pr_number=$(gh pr list --head "$SYNC_BRANCH" --base "$TARGET_BRANCH" --json number --jq '.[0].number')
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --title "$title" --body "$body"
+          else
+            gh pr create --base "$TARGET_BRANCH" --head "$SYNC_BRANCH" --title "$title" --body "$body"
+          fi

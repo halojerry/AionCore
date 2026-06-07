@@ -226,50 +226,79 @@ cargo test -p aionui-<crate1> -p aionui-<crate2>                               #
 just push                                             # fmt → clippy → test → git push
 ```
 
-## POUNDING Fork: Branch Strategy
+## Release Repo: Sync Strategy
 
-**main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
+**⚠️ This is a RELEASE repository (`halojerry/poundingcore`). Code comes from the dev repo (`halojerry/AionCore`).**
+
+### Three-Tier Architecture
 
 ```
-upstream (iOfficeAI/AionCore)
-    ↓ manual fetch to feature branch
-feature/upstream-sync
-    ↓ manual PR (resolve conflicts, preserve POUNDING customizations)
-dev (integration & verification)
-    ↓
-release/pounding-v*.*.x (final verification)
-    ↓
-main (stable — triggers release builds via tag)
+iOfficeAI/AionCore (上游)
+    ↓ sync-upstream (AionCore dev repo's workflow)
+halojerry/AionCore (开发仓库 — 唯一代码入口)
+    ↓ sync-downstream (poundingcore release repo's workflow)
+halojerry/poundingcore (发布仓库 — 此仓库，只接收稳定代码)
 ```
 
-**Rules for all agents:**
-- Upstream syncs go to `feature/upstream-sync` — NEVER merge upstream into `main` or `dev` directly.
-- After upstream sync, manually diff and restore all POUNDING customizations (see checklist below).
-- POUNDING-specific features are developed on `feature/*` branches, PR'd to `dev`.
-- Tag format: `v<version>-Pounding` (e.g. `v0.1.15-Pounding`).
-- The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion` field, value is a poundingcore release tag).
+**This release repo must NEVER sync from `iOfficeAI/AionCore` directly.**
+All upstream changes must go through `halojerry/AionCore` dev repo first, where POUNDING branding is protected.
+
+### Sync Downstream Process
+
+**Trigger**: Manual `workflow_dispatch` via GitHub Actions → `sync-downstream.yml`.
+
+**What the workflow does**:
+1. Validates target branch (blocks `main`/`dev` direct sync)
+2. Runs `scripts/check-branding.sh` as a pre-sync gate
+3. Fetches from `halojerry/AionCore` (dev repo)
+4. Fast-forward merges (`--ff-only`) into target branch (default: `feature/downstream-sync`)
+5. Re-runs branding check on the sync result
+6. If conflicts or branding failure: job fails, manual resolution required
+7. On success: creates a PR for manual review
+
+**Manual steps after sync**:
+1. Review the auto-created PR diff
+2. Verify `bash scripts/check-branding.sh` passes
+3. Run `cargo test -p aionui-assistant` to verify builtin tests
+4. Merge PR to `main` only after all checks pass
+
+### Binary Releases
+
+This repo hosts release binaries built by `halojerry/AionCore`'s `release.yml`.
+The dev repo builds `poundingcore` binaries and uploads them to this repo's GitHub Releases.
+This repo's own `release.yml` is **deprecated** — releases come from the dev repo.
+
+### Rules for all agents:
+- Syncs from dev go to `feature/downstream-sync` — NEVER sync dev/main into main directly.
+- This repo does NOT have `sync-upstream.yml` — it must never sync from iOfficeAI.
+- POUNDING-specific customizations are preserved in the dev repo before syncing here.
+- Tag format: `v<version>-Pounding` (e.g. `v0.1.22-Pounding`).
+- The AionUi desktop app downloads poundingcore binaries from this repo's releases.
 
 ## POUNDING Custom Features
 
-Features unique to the POUNDING fork that must be preserved during upstream syncs:
+Features unique to the POUNDING release that must be preserved:
 
 | Feature | Key Files / Crates |
 |---------|-------------------|
 | CC-Switch model routing | `crates/aionui-ai-agent/src/cc_switch/` (mod.rs, model_info.rs, paths.rs, provider_env.rs) |
-| POUNDING builtin skill | `crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/` |
-| POUNDING DB migration | `crates/aionui-db/migrations/007_add_pounding_cli.sql` |
+| POUNDING builtin skill | `crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant/` |
+| POUNDING DB migrations | `crates/aionui-db/migrations/010_add_pounding_cli.sql`, `011_add_pounding_cli.sql` |
 | Brand logo asset | `crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png` |
-| Binary name | Binary name is `poundingcore` |
+| Binary name | Binary name is `poundingcore` (in `crates/aionui-app/Cargo.toml`) |
 | CC-Switch integration tests | `crates/aionui-ai-agent/tests/cc_switch_integration.rs` |
+| Dev repo source | `halojerry/AionCore` (in `crates/aionui-system/src/version.rs`) |
 
 ## POUNDING Branding Checklist
 
-When merging ANY upstream changes, verify these are not overwritten:
+When merging ANY sync from the dev repo, verify these are not overwritten:
 
-- [ ] `007_add_pounding_cli.sql` migration exists
+- [ ] `010_add_pounding_cli.sql` and `011_add_pounding_cli.sql` migrations exist
 - [ ] `cc_switch/` module exists under `aionui-ai-agent/src/`
-- [ ] `pounding-ozon-v0.1.0-lite/` builtin skill exists
+- [ ] `pounding-ozon-assistant/` builtin skill exists
 - [ ] `pounding-heart-solid.png` brand asset exists
-- [ ] Binary name is `poundingcore`
+- [ ] Binary name is `poundingcore` (NOT `aioncore`)
 - [ ] Legacy DB name `aionui.db` preserved in copy/migration functions
 - [ ] CC-Switch integration tests pass (`cargo test -p aionui-ai-agent --test cc_switch_integration`)
+- [ ] `DEFAULT_REPO` is `halojerry/AionCore` (not `iOfficeAI`)
+- [ ] Run `bash scripts/check-branding.sh` before merging
