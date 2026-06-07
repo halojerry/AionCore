@@ -113,6 +113,42 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_update(args: argparse.Namespace) -> int:
+    """Check for skill updates and optionally apply them."""
+    from scripts.lib.update import check_skill_version, download_skill_update
+
+    result = check_skill_version()
+    if result.get("error"):
+        print(json.dumps(
+            {"ok": False, "error": result["error"]},
+            ensure_ascii=False, indent=2,
+        ))
+        return 1
+
+    if not result["update_available"]:
+        print(json.dumps({
+            "ok": True,
+            "update_available": False,
+            "current_version": result["current_version"],
+            "message": f"已是最新版本 ({result['current_version']})",
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.check_only:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    # Apply update
+    print(f"发现新版本: {result['latest_version']} (当前: {result['current_version']})")
+    notes = result.get("release_notes", "")
+    if notes:
+        print(f"更新内容: {notes}")
+
+    download_result = download_skill_update(result["changed_files"])
+    print(json.dumps(download_result, ensure_ascii=False, indent=2))
+    return 0 if not download_result.get("failed") else 1
+
+
 def _cmd_probe(args: argparse.Namespace) -> int:
     """Probe 1688 product page via browser."""
     try:
@@ -200,6 +236,10 @@ def main() -> int:
     p_st = sub.add_parser("status", help="查询任务状态")
     p_st.add_argument("--task-id", required=True)
 
+    # update
+    p_upd = sub.add_parser("update", help="检查并更新 skill")
+    p_upd.add_argument("--check-only", action="store_true", help="仅检查不下载")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -220,6 +260,7 @@ def main() -> int:
         "publish": _cmd_publish,
         "probe": _cmd_probe,
         "status": _cmd_status,
+        "update": _cmd_update,
     }
     return commands[args.command](args)
 

@@ -562,12 +562,62 @@ def _profile_dir(profile: str) -> Path:
 
 
 def _candidate_browser_paths() -> list[str]:
-    return [
+    import platform
+    system = platform.system()
+
+    paths = [
         'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome', 'msedge',
-        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-        '/Applications/Chromium.app/Contents/MacOS/Chromium',
-        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
     ]
+
+    if system == 'Darwin':
+        paths.extend([
+            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Applications/Chromium.app/Contents/MacOS/Chromium',
+            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        ])
+    elif system == 'Windows':
+        # shutil.which handles PATH-located executables; add common install dirs
+        import os as _os
+        for base in [
+            _os.environ.get('ProgramFiles', 'C:\\Program Files'),
+            _os.environ.get('ProgramFiles(x86)', 'C:\\Program Files (x86)'),
+            _os.environ.get('LOCALAPPDATA', ''),
+        ]:
+            if base:
+                paths.extend([
+                    f'{base}\\Google\\Chrome\\Application\\chrome.exe',
+                    f'{base}\\Microsoft\\Edge\\Application\\msedge.exe',
+                ])
+
+    # Playwright-bundled Chromium (no system Chrome needed) — all platforms
+    paths.extend(_playwright_chromium_paths())
+    return paths
+
+
+def _playwright_chromium_paths() -> list[str]:
+    """Find Playwright's bundled Chromium — fallback when no system Chrome."""
+    import platform
+    home = Path.home()
+    if platform.system() == 'Darwin':
+        cache_dir = home / 'Library' / 'Caches' / 'ms-playwright'
+        suffix = 'chrome-mac/Chromium.app/Contents/MacOS/Chromium'
+    elif platform.system() == 'Linux':
+        cache_dir = home / '.cache' / 'ms-playwright'
+        suffix = 'chrome-linux/chrome'
+    elif platform.system() == 'Windows':
+        cache_dir = Path(os.environ.get('LOCALAPPDATA', home / 'AppData' / 'Local')) / 'ms-playwright'
+        suffix = 'chrome-win/chrome.exe'
+    else:
+        return []
+
+    paths: list[str] = []
+    if cache_dir.is_dir():
+        for entry in sorted(cache_dir.iterdir(), reverse=True):
+            if entry.name.startswith('chromium-'):
+                candidate = entry / suffix
+                if candidate.exists():
+                    paths.append(str(candidate))
+    return paths
 
 
 def find_browser_executable(explicit: str | None = None) -> str | None:
@@ -827,8 +877,7 @@ def _find_live_cdp_session_for_profile(
 ) -> dict[str, Any] | None:
     current = dict(session or {})
     expected_user_data_dir = str(current.get('user_data_dir') or _profile_dir(profile)).strip()
-    if not expected_user_data_dir:
-        return None
+
     try:
         proc = subprocess.run(
             ['ps', '-axo', 'command='],
@@ -839,11 +888,12 @@ def _find_live_cdp_session_for_profile(
     except Exception:
         return None
     commands = [line.strip() for line in (proc.stdout or '').splitlines() if line.strip()]
-    matches: list[dict[str, Any]] = []
+
+    exact_matches: list[dict[str, Any]] = []
+    loose_matches: list[dict[str, Any]] = []
+
     for command in commands:
         if '--remote-debugging-port=' not in command:
-            continue
-        if f'--user-data-dir={expected_user_data_dir}' not in command:
             continue
         port_match = re.search(r'--remote-debugging-port=(\d+)', command)
         if not port_match:
@@ -852,16 +902,29 @@ def _find_live_cdp_session_for_profile(
         cdp_url = f'http://127.0.0.1:{port}'
         if not _cdp_available(cdp_url):
             continue
-        matches.append({
+
+        matched_user_data_dir = expected_user_data_dir
+        data_dir_match = re.search(r'--user-data-dir=(\S+)', command)
+        actual_data_dir = data_dir_match.group(1) if data_dir_match else ''
+
+        entry = {
             **current,
             'profile': profile,
-            'user_data_dir': expected_user_data_dir,
+            'user_data_dir': actual_data_dir or expected_user_data_dir,
             'remote_debugging_port': port,
             'cdp_url': cdp_url,
-        })
-    if not matches:
+        }
+
+        if expected_user_data_dir and f'--user-data-dir={expected_user_data_dir}' in command:
+            exact_matches.append(entry)
+        else:
+            # AutoConnect fallback: any Chrome with CDP enabled
+            loose_matches.append(entry)
+
+    # Prefer exact profile match, fall back to any live CDP session
+    resolved = (exact_matches or loose_matches or [None])[-1]
+    if resolved is None:
         return None
-    resolved = matches[-1]
     try:
         _write_browser_session(profile, resolved)
     except Exception:
@@ -1128,6 +1191,191 @@ def _filter_probe_images(images: list[str]) -> list[str]:
         deduped.append(value)
     filtered = [url for url in deduped if is_likely_product_image(url)]
     return filtered or deduped
+
+
+def _auto_install_browser() -> bool:
+    """Automatically install Playwright Chromium when no browser is found.
+
+    Returns True if a browser became available after installation.
+    Does NOT prompt the user — fully automatic.
+    """
+    import subprocess as _sp
+    python = _sp.sys.executable or 'python3'
+
+    # Step 1: ensure playwright package is installed
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        try:
+            _sp.run(
+                [python, '-m', 'pip', 'install', 'playwright'],
+                check=True, capture_output=True, timeout=120,
+            )
+        except Exception:
+            return False
+
+    # Step 2: install Chromium browser
+    try:
+        _sp.run(
+            [python, '-m', 'playwright', 'install', 'chromium'],
+            check=True, capture_output=True, timeout=300,
+        )
+    except Exception:
+        return False
+
+    # Step 3: re-scan for the newly installed browser
+    return bool(find_browser_executable(None))
+
+
+def check_cdp_prerequisites(
+    profile: str | None = None,
+    browser_path: str | None = None,
+) -> dict[str, Any]:
+    """Check whether CDP browser probe can run.
+
+    Returns:
+        {
+            'ok': bool,
+            'browser_available': bool,
+            'browser_path': str | None,
+            'session_available': bool,
+            'cdp_url': str | None,
+            'login_required': bool,
+            'issues': list[str],       # human-readable problems
+            'suggestions': list[str],  # actionable next steps
+        }
+
+    Call this BEFORE probe_1688_page() to give the user clear guidance.
+    Does NOT launch a browser or wait for login.
+    """
+    profile_name = str(profile or get_config_profile() or 'default').strip() or 'default'
+    issues: list[str] = []
+    suggestions: list[str] = []
+
+    # 1. Check browser
+    resolved_browser = find_browser_executable(browser_path)
+    browser_available = bool(resolved_browser)
+    if not browser_available:
+        import platform
+        system = platform.system()
+        if system == 'Darwin':
+            issues.append('未找到 Chrome/Chromium 浏览器')
+            suggestions.append('方案 A: 安装 Google Chrome — https://www.google.com/chrome/')
+            suggestions.append('方案 B: pip install playwright && playwright install chromium (自带浏览器)')
+        elif system == 'Linux':
+            issues.append('未找到 Chrome/Chromium 浏览器')
+            suggestions.append('方案 A: sudo apt install chromium-browser  或  google-chrome-stable')
+            suggestions.append('方案 B: pip install playwright && playwright install chromium (自带浏览器)')
+        elif system == 'Windows':
+            issues.append('未找到 Chrome/Chromium 浏览器')
+            suggestions.append('方案 A: 安装 Google Chrome — https://www.google.com/chrome/')
+            suggestions.append('方案 B: 安装 Microsoft Edge (系统已内置或从 microsoft.com/edge 下载)')
+            suggestions.append('方案 C: pip install playwright && playwright install chromium (自带浏览器)')
+        else:
+            issues.append('未找到 Chrome/Chromium 浏览器')
+            suggestions.append('请安装 Google Chrome: https://www.google.com/chrome/')
+            suggestions.append('或运行: pip install playwright && playwright install chromium')
+
+    # 2. Check CDP session
+    session = _resolve_browser_session(profile_name)
+    cdp_url = str(session.get('cdp_url') or '').strip()
+    session_available = bool(cdp_url and _cdp_available(cdp_url))
+
+    if browser_available and not session_available:
+        issues.append('没有可连接的 1688 浏览器会话')
+        suggestions.append('请先运行浏览器登录: python3 cli.py browser-login')
+        suggestions.append('或手动启动 Chrome 并登录 1688:')
+        suggestions.append(
+            f'  Chrome 需带参数: --remote-debugging-port=9222 --user-data-dir=<profile目录>'
+        )
+
+    # 3. Check login (quick check if session available)
+    login_required = True
+    if session_available:
+        try:
+            with sync_playwright() as p:
+                browser = _connect_existing_chrome(p, cdp_url)
+                try:
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                    page = context.new_page()
+                    try:
+                        page.goto('https://detail.1688.com/', wait_until='domcontentloaded', timeout=15000)
+                        snapshot = _probe_login_snapshot(page)
+                        login_required = _snapshot_login_required(
+                            snapshot.get('url'), snapshot.get('bodyText')
+                        )
+                    finally:
+                        page.close()
+                finally:
+                    browser.close()
+        except Exception:
+            login_required = True
+
+    if session_available and login_required:
+        issues.append('浏览器会话未登录 1688')
+        suggestions.append('请在浏览器中登录 1688: https://login.1688.com/member/signin.htm')
+
+    return {
+        'ok': browser_available and session_available and not login_required,
+        'browser_available': browser_available,
+        'browser_path': resolved_browser,
+        'session_available': session_available,
+        'cdp_url': cdp_url if session_available else None,
+        'login_required': login_required,
+        'issues': issues,
+        'suggestions': suggestions,
+    }
+
+
+def probe_1688_page_safe(
+    url: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Call probe_1688_page() with graceful error handling.
+
+    Never raises — returns a result dict with `ok`, `data`, `error`, `degraded`.
+    Use this as the primary entry point from agent flows (Worker A Step 2b).
+    """
+    try:
+        result = probe_1688_page(url, **kwargs)
+        probe = result.get('probe', {})
+        return {
+            'ok': result.get('ready', False),
+            'degraded': not result.get('ready', False),
+            'data': {
+                'title': probe.get('title', ''),
+                'price': probe.get('price', ''),
+                'brand': probe.get('brand', ''),
+                'seller': probe.get('seller', ''),
+                'images': _filter_probe_images(list(probe.get('images') or [])),
+                'weight_grams': (probe.get('packagingRows') or [{}])[0].get('weightGrams') if probe.get('packagingRows') else None,
+                'packaging_rows': probe.get('packagingRows', []),
+                'sku_details': probe.get('skuDetails', []),
+                'attributes': probe.get('attributes', []),
+                'option_groups': probe.get('optionGroups', []),
+            },
+            'error': None if result.get('ready') else '页面数据未完全提取，部分字段可能缺失',
+            'raw': result,
+        }
+    except Exception as exc:
+        return {
+            'ok': False,
+            'degraded': True,
+            'data': {
+                'title': '',
+                'price': '',
+                'brand': '',
+                'seller': '',
+                'images': [],
+                'weight_grams': None,
+                'packaging_rows': [],
+                'sku_details': [],
+                'attributes': [],
+                'option_groups': [],
+            },
+            'error': str(exc),
+            'raw': {},
+        }
 
 
 def probe_1688_page(

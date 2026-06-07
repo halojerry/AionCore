@@ -1,4 +1,4 @@
-//! CLI argument definitions for the `aioncore` binary.
+//! CLI argument definitions for the `poundingcore` binary.
 //!
 //! Kept separate from `main.rs` to isolate the clap surface (struct + enum +
 //! attribute soup) from the runtime entry point. Visibility is `pub(crate)`
@@ -6,10 +6,10 @@
 
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "aioncore", about = "AionUi Backend Server", version)]
+#[command(name = "poundingcore", about = "POUNDING Backend Server", version)]
 pub(crate) struct Cli {
     /// Host address to listen on.
     #[arg(long, default_value_t = String::from(aionui_common::constants::DEFAULT_HOST))]
@@ -44,15 +44,34 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub log_level: Option<String>,
 
+    /// Managed runtime resource source selection.
+    #[arg(long, value_enum, default_value_t = ManagedResourcesModeArg::Download)]
+    pub managed_resources_mode: ManagedResourcesModeArg,
+
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedResourcesModeArg {
+    Bundled,
+    Download,
+}
+
+impl From<ManagedResourcesModeArg> for aionui_runtime::ManagedResourcesMode {
+    fn from(value: ManagedResourcesModeArg) -> Self {
+        match value {
+            ManagedResourcesModeArg::Bundled => Self::Bundled,
+            ManagedResourcesModeArg::Download => Self::Download,
+        }
+    }
 }
 
 // `Mcp` prefix is load-bearing on Mcp* variants — clap derives kebab-case
 // subcommand names (`mcp-bridge`, `mcp-guide-stdio`, `mcp-team-stdio`)
 // that external callers (ACP agent CLI, team MCP bridge spec) depend on
 // verbatim.
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub(crate) enum Command {
     /// Stdio ↔ TCP bridge for the team MCP server (spawned by the ACP agent CLI).
     McpBridge,
@@ -66,6 +85,16 @@ pub(crate) enum Command {
     /// app launched from confirms whether each backend is detectable
     /// before involving server logs.
     Doctor,
+    /// Prepare current-platform managed runtime resources under a bundle output root.
+    PrepareManagedResources(PrepareManagedResourcesArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub(crate) struct PrepareManagedResourcesArgs {
+    /// Bundle output root. Aioncore writes the managed resources under
+    /// `<bundle-out>/{node,acp}/...` for packaging.
+    #[arg(long)]
+    pub bundle_out: PathBuf,
 }
 
 #[cfg(test)]
@@ -73,11 +102,11 @@ mod tests {
     use clap::Parser;
     use clap::error::ErrorKind;
 
-    use super::Cli;
+    use super::{Cli, Command, ManagedResourcesModeArg};
 
     #[test]
     fn long_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "--version"]);
+        let result = Cli::try_parse_from(["poundingcore", "--version"]);
         let err = match result {
             Ok(_) => panic!("expected --version to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -86,7 +115,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -98,7 +127,7 @@ mod tests {
 
     #[test]
     fn short_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "-V"]);
+        let result = Cli::try_parse_from(["poundingcore", "-V"]);
         let err = match result {
             Ok(_) => panic!("expected -V to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -107,7 +136,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -115,5 +144,43 @@ mod tests {
             "version output should contain package version {}, got: {rendered:?}",
             env!("CARGO_PKG_VERSION")
         );
+    }
+
+    #[test]
+    fn prepare_managed_resources_accepts_bundle_out() {
+        let cli = Cli::parse_from([
+            "aioncore",
+            "prepare-managed-resources",
+            "--bundle-out",
+            "/tmp/aioncore-bundle",
+        ]);
+
+        match cli.command {
+            Some(Command::PrepareManagedResources(args)) => {
+                assert_eq!(args.bundle_out, std::path::Path::new("/tmp/aioncore-bundle"));
+            }
+            other => panic!("unexpected command parsed: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn managed_resources_mode_defaults_to_download() {
+        let cli = Cli::parse_from(["aioncore"]);
+        assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
+    }
+
+    #[test]
+    fn managed_resources_mode_accepts_download() {
+        let cli = Cli::parse_from(["aioncore", "--managed-resources-mode", "download"]);
+        assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
+    }
+
+    #[test]
+    fn prepare_managed_resources_requires_bundle_out() {
+        let err = match Cli::try_parse_from(["aioncore", "prepare-managed-resources"]) {
+            Ok(_) => panic!("prepare-managed-resources should require --bundle-out"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 }

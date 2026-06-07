@@ -1,3 +1,5 @@
+#![warn(clippy::disallowed_types)]
+
 //! All HTTP request/response DTOs shared across the API surface.
 mod acp;
 mod acp_prompt_hook;
@@ -20,6 +22,7 @@ mod office;
 mod provider;
 mod remote_agent;
 mod response;
+mod runtime;
 mod shell;
 mod skill;
 mod system;
@@ -63,10 +66,10 @@ pub use connection_test::TestBedrockConnectionRequest;
 pub use conversation::{
     ActiveCountResponse, CloneConversationRequest, ConversationArtifactKind, ConversationArtifactListResponse,
     ConversationArtifactResponse, ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus,
-    ConversationMcpStatusKind, ConversationResponse, CreateConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchItem, MessageSearchResponse,
-    SearchMessagesQuery, SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest,
-    UpdateConversationRequest,
+    ConversationMcpStatusKind, ConversationResponse, ConversationRuntimeStateKind, ConversationRuntimeSummary,
+    CreateConversationRequest, ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse,
+    MessageSearchItem, MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
+    UpdateConversationArtifactRequest, UpdateConversationRequest,
 };
 pub use cron::{
     CreateCronJobRequest, CronAgentConfigDto, CronJobExecutedEvent, CronJobMetadataDto, CronJobPayloadDto,
@@ -93,9 +96,9 @@ pub use file::{
 pub use lifecycle::{GitHubReleaseAsset, SystemInfoResponse, UpdateCheckRequest, UpdateCheckResult, UpdateReleaseInfo};
 pub use mcp::{
     BatchImportMcpServersRequest, CreateMcpServerRequest, DetectedMcpServerEntry, DetectedMcpServerResponse,
-    ImportMcpServerRequest, McpAuthMethod, McpConnectionTestResult, McpServerResponse, McpToolResponse, McpTransport,
-    OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest, OAuthStatusResponse,
-    TestMcpConnectionRequest, UpdateMcpServerRequest,
+    ImportMcpServerRequest, McpAuthMethod, McpConnectionTestErrorCode, McpConnectionTestResult, McpServerResponse,
+    McpToolResponse, McpTransport, OAuthCheckStatusRequest, OAuthLoginRequest, OAuthLoginResponse, OAuthLogoutRequest,
+    OAuthStatusResponse, TestMcpConnectionRequest, UpdateMcpServerRequest,
 };
 pub use office::{
     CellCoord, CellRange, ConversionResultDto, ConversionTarget, DetectStarOfficeRequest, DocumentConversionRequest,
@@ -115,6 +118,11 @@ pub use remote_agent::{
     TestRemoteAgentConnectionRequest, UpdateRemoteAgentRequest,
 };
 pub use response::{ApiResponse, ErrorResponse};
+pub use runtime::{
+    EnsureManagedAcpToolRequest, EnsureManagedAcpToolResponse, EnsureNodeRuntimeRequest, EnsureNodeRuntimeResponse,
+    RuntimeFailureKind, RuntimeResourceKind, RuntimeStatusPayload, RuntimeStatusPhase, RuntimeStatusScope,
+    RuntimeStatusScopeKind,
+};
 pub use shell::{
     CheckToolInstalledRequest, CheckToolInstalledResponse, DeepgramSpeechToTextConfig, OpenAISpeechToTextConfig,
     OpenExternalRequest, OpenFileRequest, OpenFolderWithRequest, ShowItemInFolderRequest, SpeechToTextConfig,

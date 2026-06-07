@@ -117,12 +117,20 @@ def main(args: list[str]) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
         return 0
 
-    result = submit_task(
-        envelope,
-        poll=parsed.poll_status,
-        max_polls=parsed.max_polls,
-        poll_interval_sec=3.0,
-    )
+    result = submit_task(envelope)
+    task_id = result.get('task_id', '')
+
+    # Poll if requested
+    if parsed.poll_status and task_id:
+        from scripts.lib.cloud_client import poll_pipeline_task
+        final = poll_pipeline_task(
+            task_id,
+            interval_sec=3.0,
+            max_wait_sec=getattr(parsed, 'max_poll_sec', 600),
+        )
+        result['final'] = final
+        result['status'] = final.get('status', result.get('status', ''))
+        result['ozon_task_id'] = final.get('ozon_task_id', '')
 
     # Build markdown summary
     status = result.get('status', 'unknown')

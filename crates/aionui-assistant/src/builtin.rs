@@ -6,7 +6,7 @@
 //! assumption, which was fragile in two ways:
 //!
 //! 1. Dev: Electron launches the backend through a symlink
-//!    (`~/.cargo/bin/aioncore` → `target/debug/aioncore`) and
+//!    (`~/.cargo/bin/poundingcore` → `target/debug/poundingcore`) and
 //!    `std::env::current_exe().parent()` would resolve to the symlink's
 //!    directory, not the real binary's, missing the `assets/` sibling.
 //! 2. Prod: `AionUi/scripts/prepareAionuiBackend.js` only copies the
@@ -282,6 +282,7 @@ mod tests {
         // Sanity-check a couple of known ids from the committed manifest.
         assert!(reg.has("word-creator"));
         assert!(reg.has("cowork"));
+        assert!(reg.has("pounding-ozon-assistant"));
     }
 
     #[test]
@@ -303,6 +304,28 @@ mod tests {
             .skill_bytes("cowork", "en-US")
             .expect("cowork en-US skill should resolve from the embedded bundle");
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn load_embedded_pounding_ozon_assistant_binds_expected_skills() {
+        let reg = BuiltinAssistantRegistry::load_embedded();
+        let assistant = reg
+            .get("pounding-ozon-assistant")
+            .expect("pounding-ozon-assistant should exist in embedded registry");
+        assert_eq!(assistant.preset_agent_type, "aionrs");
+        assert!(
+            assistant
+                .enabled_skills
+                .contains(&"pounding-ozon-assistant".to_string())
+        );
+        assert!(assistant.enabled_skills.contains(&"officecli-docx".to_string()));
+        assert!(assistant.enabled_skills.contains(&"officecli-pptx".to_string()));
+        assert!(assistant.enabled_skills.contains(&"officecli-xlsx".to_string()));
+        let bytes = reg
+            .rule_bytes("pounding-ozon-assistant", "en-US")
+            .expect("pounding-ozon-assistant rule should resolve for en-US");
+        let text = std::str::from_utf8(&bytes).expect("rule file should be valid utf-8");
+        assert!(text.contains("pounding-ozon"));
     }
 
     #[test]

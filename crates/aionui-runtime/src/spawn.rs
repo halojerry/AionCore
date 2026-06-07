@@ -30,6 +30,7 @@ use std::process::Stdio;
 
 use tokio::process::{Child, Command};
 
+use crate::ResolvedCommand;
 use crate::resolver::resolve_command_path;
 
 /// Construction mode — determines default stdio + env extras.
@@ -55,7 +56,7 @@ pub async fn kill_process_tree(child: &mut Child) -> io::Result<()> {
     };
 
     #[cfg(unix)]
-    force_kill_process_tree(pid)?;
+    force_kill_process_tree(pid, Some(pid))?;
     #[cfg(windows)]
     kill_windows_process_tree(pid).await?;
     #[cfg(not(any(unix, windows)))]
@@ -121,6 +122,23 @@ impl Builder {
         Self {
             inner,
             mode: Mode::CleanCli,
+        }
+    }
+
+    /// Builder from a fully resolved command plan.
+    ///
+    /// This bypasses `resolve_command_path` and uses the provided
+    /// `program + args_prefix + env` directly.
+    pub fn from_resolved(resolved: &ResolvedCommand) -> Self {
+        let mut inner = Command::new(&resolved.program);
+        inner.kill_on_drop(true);
+        configure_platform_spawn(&mut inner);
+        strip_pollution(&mut inner);
+        inner.args(&resolved.args_prefix);
+        inner.envs(resolved.env.iter().cloned());
+        Self {
+            inner,
+            mode: Mode::Default,
         }
     }
 
@@ -211,21 +229,21 @@ fn configure_platform_spawn(cmd: &mut Command) {
 fn configure_platform_spawn(_cmd: &mut Command) {}
 
 #[cfg(unix)]
-fn force_kill_process_tree(pid: u32) -> io::Result<()> {
-    let pgid = unsafe { libc::getpgid(pid as i32) };
-    if pgid == -1 {
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
+fn force_kill_process_tree(pid: u32, process_group_id: Option<u32>) -> io::Result<()> {
+    if let Some(group_id) = process_group_id.filter(|group_id| *group_id > 1) {
+        let result = unsafe { libc::kill(-(group_id as i32), libc::SIGKILL) };
+        if result == 0 {
             return Ok(());
         }
-        return kill_unix_target(pid as i32);
+
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            return kill_unix_target(pid as i32);
+        }
+        return Err(err);
     }
 
-    if pgid > 1 && pgid as u32 == pid {
-        kill_unix_target(-pgid)
-    } else {
-        kill_unix_target(pid as i32)
-    }
+    kill_unix_target(pid as i32)
 }
 
 #[cfg(unix)]
@@ -283,6 +301,8 @@ fn resolve_program(program: &OsStr) -> OsString {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ResolvedCommand;
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn clean_cli_captures_stdout_and_strips_env_pollution() {
@@ -371,6 +391,23 @@ mod tests {
     }
 
     #[test]
+    fn resolved_command_builder_applies_prefix_and_env() {
+        let resolved = ResolvedCommand {
+            program: "/bin/echo".into(),
+            args_prefix: vec!["hello".into()],
+            env: vec![("NO_COLOR".into(), "1".into())],
+        };
+
+        let builder = Builder::from_resolved(&resolved);
+        let preview = builder.to_string();
+        assert!(
+            preview.contains("hello"),
+            "preview should include args prefix: {preview}"
+        );
+        assert!(preview.contains("NO_COLOR=\"1\"") || preview.contains("NO_COLOR=1"));
+    }
+
+    #[test]
     fn display_renders_shell_style_command() {
         let mut b = Builder::new("/usr/local/bin/bun");
         b.current_dir("/tmp/work dir")
@@ -397,5 +434,69 @@ mod tests {
         );
         assert!(preview.contains(r#""--flag""#), "arg --flag missing: {preview}");
         assert!(preview.contains(r#""with space""#), "arg with space missing: {preview}");
+    }
+
+    #[cfg(unix)]
+    fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if !is_pid_alive(pid) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[cfg(unix)]
+    fn is_pid_alive(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        if result == 0 {
+            return true;
+        }
+        !matches!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_tree_uses_cached_group_when_leader_has_exited() {
+        let marker = tempfile::NamedTempFile::new().unwrap();
+        let marker_path = marker.path().to_string_lossy().into_owned();
+
+        let mut builder = Builder::new("sh");
+        builder
+            .args([
+                "-c",
+                "sleep 60 & child=$!; printf '%s' \"$child\" > \"$1\"; exit 0",
+                "runtime-cached-group-cleanup",
+                marker_path.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let mut child = builder.spawn().unwrap();
+        let leader_pid = child.id().expect("leader pid should exist");
+        let status = child.wait().await.unwrap();
+        assert!(status.success(), "leader should exit before cleanup test");
+
+        let child_pid: u32 = std::fs::read_to_string(marker.path())
+            .expect("background child pid marker should exist")
+            .trim()
+            .parse()
+            .expect("background child pid should be numeric");
+
+        assert!(
+            is_pid_alive(child_pid),
+            "background child pid={child_pid} should still be alive"
+        );
+
+        force_kill_process_tree(leader_pid, Some(leader_pid)).expect("cached group kill should succeed");
+
+        assert!(
+            wait_for_pid_exit(child_pid, Duration::from_secs(5)),
+            "background child pid={child_pid} should exit after cached group kill",
+        );
     }
 }

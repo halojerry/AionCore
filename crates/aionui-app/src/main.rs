@@ -22,8 +22,12 @@ fn main() -> Result<ExitCode> {
     // detection path exactly. It must hit the same `aionui_runtime::init`
     // (so the bundled `bun` resolves through the same cache the server
     // uses) before falling through to PATH probing.
-    let needs_runtime = matches!(cli.command, None | Some(Command::Doctor));
+    let needs_runtime = matches!(
+        cli.command,
+        None | Some(Command::Doctor) | Some(Command::PrepareManagedResources(_))
+    );
     if needs_runtime {
+        aionui_runtime::set_managed_resources_mode(cli.managed_resources_mode.into());
         aionui_runtime::init(&cli.data_dir);
     }
 
@@ -43,11 +47,13 @@ async fn async_main(merged_path: String, cli: Cli) -> Result<ExitCode> {
         Some(Command::McpGuideStdio) => Ok(commands::run_team_guide().await),
         Some(Command::McpTeamStdio) => Ok(commands::run_team_stdio().await),
         Some(Command::Doctor) => commands::run_doctor(&cli, &merged_path).await,
+        Some(Command::PrepareManagedResources(args)) => commands::run_prepare_managed_resources(args).await,
         None => {
-            let env = bootstrap::init_environment(&cli, &merged_path)?;
+            let mut env = bootstrap::init_environment(&cli, &merged_path)?;
+            let listener = commands::bind_http_listener(&mut env.config).await?;
             let database = bootstrap::init_data_layer(&env.config).await?;
             let services = AppServices::from_config(database, &env.config).await?;
-            commands::run_server(env, services).await
+            commands::run_server(env, services, listener).await
         }
     }
 }

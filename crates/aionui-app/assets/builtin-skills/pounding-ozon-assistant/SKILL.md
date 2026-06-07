@@ -2,9 +2,10 @@
 name: pounding-ozon-assistant
 description: |
   1688 → Ozon 全链路。跟卖、新上架、变体合并、翻新、选品找货源、制图。
+version: 0.3.5
 ---
 
-# pounding-ozon-assistant
+# pounding-ozon-assistant v0.3.5
 
 ## 云端 Webhook 映射
 
@@ -30,15 +31,28 @@ description: |
 | `OZON_CLIENT_ID` | 用户级 | `.env` 或环境变量 | A, B, C, D |
 | `OZON_API_KEY` | 用户级 | `.env` 或环境变量 | A, B, C, D |
 
-- **分发级凭证**（`MXOU_TOKEN`、`MXOU_IMAGE_TOKEN`）都来自 `~/.pounding/config.json` 的 `api.key`——制图和鉴权用同一个 mxou API key，随 Skill 分发给用户，**绝不写入 `.env`**。
+- **分发级凭证**（`MXOU_TOKEN`、`MXOU_IMAGE_TOKEN`）：
+  - 来源：`~/.pounding/config.json` 的 `api.key`，或环境变量 `MXOU_TOKEN`
+  - **绝不写入 `.env` 或用代码设置 **——Key 会被脱敏导致无效
+  - Agent 调 `check_config()` → 如果 `user_action` 不为 None → **原样告诉用户** → 让用户**手动在终端**执行 `export MXOU_TOKEN="sk-xxx"`
+  - `_get_token()` 优先读 `os.environ["MXOU_TOKEN"]`（不受脱敏影响）
 - **用户级凭证**（`ALI_1688_AK`、`OZON_CLIENT_ID`、`OZON_API_KEY`）由 AI 助手写入 `.env` 持久化，下次对话自动加载。
 - 用户说"设置 XXX=yyy"→ 写入 `.env` → 告知"已保存到 .env ✅"。
-- 用户说"查看配置"→ `check_config()` 列出缺失和已配置项。
-- **严禁硬编码凭据。Step 1 缺任何一项立即停止，列出缺失项。**
+- 用户说"查看配置"→ `check_config()` 列出缺失和已配置项 + `user_action`。
+- **严禁硬编码凭据。Step 1 缺任何一项立即停止，读出 `user_action` 给用户。**
 
-## CDP 浏览器是必须的
+## CDP 浏览器采集
 
-1688 API 返回文字属性但**不返回图片URL、重量、尺寸**。CDP 浏览器打开商品页采集这些数据是 Worker A 的必要步骤 (Step 2b)。
+1688 API 返回文字属性但**不返回图片URL、重量、尺寸**。用 `enrich_product_with_cdp()` 补齐——**一个函数搞定所有场景**（没装 Chrome、没登录、探针失败），绝不崩溃：
+
+```python
+from scripts.lib.ak_1688_client import enrich_product_with_cdp
+
+enriched = enrich_product_with_cdp(detail_url=item['detailUrl'], api_data=d)
+# 返回 {ok, degraded, degraded_reason, user_action, data: {images, weight_grams, ...}}
+# data 永远不为空——degraded 时 images/weight_grams 为空列表/None
+# user_action 不为 None 时直接告诉用户那句话即可
+```
 
 ## 关键函数返回值速查
 
@@ -55,7 +69,7 @@ description: |
 | `submit_task(envelope)` | `cloud_client` | `dict` | `task_id, status, stages, final_summary` |
 | `generate_product_images(token, ...)` | `cloud_client` | `dict` | `{slot: url}` |
 | `follow_sell_cloud(sku=..., ...)` | `cloud_client` | `dict` | `path, ozon_task_id` |
-| `list_product_infos(...)` | 从 `pounding_ozon_cloud.ozon_client` 导入 | `list[dict]` | 每个元素: `product_id`, `name`, `offer_id`, `price` |
+| `list_product_infos(...)` | `cloud_client` | `list[dict]` | 每个元素: `product_id`, `name`, `offer_id`, `price` |
 
 **示例 — 用 `search_products` 正确遍历结果：**
 ```python
@@ -158,21 +172,33 @@ envelope = build_envelope(
 
 ---
 
-### Worker A：1688 → Ozon 新上架（5 步）
+### Worker A：1688 → Ozon 新上架（2 步）
 
-| # | 动作 | 函数 | 对用户说 |
-|---|------|------|---------|
-| 1 | 检查配置 | `check_config()` | 全部就绪→（静默）；有缺失→按 AGENTS.md「首次配置引导」逐个问答填 `.env` |
-| 2 | 获取 1688 详情 | API `prod_detail` + CDP `probe_1688_page()` | "正在获取 1688 商品详情..." → "已获取详情（{N}张图，{M}个SKU）" |
-| 3 | 类目匹配 | **本地主导**：先 `property/lookup` → 云端查缓存；没命中 → 本地 `search_categories_locally()` → Ozon API 搜索；用户选 → `property/confirm` → 云端保存。**无论命中与否，数据都由本地传给云端。越用越快。** | 命中："已匹配类目：{类目名}（置信度 {X}%）"；未命中：列候选让用户选 → "已确认类目：{类目名}，已记录到云端 ✅" |
-| 4 | 构建信封 + 提交 | `build_envelope()` → `submit_task(envelope)` | "已提交任务 {task_id}，云端后台处理中 ⏳ 通常 3-9 分钟完成，我会自动查进度" |
-| 5 | 轮询进度 | 每 30 秒查一次 `gateway_tasks`，直到 terminal=true | 进度更新 → 最终汇报 |
+**新流程——Agent 只需调 1 个函数 + 轮询：**
 
-> **重要**：`submit_envelope()` 走 `v2-ingest-292201` — 只用于类目匹配（property/lookup+confirm）。**上架提交必须用 `submit_task()` 走 `pl-v3-304140` 管线。**
-> **异步处理**：管线提交后立即返回（~3秒），Agent 通过轮询 `gateway_tasks` 查进度，不用傻等。
-> **Ozon API 版本**：类目接口用 `/v1/description-category/tree`（不是 v2）。用 `search_categories_locally()` 封装好的函数即可。需要 `pip install pounding-ozon-cloud>=0.2.0`。
+```python
+from scripts.lib.cloud_client import publish_product_new, poll_pipeline_task
 
-> **Step 4 提交后如果返回 `_next_action: "category_matching_required"`**：说明类目还没匹配。自动执行类目匹配（property/lookup → search_categories_locally → 用户选 → property/confirm），匹配完重新提交信封。
+# Step 1: 一键提交
+result = publish_product_new(
+    item_id="1688商品ID",
+    detail_url="https://detail.1688.com/offer/xxx.html",
+)
+# → {ok, task_id, stage, category, enriched: {images, weight_grams}, user_action}
+
+# Step 2: 轮询等结果
+if result['ok'] and result['task_id']:
+    final = poll_pipeline_task(result['task_id'])
+    # → {status: 'succeeded'|'failed'|'timeout', ozon_task_id, stages}
+```
+
+| # | Agent 做 | 对用户说 |
+|---|---------|---------|
+| 1 | `check_config()` → 有 `user_action` 直接告诉用户 | 缺配置时：读出 user_action |
+| 2 | `publish_product_new(item_id=..., detail_url=...)` | "正在获取商品详情 → 已获取{N}图 → 已提交云端，3-9 分钟完成" |
+| 3 | `poll_pipeline_task(task_id)` 每 30s | "云端处理中...已完成 {stage}" → "上架成功! ozon_task_id: xxx" |
+
+Agent **绝不做**：自己拼 webhook URL、手动调 build_envelope→submit_task、手动调 search_categories_locally
 
 ### Worker B：Ozon 跟卖（6 步）
 
@@ -187,7 +213,7 @@ envelope = build_envelope(
 
 如果复制被拒（`fallback_new_product`）→ 走 Worker A Step 2-9。
 
-### Worker C：翻新（3 步）
+### Worker C：翻新（1 步）
 
 | # | 动作 | 函数 | 对用户说 |
 |---|------|------|---------|

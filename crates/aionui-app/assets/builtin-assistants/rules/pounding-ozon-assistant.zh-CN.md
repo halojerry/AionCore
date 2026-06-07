@@ -123,10 +123,10 @@
 pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
 # 安装依赖
-pip install requests sentry-sdk "pounding-ozon-cloud>=0.2.0"
+pip install requests sentry-sdk
 
-# 可选：浏览器自动化
-pip install playwright && playwright install chromium
+# 可选：浏览器自动化（未安装 Chrome 时自动处理）
+# pip install playwright && playwright install chromium
 ```
 
 如果阿里云镜像不可用，换清华源：`pip install -i https://pypi.tuna.tsinghua.edu.cn/simple/ ...`

@@ -2,9 +2,9 @@ use aionui_api_types::{
     AgentErrorCode, AgentErrorOwnership, AgentErrorResolution, AgentErrorResolutionKind, AgentErrorResolutionTarget,
     AgentStreamErrorData,
 };
-use aionui_common::AppError;
 
 use super::error::AcpError;
+use crate::error::AgentError;
 
 const MAX_DETAIL_CHARS: usize = 1000;
 
@@ -61,14 +61,29 @@ impl AgentSendError {
         }
     }
 
-    pub fn from_app_error(err: AppError) -> Self {
-        Self::from_app_error_ref(&err)
+    pub fn from_agent_error(err: AgentError) -> Self {
+        Self::from_agent_error_ref(&err)
     }
 
-    pub fn from_app_error_ref(err: &AppError) -> Self {
-        let detail = strip_error_prefix(&err.to_string());
+    pub fn from_agent_error_ref(err: &AgentError) -> Self {
+        let detail = err.public_message();
         match err {
-            AppError::Internal(_) => Self::new(
+            AgentError::WorkspacePathRuntimeUnavailable(path) => Self {
+                stream_error: AgentStreamErrorData {
+                    message: "Current Agent failed to run in this workspace path".into(),
+                    code: Some(AgentErrorCode::WorkspacePathRuntimeUnavailable),
+                    ownership: Some(AgentErrorOwnership::Aionui),
+                    detail: Some(sanitize_error_detail(&detail)),
+                    workspace_path: Some(path.clone()),
+                    retryable: Some(false),
+                    feedback_recommended: Some(false),
+                    resolution: Some(AgentErrorResolution::new(
+                        AgentErrorResolutionKind::StartNewSession,
+                        Some(AgentErrorResolutionTarget::NewConversation),
+                    )),
+                },
+            },
+            AgentError::Internal(_) => Self::new(
                 "AionUI failed while sending the message",
                 AgentErrorCode::AionuiInternalError,
                 AgentErrorOwnership::Aionui,
@@ -80,7 +95,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::Feedback),
                 ),
             ),
-            AppError::Forbidden(_) => Self::new(
+            AgentError::Forbidden(_) => Self::new(
                 "AionUI blocked the request before it reached the Agent",
                 AgentErrorCode::AionuiPermissionError,
                 AgentErrorOwnership::Aionui,
@@ -92,7 +107,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::Feedback),
                 ),
             ),
-            AppError::Unauthorized(_) => Self::new(
+            AgentError::Unauthorized(_) => Self::new(
                 "The selected Agent requires authentication",
                 AgentErrorCode::UserAgentAuthRequired,
                 AgentErrorOwnership::UserAgent,
@@ -104,7 +119,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::AgentSettings),
                 ),
             ),
-            AppError::NotFound(msg) if msg.starts_with("Session not found") => Self::new(
+            AgentError::NotFound(msg) if msg.starts_with("Session not found") => Self::new(
                 "The Agent session was not found",
                 AgentErrorCode::UserAgentSessionNotFound,
                 AgentErrorOwnership::UserAgent,
@@ -116,7 +131,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::NewConversation),
                 ),
             ),
-            AppError::BadRequest(msg) if msg.contains("Method not supported") => Self::new(
+            AgentError::BadRequest(msg) if msg.contains("Method not supported") => Self::new(
                 "The selected Agent does not support this operation",
                 AgentErrorCode::UserAgentUnsupportedMethod,
                 AgentErrorOwnership::UserAgent,
@@ -128,7 +143,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::AgentSettings),
                 ),
             ),
-            AppError::BadRequest(msg) if msg.contains("Invalid parameters") => Self::new(
+            AgentError::BadRequest(msg) if msg.contains("Invalid parameters") => Self::new(
                 "The selected Agent rejected the request parameters",
                 AgentErrorCode::UserAgentInvalidParams,
                 AgentErrorOwnership::UserAgent,
@@ -140,7 +155,7 @@ impl AgentSendError {
                     Some(AgentErrorResolutionTarget::Feedback),
                 ),
             ),
-            AppError::Timeout(_) => Self::new(
+            AgentError::Timeout(_) => Self::new(
                 "The model provider did not respond in time",
                 AgentErrorCode::UserLlmProviderTimeout,
                 AgentErrorOwnership::UserLlmProvider,
@@ -149,7 +164,7 @@ impl AgentSendError {
                 false,
                 resolution(AgentErrorResolutionKind::Retry, None),
             ),
-            AppError::RateLimited => Self::new(
+            AgentError::RateLimited => Self::new(
                 "The model provider rate limited the request",
                 AgentErrorCode::UserLlmProviderRateLimited,
                 AgentErrorOwnership::UserLlmProvider,
@@ -158,7 +173,8 @@ impl AgentSendError {
                 false,
                 resolution(AgentErrorResolutionKind::Retry, None),
             ),
-            AppError::BadGateway(_) => classify_upstream_detail(&detail),
+            AgentError::BadGateway(_) => classify_upstream_detail(&detail),
+            AgentError::Acp(err) => Self::from_acp_error_ref(err),
             _ => Self::new(
                 "The upstream Agent failed while handling the request",
                 AgentErrorCode::UnknownUpstreamError,
@@ -189,26 +205,13 @@ impl AgentSendError {
     pub fn ownership(&self) -> Option<AgentErrorOwnership> {
         self.stream_error.ownership
     }
-}
 
-impl std::fmt::Display for AgentSendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.stream_error.message)
+    pub(crate) fn from_acp_error_ref(err: &AcpError) -> Self {
+        classify_acp_error(err)
     }
-}
 
-impl std::error::Error for AgentSendError {}
-
-impl From<AppError> for AgentSendError {
-    fn from(err: AppError) -> Self {
-        Self::from_app_error(err)
-    }
-}
-
-impl From<AcpError> for AgentSendError {
-    fn from(err: AcpError) -> Self {
-        let detail = err.to_string();
-        match &err {
+    fn from_acp_non_internal(err: &AcpError, detail: String) -> Self {
+        match err {
             AcpError::SpawnFailed { .. } => Self::new(
                 "The selected Agent executable could not be started",
                 AgentErrorCode::UserAgentNotInstalled,
@@ -305,27 +308,131 @@ impl From<AcpError> for AgentSendError {
                     Some(AgentErrorResolutionTarget::Feedback),
                 ),
             ),
-            AcpError::AgentInternal { .. } => classify_upstream_detail(&detail),
+            AcpError::AgentInternal { .. } => unknown_upstream_error(detail),
         }
     }
+}
+
+impl std::fmt::Display for AgentSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.stream_error.message)
+    }
+}
+
+impl std::error::Error for AgentSendError {}
+
+impl From<AcpError> for AgentSendError {
+    fn from(err: AcpError) -> Self {
+        Self::from_acp_error_ref(&err)
+    }
+}
+
+impl From<AgentError> for AgentSendError {
+    fn from(err: AgentError) -> Self {
+        Self::from_agent_error(err)
+    }
+}
+
+fn classify_acp_error(err: &AcpError) -> AgentSendError {
+    match err {
+        AcpError::AgentInternal { message, code, data } => {
+            let detail = acp_agent_internal_public_detail(*code);
+            if *code != -32603 {
+                return unknown_upstream_error(detail);
+            }
+
+            let classified = acp_agent_internal_texts(message, data.as_ref())
+                .into_iter()
+                .find_map(|text| {
+                    let lower = text.to_ascii_lowercase();
+                    classify_agent_lifecycle(&lower)
+                        .or_else(|| classify_provider_text(&lower))
+                        .or_else(|| classify_aionui_state(&lower))
+                });
+
+            match classified {
+                Some(classification) => classification.into_send_error(detail),
+                None => unknown_upstream_error(detail),
+            }
+        }
+        _ => AgentSendError::from_acp_non_internal(err, err.to_string()),
+    }
+}
+
+fn acp_agent_internal_public_detail(code: i32) -> String {
+    format!("Agent internal error (code {code})")
+}
+
+fn acp_agent_internal_texts<'a>(message: &'a str, data: Option<&'a serde_json::Value>) -> Vec<&'a str> {
+    let mut texts = Vec::new();
+    if let Some(data) = data {
+        collect_acp_data_texts(data, &mut texts);
+    }
+
+    let trimmed = message.trim();
+    if !is_uninformative_acp_message(trimmed) {
+        texts.push(trimmed);
+    }
+
+    texts
+}
+
+fn collect_acp_data_texts<'a>(value: &'a serde_json::Value, texts: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(text) => texts.push(text.as_str()),
+        serde_json::Value::Object(map) => {
+            for key in ["error", "details", "message"] {
+                if let Some(value) = map.get(key) {
+                    collect_acp_data_texts(value, texts);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_acp_data_texts(value, texts);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_uninformative_acp_message(message: &str) -> bool {
+    message.is_empty()
+        || [
+            "Parse error",
+            "Invalid request",
+            "Method not found",
+            "Invalid params",
+            "Internal error",
+        ]
+        .iter()
+        .any(|default| default.eq_ignore_ascii_case(message))
 }
 
 fn classify_upstream_detail(detail: &str) -> AgentSendError {
     let lower = detail.to_ascii_lowercase();
     let classified = classify_agent_lifecycle(&lower)
-        .or_else(|| classify_provider_api(&lower))
+        .or_else(|| classify_provider_text(&lower))
         .or_else(|| classify_aionui_state(&lower))
-        .unwrap_or(ClassifiedError {
-            message: "The upstream Agent failed while handling the request",
-            code: AgentErrorCode::UnknownUpstreamError,
-            ownership: AgentErrorOwnership::UnknownUpstream,
-            retryable: true,
-            feedback_recommended: true,
-            resolution_kind: AgentErrorResolutionKind::SendFeedback,
-            resolution_target: Some(AgentErrorResolutionTarget::Feedback),
-        });
+        .unwrap_or_else(unknown_upstream_classification);
 
     classified.into_send_error(detail.to_owned())
+}
+
+fn unknown_upstream_error(detail: String) -> AgentSendError {
+    unknown_upstream_classification().into_send_error(detail)
+}
+
+fn unknown_upstream_classification() -> ClassifiedError {
+    ClassifiedError {
+        message: "The upstream Agent failed while handling the request",
+        code: AgentErrorCode::UnknownUpstreamError,
+        ownership: AgentErrorOwnership::UnknownUpstream,
+        retryable: true,
+        feedback_recommended: true,
+        resolution_kind: AgentErrorResolutionKind::SendFeedback,
+        resolution_target: Some(AgentErrorResolutionTarget::Feedback),
+    }
 }
 
 fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
@@ -335,6 +442,14 @@ fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
             AgentErrorCode::UserAgentHandshakeFailed,
             true,
             AgentErrorResolutionKind::CheckAgentInstallation,
+        ));
+    }
+    if lower.contains("process exited with code") {
+        return Some(agent_error(
+            "The selected Agent process exited unexpectedly",
+            AgentErrorCode::UserAgentDisconnected,
+            true,
+            AgentErrorResolutionKind::ReconnectAgent,
         ));
     }
     if lower.contains("initialize handshake timed out") {
@@ -368,6 +483,14 @@ fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
             AgentErrorCode::UserAgentNoPreviousSession,
         ));
     }
+    if lower.contains("failed to connect mcp") {
+        return Some(agent_error(
+            "The selected Agent disconnected from an MCP server",
+            AgentErrorCode::UserAgentDisconnected,
+            true,
+            AgentErrorResolutionKind::ReconnectAgent,
+        ));
+    }
     if lower.contains("session not found") {
         return Some(agent_session_error(
             "The Agent session was not found",
@@ -394,8 +517,18 @@ fn classify_agent_lifecycle(lower: &str) -> Option<ClassifiedError> {
     None
 }
 
-fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
-    if contains_any(lower, &["402", "insufficient balance"]) {
+fn classify_provider_text(lower: &str) -> Option<ClassifiedError> {
+    if contains_any(
+        lower,
+        &[
+            "402",
+            "insufficient balance",
+            "credit balance is too low",
+            "purchase credits",
+            "plans & billing",
+            "plans and billing",
+        ],
+    ) {
         return Some(provider_error(
             "The model provider account requires billing attention",
             AgentErrorCode::UserLlmProviderBillingRequired,
@@ -511,6 +644,7 @@ fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
             "unknown model",
             "invalid model",
             "model_not_found",
+            "model identifier is invalid",
         ],
     ) {
         return Some(provider_error(
@@ -521,9 +655,7 @@ fn classify_provider_api(lower: &str) -> Option<ClassifiedError> {
             Some(AgentErrorResolutionTarget::ProviderSettings),
         ));
     }
-    if (lower.contains("404") || lower.contains("not found"))
-        && contains_any(lower, &["/chat/completions", "\"path\"", "endpoint", "base url"])
-    {
+    if lower.contains("404") || lower.contains("not found") {
         return Some(provider_error(
             "The model provider endpoint was not found",
             AgentErrorCode::UserLlmProviderEndpointNotFound,
@@ -700,28 +832,44 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
-fn strip_error_prefix(message: &str) -> String {
-    message
-        .split_once(": ")
-        .map(|(_, rest)| rest)
-        .unwrap_or(message)
-        .to_owned()
+pub(crate) fn sanitize_error_detail(input: &str) -> String {
+    let stripped = strip_markup(input);
+    let without_query = redact_url_queries(&stripped);
+    let redacted = redact_lines(&without_query);
+    truncate_chars(redacted.trim(), MAX_DETAIL_CHARS)
 }
 
-pub(crate) fn sanitize_error_detail(input: &str) -> String {
-    let without_query = redact_url_queries(input);
-    let mut out = String::new();
-    for line in without_query.lines() {
-        if is_sensitive_header_line(line) {
-            push_bounded_line(&mut out, "<redacted header>");
-        } else {
-            push_bounded_line(&mut out, &redact_secret_words(line));
+fn strip_markup(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match (ch, in_tag) {
+            ('<', _) => in_tag = true,
+            ('>', true) => {
+                in_tag = false;
+                out.push(' ');
+            }
+            (c, false) => out.push(c),
+            _ => {}
         }
+    }
+    out
+}
+
+fn redact_lines(input: &str) -> String {
+    let mut out = String::new();
+    for line in input.lines() {
+        let cleaned = if is_sensitive_header_line(line) {
+            "<redacted header>".to_owned()
+        } else {
+            redact_secret_words(line)
+        };
+        push_bounded_line(&mut out, &cleaned);
         if out.chars().count() >= MAX_DETAIL_CHARS {
             break;
         }
     }
-    truncate_chars(out.trim(), MAX_DETAIL_CHARS)
+    out
 }
 
 fn push_bounded_line(out: &mut String, line: &str) {
@@ -796,6 +944,7 @@ fn truncate_chars(value: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use aionui_api_types::{AgentErrorResolutionKind, AgentErrorResolutionTarget};
+    use serde_json::json;
 
     fn assert_classification(
         detail: &str,
@@ -803,14 +952,27 @@ mod tests {
         ownership: AgentErrorOwnership,
         resolution: AgentErrorResolutionKind,
     ) {
-        let err = AgentSendError::from_app_error(AppError::BadGateway(detail.into()));
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(detail));
         assert_eq!(err.code(), Some(code));
         assert_eq!(err.ownership(), Some(ownership));
         assert_eq!(err.stream_error().resolution.map(|value| value.kind), Some(resolution));
     }
 
+    fn assert_acp_classification(
+        err: AcpError,
+        code: AgentErrorCode,
+        ownership: AgentErrorOwnership,
+        resolution: AgentErrorResolutionKind,
+    ) -> AgentSendError {
+        let err = AgentSendError::from(err);
+        assert_eq!(err.code(), Some(code));
+        assert_eq!(err.ownership(), Some(ownership));
+        assert_eq!(err.stream_error().resolution.map(|value| value.kind), Some(resolution));
+        err
+    }
+
     fn assert_resolution_target(detail: &str, target: AgentErrorResolutionTarget) {
-        let err = AgentSendError::from_app_error(AppError::BadGateway(detail.into()));
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(detail));
         assert_eq!(
             err.stream_error().resolution.and_then(|value| value.target),
             Some(target)
@@ -819,7 +981,7 @@ mod tests {
 
     #[test]
     fn classifies_provider_auth_failure() {
-        let err = AgentSendError::from_app_error(AppError::BadGateway("provider returned 401 invalid api key".into()));
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway("provider returned 401 invalid api key"));
 
         assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderAuthFailed));
         assert_eq!(err.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -828,7 +990,7 @@ mod tests {
 
     #[test]
     fn classifies_unknown_upstream_when_heuristics_do_not_match() {
-        let err = AgentSendError::from_app_error(AppError::BadGateway("agent exploded".into()));
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway("agent exploded"));
 
         assert_eq!(err.code(), Some(AgentErrorCode::UnknownUpstreamError));
         assert_eq!(err.ownership(), Some(AgentErrorOwnership::UnknownUpstream));
@@ -836,8 +998,27 @@ mod tests {
     }
 
     #[test]
+    fn preserves_runtime_workspace_validation_as_structured_aionui_error() {
+        let err =
+            AgentSendError::from_agent_error(AgentError::workspace_path_runtime_unavailable("/Users/test/Archive "));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::WorkspacePathRuntimeUnavailable));
+        assert_eq!(err.ownership(), Some(AgentErrorOwnership::Aionui));
+        assert_eq!(
+            err.stream_error().workspace_path.as_deref(),
+            Some("/Users/test/Archive ")
+        );
+        assert_eq!(err.stream_error().retryable, Some(false));
+        assert_eq!(err.stream_error().feedback_recommended, Some(false));
+        assert_eq!(
+            err.stream_error().resolution.map(|value| value.kind),
+            Some(AgentErrorResolutionKind::StartNewSession)
+        );
+    }
+
+    #[test]
     fn classifies_provider_error_without_specific_signal_as_provider_gateway() {
-        let err = AgentSendError::from_app_error(AppError::BadGateway("Provider error: upstream failed".into()));
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway("Provider error: upstream failed"));
 
         assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderGatewayError));
         assert_eq!(err.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
@@ -846,8 +1027,8 @@ mod tests {
 
     #[test]
     fn classifies_provider_config_errors_as_not_retryable() {
-        let err = AgentSendError::from_app_error(AppError::BadGateway(
-            "Provider error: Connection error: Signable request error: failed to create canonical request".into(),
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(
+            "Provider error: Connection error: Signable request error: failed to create canonical request",
         ));
 
         assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderConfigError));
@@ -872,6 +1053,52 @@ mod tests {
     }
 
     #[test]
+    fn strip_markup_removes_html_tags_keeping_visible_text() {
+        let detail = sanitize_error_detail(
+            "Provider error: API error 504: <html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n<body><center><h1>504 Gateway Time-out</h1></center>\r\n<hr><center>openresty</center></body></html>",
+        );
+
+        assert!(!detail.contains('<'));
+        assert!(!detail.contains('>'));
+        assert!(detail.contains("504 Gateway Time-out"));
+        assert!(detail.contains("openresty"));
+        assert!(detail.starts_with("Provider error: API error 504:"));
+    }
+
+    #[test]
+    fn strip_markup_is_identity_for_plain_text() {
+        let detail = sanitize_error_detail("Provider error: API error 504: error code: 524");
+
+        assert_eq!(detail, "Provider error: API error 504: error code: 524");
+    }
+
+    #[test]
+    fn redaction_runs_after_strip_markup() {
+        let detail = sanitize_error_detail(
+            "<html><body>Authorization: Bearer sk-secret\nGET https://example.com/v1?api_key=sk-secret</body></html>",
+        );
+
+        assert!(!detail.contains("sk-secret"));
+        assert!(!detail.contains("api_key=sk"));
+        assert!(detail.contains("<redacted header>"));
+        assert!(!detail.contains("<html"));
+        assert!(!detail.contains("</body>"));
+    }
+
+    #[test]
+    fn classifies_provider_504_html_body_as_timeout_with_stripped_detail() {
+        let raw = "Aionrs agent error: Provider error: API error 504: <html>\r\n<head><title>504 Gateway Time-out</title></head>\r\n<body>\r\n<center><h1>504 Gateway Time-out</h1></center>\r\n<hr><center>openresty</center>\r\n</body>\r\n</html>";
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(raw));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderTimeout));
+        let detail = err.stream_error().detail.clone().expect("detail present");
+        assert!(!detail.contains('<'));
+        assert!(!detail.contains('>'));
+        assert!(detail.chars().count() <= MAX_DETAIL_CHARS);
+        assert!(detail.contains("504 Gateway Time-out"));
+    }
+
+    #[test]
     fn classifies_agent_lifecycle_before_bad_gateway_wrapper() {
         assert_classification(
             "Bad gateway: Agent process exited before initialize handshake completed (exit code 1)",
@@ -884,6 +1111,143 @@ mod tests {
             AgentErrorCode::UserAgentHandshakeTimeout,
             AgentErrorOwnership::UserAgent,
             AgentErrorResolutionKind::ReconnectAgent,
+        );
+    }
+
+    #[test]
+    fn classifies_mid_session_cli_exit_as_agent_disconnected() {
+        // Mid-session ACP CLI exit (e.g. Claude Code) surfaces as -32603 with
+        // `details: "Claude Code process exited with code 1"`. Previously this
+        // fell through to UNKNOWN_UPSTREAM_ERROR; it now maps to a retryable
+        // agent disconnect.
+        assert_classification(
+            "Agent internal error (code -32603) ({\"details\":\"Claude Code process exited with code 1\"})",
+            AgentErrorCode::UserAgentDisconnected,
+            AgentErrorOwnership::UserAgent,
+            AgentErrorResolutionKind::ReconnectAgent,
+        );
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(
+            "Agent internal error (code -32603) ({\"details\":\"Claude Code process exited with code 1\"})",
+        ));
+        assert_eq!(err.stream_error().retryable, Some(true));
+        assert_eq!(err.stream_error().feedback_recommended, Some(false));
+    }
+
+    #[test]
+    fn classifies_acp_internal_mcp_connect_failure_from_structured_data() {
+        let err = assert_acp_classification(
+            AcpError::AgentInternal {
+                message: "Internal error".into(),
+                code: -32603,
+                data: Some(json!({"error": "Failed to connect MCP servers"})),
+            },
+            AgentErrorCode::UserAgentDisconnected,
+            AgentErrorOwnership::UserAgent,
+            AgentErrorResolutionKind::ReconnectAgent,
+        );
+
+        let detail = err.stream_error().detail.as_deref().expect("detail present");
+        assert_eq!(detail, "Agent internal error (code -32603)");
+        assert!(!detail.contains("Failed to connect MCP servers"));
+    }
+
+    #[test]
+    fn classifies_acp_internal_process_exit_from_structured_details() {
+        let err = assert_acp_classification(
+            AcpError::AgentInternal {
+                message: "Internal error".into(),
+                code: -32603,
+                data: Some(json!({"details": "Claude Code process exited with code 1"})),
+            },
+            AgentErrorCode::UserAgentDisconnected,
+            AgentErrorOwnership::UserAgent,
+            AgentErrorResolutionKind::ReconnectAgent,
+        );
+
+        assert_eq!(err.stream_error().retryable, Some(true));
+        assert_eq!(err.stream_error().feedback_recommended, Some(false));
+    }
+
+    #[test]
+    fn classifies_acp_internal_provider_failure_from_structured_message() {
+        assert_acp_classification(
+            AcpError::AgentInternal {
+                message: "Provider error: API error 401: invalid x-api-key".into(),
+                code: -32603,
+                data: None,
+            },
+            AgentErrorCode::UserLlmProviderAuthFailed,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderCredentials,
+        );
+    }
+
+    #[test]
+    fn classifies_acp_internal_nested_provider_error_message() {
+        assert_acp_classification(
+            AcpError::AgentInternal {
+                message: "Internal error".into(),
+                code: -32603,
+                data: Some(json!({
+                    "type": "error",
+                    "error": {
+                        "message": "Your credit balance is too low to access the Anthropic API"
+                    }
+                })),
+            },
+            AgentErrorCode::UserLlmProviderBillingRequired,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderBilling,
+        );
+    }
+
+    #[test]
+    fn classifies_acp_internal_nested_provider_data_before_generic_message() {
+        assert_acp_classification(
+            AcpError::AgentInternal {
+                message: "Provider error".into(),
+                code: -32603,
+                data: Some(json!({
+                    "error": {
+                        "message": "invalid x-api-key"
+                    }
+                })),
+            },
+            AgentErrorCode::UserLlmProviderAuthFailed,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderCredentials,
+        );
+    }
+
+    #[test]
+    fn acp_internal_public_detail_does_not_include_structured_data() {
+        let err = AgentSendError::from(AcpError::AgentInternal {
+            message: "Internal error".into(),
+            code: -32603,
+            data: Some(json!({
+                "error": "Failed to connect MCP servers",
+                "api_key": "sk-secret"
+            })),
+        });
+
+        let detail = err.stream_error().detail.as_deref().expect("detail present");
+        assert_eq!(detail, "Agent internal error (code -32603)");
+        assert!(!detail.contains("Failed to connect MCP servers"));
+        assert!(!detail.contains("sk-secret"));
+        assert!(!detail.contains("api_key"));
+    }
+
+    #[test]
+    fn provider_free_text_still_uses_provider_heuristic_boundary() {
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(
+            "Provider error: API error 401: invalid x-api-key",
+        ));
+
+        assert_eq!(err.code(), Some(AgentErrorCode::UserLlmProviderAuthFailed));
+        assert_eq!(err.ownership(), Some(AgentErrorOwnership::UserLlmProvider));
+        assert_eq!(
+            err.stream_error().resolution.map(|value| value.kind),
+            Some(AgentErrorResolutionKind::CheckProviderCredentials)
         );
     }
 
@@ -941,6 +1305,12 @@ mod tests {
     fn classifies_provider_billing_auth_and_rate_limit() {
         assert_classification(
             "Aionrs agent error: Provider error: API error 402: {\"error\":{\"message\":\"Insufficient Balance\"}}",
+            AgentErrorCode::UserLlmProviderBillingRequired,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderBilling,
+        );
+        assert_classification(
+            "Aionrs agent error: Provider error: API error 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}",
             AgentErrorCode::UserLlmProviderBillingRequired,
             AgentErrorOwnership::UserLlmProvider,
             AgentErrorResolutionKind::CheckProviderBilling,
@@ -1018,6 +1388,20 @@ mod tests {
     }
 
     #[test]
+    fn classifies_bedrock_invalid_model_identifier_as_model_not_found() {
+        assert_classification(
+            "Aionrs agent error: Provider error: API error 400: {\"message\":\"The provided model identifier is invalid.\"}",
+            AgentErrorCode::UserLlmProviderModelNotFound,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::ChangeModel,
+        );
+        assert_resolution_target(
+            "Aionrs agent error: Provider error: API error 400: {\"message\":\"The provided model identifier is invalid.\"}",
+            AgentErrorResolutionTarget::ProviderSettings,
+        );
+    }
+
+    #[test]
     fn classifies_generic_provider_invalid_requests() {
         for detail in [
             "API error 400: Invalid request: Invalid input",
@@ -1031,20 +1415,20 @@ mod tests {
                 AgentErrorOwnership::UserLlmProvider,
                 AgentErrorResolutionKind::SendFeedback,
             );
-            let err = AgentSendError::from_app_error(AppError::BadGateway(detail.into()));
+            let err = AgentSendError::from_agent_error(AgentError::bad_gateway(detail));
             assert_eq!(err.stream_error().retryable, Some(false));
         }
     }
 
     #[test]
     fn non_retryable_agent_invalid_params_do_not_suggest_retry() {
-        let app_err =
-            AgentSendError::from_app_error(AppError::BadRequest("Invalid parameters: malformed request".into()));
-        assert_eq!(app_err.code(), Some(AgentErrorCode::UserAgentInvalidParams));
-        assert_eq!(app_err.stream_error().retryable, Some(false));
-        assert_eq!(app_err.stream_error().feedback_recommended, Some(true));
+        let api_err =
+            AgentSendError::from_agent_error(AgentError::bad_request("Invalid parameters: malformed request"));
+        assert_eq!(api_err.code(), Some(AgentErrorCode::UserAgentInvalidParams));
+        assert_eq!(api_err.stream_error().retryable, Some(false));
+        assert_eq!(api_err.stream_error().feedback_recommended, Some(true));
         assert_eq!(
-            app_err.stream_error().resolution.map(|value| value.kind),
+            api_err.stream_error().resolution.map(|value| value.kind),
             Some(AgentErrorResolutionKind::SendFeedback)
         );
 
@@ -1090,6 +1474,20 @@ mod tests {
             AgentErrorOwnership::UserLlmProvider,
             AgentErrorResolutionKind::Retry,
         );
+    }
+
+    #[test]
+    fn classifies_bare_provider_404_as_endpoint_not_found() {
+        let detail = "Aionrs agent error: Provider error: API error 404: {\"detail\":\"Not Found\"}";
+        assert_classification(
+            detail,
+            AgentErrorCode::UserLlmProviderEndpointNotFound,
+            AgentErrorOwnership::UserLlmProvider,
+            AgentErrorResolutionKind::CheckProviderBaseUrl,
+        );
+        assert_resolution_target(detail, AgentErrorResolutionTarget::ProviderSettings);
+        let err = AgentSendError::from_agent_error(AgentError::bad_gateway(detail));
+        assert_eq!(err.stream_error().retryable, Some(false));
     }
 
     #[test]

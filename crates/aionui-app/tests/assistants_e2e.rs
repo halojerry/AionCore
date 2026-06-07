@@ -86,6 +86,7 @@ async fn fixture() -> Fixture {
                 "id": "builtin-office",
                 "name": "Office",
                 "preset_agent_type": "gemini",
+                "enabled_skills": ["officecli-docx"],
                 "rule_file": "rules/office.{locale}.md",
                 "skill_file": "skills/office.{locale}.md",
                 "avatar": "office.png",
@@ -267,6 +268,28 @@ async fn list_populated_returns_builtins_and_extension() {
     let sources: Vec<&str> = list.iter().map(|a| a["source"].as_str().unwrap()).collect();
     assert!(sources.contains(&"builtin"));
     assert!(sources.contains(&"extension"));
+}
+
+#[tokio::test]
+async fn list_builtin_response_exposes_enabled_skills() {
+    let fx = fixture().await;
+
+    let resp = fx
+        .app
+        .clone()
+        .oneshot(get_with_token("/api/assistants", &fx.token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let json = body_json(resp).await;
+    let list = json["data"].as_array().unwrap();
+    let builtin = list
+        .iter()
+        .find(|a| a["id"] == "builtin-office")
+        .expect("builtin assistant should be present");
+
+    assert_eq!(builtin["source"], "builtin");
+    assert_eq!(builtin["enabled_skills"], serde_json::json!(["officecli-docx"]));
 }
 
 #[tokio::test]

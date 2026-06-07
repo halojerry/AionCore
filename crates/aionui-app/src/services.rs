@@ -10,6 +10,7 @@ use aionui_ai_agent::{
 use aionui_api_types::GuideMcpConfig;
 use aionui_auth::{CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret};
 use aionui_common::OnConversationDelete;
+use aionui_conversation::runtime_state::ConversationRuntimeStateService;
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
     IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteConversationRepository,
@@ -29,6 +30,7 @@ pub struct AppServices {
     pub ws_manager: Arc<WebSocketManager>,
     pub event_bus: Arc<BroadcastEventBus>,
     pub worker_task_manager: Arc<dyn IWorkerTaskManager>,
+    pub conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     /// Same instance as `worker_task_manager`, exposed through the
     /// `OnConversationDelete` trait so `ConversationService::with_delete_hook`
     /// can wire it up. Optional because tests construct `AppServices` with a
@@ -106,6 +108,7 @@ impl AppServices {
 
         let remote_agent_repo = Arc::new(SqliteRemoteAgentRepository::new(database.pool().clone()));
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
+        let event_bus = Arc::new(BroadcastEventBus::new(256));
         // User-configured MCP servers — injected into ACP `session/new`
         // so the agent gets the operator's tools (ELECTRON-1JG fix).
         let mcp_server_repo: Arc<dyn IMcpServerRepository> =
@@ -140,7 +143,7 @@ impl AppServices {
         // the stdio MCP bridge spawned by ACP CLIs when a team session is
         // attached to a conversation (phase1 mcp.md §4.6 single-binary model).
         let backend_binary_path =
-            Arc::new(std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("aioncore")));
+            Arc::new(std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("poundingcore")));
 
         // Start Guide MCP server. Failure is non-fatal: solo agents simply
         // won't get the `aion_create_team` tool.
@@ -168,6 +171,7 @@ impl AppServices {
             agent_registry: agent_registry.clone(),
             acp_agent_service: acp_agent_service.clone(),
             data_dir: data_dir.clone(),
+            broadcaster: event_bus.clone(),
             backend_binary_path: backend_binary_path.clone(),
             guide_mcp_config: guide_mcp_config.clone(),
             mcp_server_repo: Some(mcp_server_repo),
@@ -179,6 +183,7 @@ impl AppServices {
         let task_manager_concrete = Arc::new(WorkerTaskManagerImpl::new(factory));
         let worker_task_manager: Arc<dyn IWorkerTaskManager> = task_manager_concrete.clone();
         let task_manager_delete_hook: Arc<dyn OnConversationDelete> = task_manager_concrete;
+        let conversation_runtime_state = Arc::new(ConversationRuntimeStateService::default());
 
         Ok(Self {
             database,
@@ -187,8 +192,9 @@ impl AppServices {
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
-            event_bus: Arc::new(BroadcastEventBus::new(256)),
+            event_bus,
             worker_task_manager,
+            conversation_runtime_state,
             task_manager_delete_hook: Some(task_manager_delete_hook),
             agent_registry,
             conversation_repo,

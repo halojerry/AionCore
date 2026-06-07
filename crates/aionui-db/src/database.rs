@@ -26,6 +26,8 @@ const STARTUP_FILE_RETRY_DELAYS: [Duration; 5] = [
 ];
 
 static DB_MIGRATOR: Migrator = sqlx::migrate!();
+// Historical special-case for the MCP schema reconciliation fallback.
+// Keep this pinned to migration version 7 even as newer migrations land.
 const MCP_SCHEMA_RECONCILIATION_MIGRATION_VERSION: i64 = 7;
 
 /// Wraps a SQLite connection pool with lifecycle management.
@@ -250,7 +252,7 @@ async fn run_migrations(pool: &SqlitePool) -> Result<(), DbError> {
     // lock()/unlock() and the migrator does list_applied → apply without an
     // outer transaction, so two processes opening the same DB simultaneously
     // (e.g. Electron auto-update spawning v2.1.1 while v2.0.x is still
-    // shutting down, or `aioncore doctor` racing the server) can both decide
+    // shutting down, or `poundingcore doctor` racing the server) can both decide
     // to apply the same version and the slower one's INSERT into
     // `_sqlx_migrations` blows up with `UNIQUE constraint failed:
     // _sqlx_migrations.version`. The outer startup lock also covers

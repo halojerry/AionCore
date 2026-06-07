@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-SKILL_VERSION = '0.1.0'
+SKILL_VERSION = '0.3.5'
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 DATA_DIR = SKILL_ROOT / 'data'
@@ -75,3 +75,28 @@ DEFAULT_CACHE_TTL_SECONDS = 86400
 SKILL_NAME = 'pounding-ozon-hybrid'
 
 CLOUD_API_BASE = os.environ.get('MXOU_API_BASE', '').strip() or 'https://worker.mxou.cn'
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COS Skill Distribution (auto-update)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Public-read COS bucket hosting the skill distribution.
+# Override via POUNDING_COS_BASE env var for mirrors / testing.
+COS_PUBLIC_BASE = os.environ.get(
+    'POUNDING_COS_BASE',
+    'https://yss-1256275613.cos.ap-guangzhou.myqcloud.com',
+).rstrip('/')
+COS_SKILL_PREFIX = os.environ.get('POUNDING_COS_PREFIX', 'ozon-skill').strip('/')
+COS_VERSION_URL = f'{COS_PUBLIC_BASE}/{COS_SKILL_PREFIX}/version.json'
+COS_DOWNLOAD_BASE = f'{COS_PUBLIC_BASE}/{COS_SKILL_PREFIX}/files'
+
+# Set POUNDING_SKIP_UPDATE_CHECK=1 to opt out of automatic update checks.
+SKIP_UPDATE_CHECK = (
+    os.environ.get('POUNDING_SKIP_UPDATE_CHECK', '').strip().lower()
+    in ('1', 'true', 'yes')
+)
+
+# How long to cache the version check result (seconds).  Default: 24 hours.
+UPDATE_CACHE_TTL = int(os.environ.get(
+    'POUNDING_UPDATE_CACHE_TTL', '86400',
+))
