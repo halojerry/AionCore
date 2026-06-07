@@ -228,6 +228,19 @@ just push                                             # fmt → clippy → test 
 
 ## POUNDING Fork: Branch Strategy
 
+### Three-Tier Repository Structure
+
+```
+iOfficeAI/AionCore (上游)
+    ↓ sync-upstream workflow
+halojerry/AionCore (开发复刻 — 此仓库)
+    ↓ PR: dev → release/pounding-v*.*.x → main
+halojerry/poundingcore (发布仓库 — 最终产物)
+```
+
+**`halojerry/poundingcore` 是最终发布仓库**，只接收 `halojerry/AionCore` 的稳定代码。
+**永远不要**从 `iOfficeAI/AionCore` 直接同步到 `halojerry/poundingcore`。
+
 **main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
 
 ```
@@ -248,6 +261,40 @@ main (stable — triggers release builds via tag)
 - POUNDING-specific features are developed on `feature/*` branches, PR'd to `dev`.
 - Tag format: `v<version>-Pounding` (e.g. `v0.1.15-Pounding`).
 - The AionUi desktop app uses this AionCore binary as its backend — version pinning is in AionUi's root `package.json` (`aioncoreVersion` field, value is a poundingcore release tag).
+
+### Upstream Sync Process (detailed)
+
+**Trigger**: Manual `workflow_dispatch` via GitHub Actions → `sync-upstream.yml`.
+
+**⚠️ AionCore sync-upstream.yml lacks the `validate` job** that AionUi has. It does NOT block direct sync to `main`/`dev`. Always manually specify `feature/upstream-sync` as the target branch.
+
+**What the workflow does automatically**:
+1. Fetches from `iOfficeAI/AionCore` upstream
+2. Fast-forward merges (`--ff-only`) into target branch (default: `main` — **override this!**)
+3. If conflicts: job fails, manual resolution required
+4. On success: creates a PR from sync branch with upstream commit summary
+
+**Manual steps after sync (MANDATORY)**:
+1. Check the auto-created PR diff — look for POUNDING customization overwrites
+2. Run `bash scripts/check-branding.sh` locally
+3. Run `cargo test -p aionui-assistant` to verify builtin assistant tests
+4. Restore ALL items in the Branding Checklist below that were overwritten
+5. Pay special attention to: `Cargo.toml` binary name (`poundingcore`), `cc_switch/` module, builtin skill directory, DB migrations
+6. Rebuild and smoke-test: `cargo build --release -p aionui-app`
+7. Delete runtime cache before testing: `rm -rf ~/Library/Application\ Support/POUNDING-Dev/pounding/builtin-skills/`
+8. Merge PR to `dev` only after all checks pass
+
+**Known pitfalls**:
+- `Cargo.toml` binary name may revert to `aioncore` — check `crates/aionui-app/Cargo.toml`
+- `cc_switch/` module files may be deleted or overwritten by upstream refactors
+- Builtin skill directory name in AGENTS.md may be outdated (`pounding-ozon-v0.1.0-lite` → `pounding-ozon-assistant`)
+- DB migration numbers may shift as upstream adds new migrations — verify POUNDING migrations still exist
+- Asset file changes (skills) require `build.rs` recompile trigger + runtime cache deletion (see Troubleshooting)
+- The `bundled-poundingcore/` directory name in AionUi must match `binaryResolver.ts`
+
+**Before merging to main (release)**:
+- Tag: `v<version>-Pounding`
+- This builds the `poundingcore` binary that AionUi packages
 
 ## POUNDING Custom Features
 
@@ -273,3 +320,68 @@ When merging ANY upstream changes, verify these are not overwritten:
 - [ ] Binary name is `poundingcore`
 - [ ] Legacy DB name `aionui.db` preserved in copy/migration functions
 - [ ] CC-Switch integration tests pass (`cargo test -p aionui-ai-agent --test cc_switch_integration`)
+
+## Troubleshooting & Lessons Learned
+
+Lessons from POUNDING development sessions. When debugging similar symptoms, check these first.
+
+### EIO fix compilation error: `AcpError::Disconnected` has no field `message`
+
+**Symptom**: `cargo build` fails with E0559 after EIO crash-guard changes.
+
+**Root cause**: `agent_session_flow.rs:255` used `message:` but the `AcpError::Disconnected` variant (defined in `error.rs:103-107`) uses `stderr:`.
+
+**Fix**: Changed `message:` → `stderr:`.
+
+**Key files**: `crates/aionui-ai-agent/src/manager/acp/agent_session_flow.rs`, `crates/aionui-ai-agent/src/protocol/error.rs`
+
+### Duplicate assistants: "Ozon Assistants" + "POUNDING Ozon Assistant"
+
+**Symptom**: Two Ozon assistant entries appear in the UI.
+
+**Root cause**: `assistants.json` had both legacy `ozon-assistants` (lite skill, emoji avatar) and new `pounding-ozon-assistant` (hybrid skill, branded avatar, officecli skills, preset:true). Both were registered as builtins.
+
+**Fix**: Removed the legacy `ozon-assistants` entry from `assistants.json`. Updated Rust tests in `builtin.rs` and `service.rs` to reference `pounding-ozon-assistant`. Deleted orphaned `pounding-ozon-v0.1.0-lite/` skill bundle and `rules/ozon-assistants.zh-CN.md`.
+
+**Key files**: `crates/aionui-app/assets/builtin-assistants/assistants.json`, `crates/aionui-assistant/src/builtin.rs`, `crates/aionui-assistant/src/service.rs`
+
+### Skill updates not taking effect after rebuild
+
+**Symptom**: Updated files in `crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant/`, rebuilt with `cargo build --release`, but `bun run dev` still serves old skill version.
+
+**Root cause (two locks)**:
+1. **Incremental compilation blind spot**: `aionui-extension` crate uses `include_dir!` to embed `builtin-skills/` but had no `build.rs` with `cargo:rerun-if-changed`. Cargo only tracked `.rs` file changes, not asset file changes — so `include_dir!` was never re-evaluated.
+2. **Runtime version-gated cache**: At startup, `startup_materialize.rs` extracts embedded skills to `{data_dir}/builtin-skills/`. A `.version` file (containing `CARGO_PKG_VERSION`) gates this: if the binary version matches the cache version, extraction is **skipped**. Updating skill content without bumping `Cargo.toml` version means the cache is never refreshed.
+
+**Fix**: (a) Created `crates/aionui-extension/build.rs` with `cargo:rerun-if-changed=../aionui-app/assets/builtin-skills`; (b) Deleted the runtime cache directory to force re-extraction; (c) `touch`ed `asset_paths.rs` to force recompilation.
+
+**Key files**: `crates/aionui-extension/build.rs`, `crates/aionui-app/src/bootstrap/startup_materialize.rs`, `crates/aionui-extension/src/asset_paths.rs`
+
+**Runtime cache location**: `~/Library/Application Support/POUNDING-Dev/pounding/builtin-skills/` (macOS dev)
+
+### Masked API key in config.json
+
+**Symptom**: `~/.pounding/config.json` contains a masked/redacted key (`sk-***abcd`) that skills cannot use for LLM calls.
+
+**Root cause**: `resolveManagedToken` in `NewApiDesktopAccountService.ts` had a fallback path: if `fetchFullTokenKey` failed, it fell back to `extractToken(existingChannelConnection)`, which could return a masked key from the token list response.
+
+**Fix**: (a) Added `isMaskedToken()` guard (checks for `***`/`...`); (b) Removed the masked fallback from `resolveManagedToken` — if no full key is available, create a new token; (c) Added `isMaskedToken` guard to `writePoundingConfig` to never persist a masked key.
+
+**Note**: This code lives in the AionUi desktop app (`NewApiDesktopAccountService.ts`), not in AionCore.
+
+### Stale database causes 403 on `/api/providers` with `--local`
+
+**Symptom**: `bun run dev` login shows 403 despite backend running with `--local` flag (which should skip auth).
+
+**Root cause**: Stale `pounding-backend.db` files from earlier manual testing (without `--local`) had partially-set-up auth state (`needs_setup: true, user_count: 1`). The `--local` flag auto-creates a default user, but a stale DB with a different auth state overrides this behavior.
+
+**Fix**: Deleted the 3 stale database files: `AionCore/data/pounding-backend.db`, `~/Library/Application Support/POUNDING-Dev/aionui/pounding-backend.db`, `~/Library/Application Support/POUNDING-Dev/pounding/pounding-backend.db`.
+
+### `bundled-aioncore` vs `bundled-poundingcore` directory mismatch
+
+**Symptom**: `bun run dev` falls back to system PATH binary instead of using the freshly-built bundled binary.
+
+**Root cause**: The `binaryResolver.ts` code looks for `bundled-poundingcore/` (POUNDING branded), but the actual directory on disk was still named `bundled-aioncore` (upstream name). The resolver fell through to system PATH, which had a stale symlink to `target/debug/poundingcore`.
+
+**Fix**: Renamed `resources/bundled-aioncore/` → `resources/bundled-poundingcore/`. Updated `~/.local/bin/poundingcore` symlink to point to `target/release/poundingcore`.
+

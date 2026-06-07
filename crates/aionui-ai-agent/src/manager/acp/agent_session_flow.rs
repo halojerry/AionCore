@@ -252,7 +252,7 @@ impl AcpAgentManager {
             return Err(AcpSendFailure::from(AcpError::Disconnected {
                 exit_code,
                 signal,
-                message: "Agent process exited before prompt could be sent".into(),
+                stderr: "Agent process exited before prompt could be sent".into(),
             }));
         }
 

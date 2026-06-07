@@ -987,59 +987,6 @@
       "models": []
     },
     {
-      "id": "ozon-assistants",
-      "name": "Ozon Assistants",
-      "name_i18n": {
-        "en-US": "Ozon Assistants",
-        "zh-CN": "Ozon 铺货助手",
-        "ru-RU": "Ozon Assistants",
-        "uk-UA": "Ozon Assistants"
-      },
-      "description": "Business assistant for 1688 sourcing, Ozon listing, refresh workflows, and status tracking.",
-      "description_i18n": {
-        "en-US": "Business assistant for 1688 sourcing, Ozon listing, refresh workflows, and status tracking.",
-        "zh-CN": "面向 1688 选品、Ozon 铺货、商品翻新与状态追踪的业务助手。",
-        "ru-RU": "Бизнес-помощник для поиска товаров на 1688, публикации в Ozon, обновления карточек и отслеживания статуса.",
-        "uk-UA": "Бізнес-помічник для пошуку товарів на 1688, публікації в Ozon, оновлення карток і відстеження статусу."
-      },
-      "avatar": "🛍️",
-      "preset_agent_type": "aionrs",
-      "enabled_skills": [
-        "pounding-ozon"
-      ],
-      "custom_skill_names": [],
-      "disabled_builtin_skills": [],
-      "rule_file": "rules/ozon-assistants.zh-CN.md",
-      "prompts": [
-        "从 1688 找一款适合在 Ozon 上架的家居用品并直接跑完整铺货链路",
-        "把这个 1688 链接商品发布到 Ozon，并汇报成本、利润率和任务状态",
-        "查询刚才的 Ozon 上架任务状态，告诉我是否提交成功"
-      ],
-      "prompts_i18n": {
-        "en-US": [
-          "Find a home product on 1688 that fits Ozon and run the full publish flow",
-          "Publish this 1688 product to Ozon and report cost, margin, and task status",
-          "Check the latest Ozon listing task and tell me whether it was submitted successfully"
-        ],
-        "zh-CN": [
-          "从 1688 找一款适合在 Ozon 上架的家居用品并直接跑完整铺货链路",
-          "把这个 1688 链接商品发布到 Ozon，并汇报成本、利润率和任务状态",
-          "查询刚才的 Ozon 上架任务状态，告诉我是否提交成功"
-        ],
-        "ru-RU": [
-          "Найди товар для дома на 1688, подходящий для Ozon, и запусти полный процесс публикации",
-          "Опубликуй этот товар с 1688 в Ozon и сообщи себестоимость, маржу и статус задачи",
-          "Проверь статус последней задачи публикации в Ozon и скажи, успешно ли она отправлена"
-        ],
-        "uk-UA": [
-          "Знайди товар для дому на 1688, що підходить для Ozon, і запусти повний процес публікації",
-          "Опублікуй цей товар з 1688 в Ozon і повідом собівартість, маржу та статус задачі",
-          "Перевір статус останньої задачі публікації в Ozon і скажи, чи її успішно відправлено"
-        ]
-      },
-      "models": []
-    },
-    {
       "id": "word-form-creator",
       "name": "Word Form Creator",
       "name_i18n": {

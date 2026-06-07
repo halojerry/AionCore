@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,6 +35,13 @@ jobs:
         with:
           prefix-key: v1-rust
       - run: cargo clippy --workspace -- -D warnings
+
+  branding:
+    name: Branding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/check-branding.sh
 
   test:
     name: Test

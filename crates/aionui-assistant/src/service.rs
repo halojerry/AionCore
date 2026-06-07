@@ -1222,20 +1222,25 @@ mod tests {
 
     #[tokio::test]
     async fn list_preserves_builtin_enabled_skills() {
-        let mut builtin = mk_builtin("ozon-assistants", "Ozon Assistants");
+        let mut builtin = mk_builtin("pounding-ozon-assistant", "POUNDING Ozon Assistant");
         builtin.preset_agent_type = "aionrs".into();
-        builtin.enabled_skills = vec!["pounding-ozon".into()];
+        builtin.enabled_skills = vec!["pounding-ozon-assistant".into(), "officecli-docx".into()];
 
         let fx = fixture_with_builtins(vec![builtin]).await;
         let list = fx.service.list().await.unwrap();
         let assistant = list
             .into_iter()
-            .find(|a| a.id == "ozon-assistants")
-            .expect("builtin ozon assistant should be listed");
+            .find(|a| a.id == "pounding-ozon-assistant")
+            .expect("builtin pounding-ozon-assistant should be listed");
 
         assert_eq!(assistant.source, AssistantSource::Builtin);
         assert_eq!(assistant.preset_agent_type, "aionrs");
-        assert_eq!(assistant.enabled_skills, vec!["pounding-ozon"]);
+        assert!(
+            assistant
+                .enabled_skills
+                .contains(&"pounding-ozon-assistant".to_string())
+        );
+        assert!(assistant.enabled_skills.contains(&"officecli-docx".to_string()));
     }
 
     #[tokio::test]
