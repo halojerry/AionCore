@@ -178,34 +178,38 @@ jobs:
           cd artifacts
           sha256sum poundingcore-* > poundingcore-checksums.txt
 
-      - name: Upload release assets
+      - name: Upload release assets to poundingcore (release repo)
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+          POUNDING_REPO: halojerry/poundingcore
+        run: |
+          POUNDING_TAG="${RELEASE_TAG}-Pounding"
+          release_url="https://github.com/${POUNDING_REPO}/releases/tag/${POUNDING_TAG}"
+          if gh release view "${POUNDING_TAG}" --repo "${POUNDING_REPO}" > /dev/null 2>&1; then
+            gh release upload "${POUNDING_TAG}" artifacts/* --repo "${POUNDING_REPO}" --clobber
+            echo "Updated release assets on ${POUNDING_REPO}: ${POUNDING_TAG}"
+          else
+            gh release create "${POUNDING_TAG}" artifacts/* \
+              --repo "${POUNDING_REPO}" \
+              --title "${POUNDING_TAG}" \
+              --generate-notes
+            echo "Created release on ${POUNDING_REPO}: ${POUNDING_TAG}"
+          fi
+
+      - name: Also tag AionCore dev repo (no artifacts, tag only for tracking)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          release_url="https://github.com/${REPOSITORY}/releases/tag/${RELEASE_TAG}"
-          if gh release view "${RELEASE_TAG}" --repo "${REPOSITORY}" > /dev/null 2>&1; then
-            gh release upload "${RELEASE_TAG}" artifacts/* --repo "${REPOSITORY}" --clobber
-          else
-            gh release create "${RELEASE_TAG}" artifacts/* \
-              --repo "${REPOSITORY}" \
-              --title "${RELEASE_TAG}" \
-              --generate-notes
-          fi
-          echo "Uploaded assets to ${release_url}"
-
-          # Also create a -Pounding tag so the frontend (AionUi) can pin to it.
-          # AionUi's package.json > aioncoreVersion expects tags like v0.1.22-Pounding.
           POUNDING_TAG="${RELEASE_TAG}-Pounding"
           if ! gh release view "${POUNDING_TAG}" --repo "${REPOSITORY}" > /dev/null 2>&1; then
-            gh release create "${POUNDING_TAG}" artifacts/* \
+            gh release create "${POUNDING_TAG}" \
               --repo "${REPOSITORY}" \
               --title "${POUNDING_TAG}" \
-              --notes "POUNDING release of ${RELEASE_TAG}. Assets are identical to ${RELEASE_TAG}."
-            echo "Created -Pounding tag: ${POUNDING_TAG}"
-          else
-            gh release upload "${POUNDING_TAG}" artifacts/* --repo "${REPOSITORY}" --clobber
-            echo "Updated -Pounding tag: ${POUNDING_TAG}"
+              --notes "POUNDING release of ${RELEASE_TAG}. Assets at https://github.com/halojerry/poundingcore/releases/tag/${POUNDING_TAG}"
+            echo "Created -Pounding tracking tag on ${REPOSITORY}: ${POUNDING_TAG}"
           fi
