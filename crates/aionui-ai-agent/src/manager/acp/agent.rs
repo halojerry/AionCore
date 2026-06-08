@@ -405,10 +405,11 @@ impl AcpAgentManager {
 
     pub(crate) fn is_managed_backend(&self) -> bool {
         let backend = self.params.metadata.backend.as_deref();
-        backend == Some("claude") || backend == Some("hermes")
+        matches!(backend, Some("claude") | Some("hermes") | Some("codex"))
     }
 
     /// Backward-compat alias — CC-Switch model info applies to all managed ACP backends.
+    #[allow(dead_code)]
     pub(crate) fn is_claude_backend(&self) -> bool {
         self.is_managed_backend()
     }
@@ -575,6 +576,45 @@ impl AcpAgentManager {
             session.set_pending_model_notice(model);
         }
         self.commit_session_changes(&mut session).await;
+
+        // ── Claude backend: sync model slot→model mapping to
+        //    ~/.claude/settings.json and restart the CLI process ──────
+        //
+        // Claude Code reads ANTHROPIC_DEFAULT_*_MODEL env vars from
+        // settings.json only on process start. After the user selects a
+        // different model (slot), we must:
+        //   1. Persist the current cc-switch provider's model env vars
+        //      so the next process start resolves slots correctly.
+        //   2. Kill the CLI process so the next ensure_session_opened
+        //      spawns a fresh instance that picks up the new env vars.
+        //   3. Clear the in-aggregate session id so the next turn goes
+        //      through open_session_new rather than trying to resume.
+        if self.params.metadata.backend.as_deref() == Some("claude") {
+            // Sync model env vars from cc-switch.db → ~/.claude/settings.json.
+            crate::cc_switch::sync_claude_settings_model_env();
+
+            // Kill the CLI process (fire-and-forget). We do NOT call
+            // `self.kill(…)` because that emits a user-visible error
+            // event and marks the runtime as Finished-with-error, which
+            // would surface a confusing toast to the user.
+            let process = Arc::clone(&self.process);
+            let conversation_id = self.params.conversation_id.clone();
+            let grace = Duration::from_millis(ACP_KILL_GRACE_MS);
+            tokio::spawn(async move {
+                if let Err(e) = process.kill(grace).await {
+                    error!(
+                        %conversation_id,
+                        error = %ErrorChain(&e),
+                        "acp_set_model: failed to kill CLI process for model switch"
+                    );
+                }
+            });
+
+            // Clear the session id so the next ensure_session_opened
+            // spawns a fresh process with the updated env vars.
+            session.clear_session_id();
+        }
+
         info!(
             conversation_id = %self.params.conversation_id,
             agent_backend = ?self.params.metadata.backend,

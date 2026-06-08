@@ -12,6 +12,7 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
     std::fs::create_dir_all(&output_root)
         .with_context(|| format!("create bundle output root {}", output_root.display()))?;
 
+    // Node runtime (existing).
     let node_runtime = ensure_node_runtime().await.context("prepare managed Node runtime")?;
     let node_dir_name = node_runtime
         .root
@@ -24,6 +25,7 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
     println!("Prepared managed resources under {}", output_root.display());
     println!("  node   -> {}", exported_node.display());
 
+    // ACP tools (existing).
     for tool in [ManagedAcpToolId::CodexAcp, ManagedAcpToolId::ClaudeAgentAcp] {
         let resolved = ensure_managed_acp_tool(tool)
             .await
@@ -38,5 +40,45 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
         println!("  {:<6} -> {}", tool.slug(), exported.display());
     }
 
+    // New runtime resources (each wrapped in try-catch so one failure doesn't block others).
+    ensure_uv_runtime(&output_root).await;
+    ensure_python_runtime(&output_root).await;
+    ensure_hermes_wheel(&output_root).await;
+    ensure_cli_bundles(&output_root).await;
+
     Ok(ExitCode::SUCCESS)
+}
+
+async fn ensure_uv_runtime(output_root: &std::path::Path) {
+    let result = crate::commands::bundle_uv::ensure_uv(output_root).await;
+    match result {
+        Ok((name, path)) => println!("  {:<6} -> {}", name, path.display()),
+        Err(error) => eprintln!("  uv     -> SKIPPED: {error}"),
+    }
+}
+
+async fn ensure_python_runtime(output_root: &std::path::Path) {
+    let result = crate::commands::bundle_python::ensure_python(output_root).await;
+    match result {
+        Ok((name, path)) => println!("  {:<6} -> {}", name, path.display()),
+        Err(error) => eprintln!("  python -> SKIPPED: {error}"),
+    }
+}
+
+async fn ensure_hermes_wheel(output_root: &std::path::Path) {
+    let result = crate::commands::bundle_hermes::ensure_hermes(output_root).await;
+    match result {
+        Ok((name, path)) => println!("  {:<6} -> {}", name, path.display()),
+        Err(error) => eprintln!("  hermes -> SKIPPED: {error}"),
+    }
+}
+
+async fn ensure_cli_bundles(output_root: &std::path::Path) {
+    let result = crate::commands::bundle_cli::ensure_clis(output_root).await;
+    for (name, path) in &result.successes {
+        println!("  {:<6} -> {}", name, path.display());
+    }
+    for (name, error) in &result.failures {
+        eprintln!("  {:<6} -> SKIPPED: {error}", name);
+    }
 }

@@ -18,7 +18,7 @@ use aionui_api_types::OpenClawBuildExtra;
 
 use super::config::load_openclaw_config;
 use super::connection::{AuthConfig, OpenClawConnection};
-use super::device_identity::load_or_create_identity;
+use super::device_identity::load_or_create_identity_with_fallback;
 use super::event_mapper::{TextFallbackState, map_openclaw_event};
 use super::protocol::{
     ChatAbortParams, ChatSendParams, SessionsResetParams, SessionsResetResponse, SessionsResolveParams,
@@ -28,7 +28,7 @@ use super::protocol::{
 mod confirmations;
 mod spawn_helpers;
 
-use spawn_helpers::{build_spawn_config, is_port_listening, wait_for_gateway_ready};
+use spawn_helpers::{auto_approve_pending_device_repairs, auto_pair_new_device, build_spawn_config, is_port_listening, wait_for_gateway_ready};
 
 pub const DEFAULT_GATEWAY_PORT: u16 = 18789;
 
@@ -53,6 +53,33 @@ pub struct OpenClawAgentManager {
     text_state: Mutex<TextFallbackState>,
 }
 
+/// Rebuild auth config from available sources for retry attempts.
+fn rebuild_openclaw_auth(
+    config: &OpenClawBuildExtra,
+    file_config: Option<&super::config::OpenClawFileConfig>,
+    identity: &super::device_identity::DeviceIdentity,
+) -> Option<super::connection::AuthConfig> {
+    let token = config
+        .gateway
+        .token
+        .clone()
+        .or_else(|| super::config::get_gateway_auth_token(file_config))
+        .or_else(|| {
+            super::device_auth_store::load_device_auth_token(&identity.device_id, "operator")
+                .map(|e| e.token)
+        });
+    let password = config
+        .gateway
+        .password
+        .clone()
+        .or_else(|| super::config::get_gateway_auth_password(file_config));
+    if token.is_some() || password.is_some() {
+        Some(super::connection::AuthConfig { token, password })
+    } else {
+        None
+    }
+}
+
 impl OpenClawAgentManager {
     pub async fn new(
         conversation_id: String,
@@ -75,10 +102,24 @@ impl OpenClawAgentManager {
             })
             .unwrap_or(DEFAULT_GATEWAY_PORT);
 
+        // Resolve CLI path early — needed for auto_approve/auto_pair regardless of gateway type
+        let cli_path = config.gateway.cli_path.as_deref().map(String::from);
+
+        // Load device identity BEFORE any pairing operations — the identity determines
+        // who the gateway sees. Use DB fallback so a lost file doesn't trigger silent
+        // identity rotation (new keypair → new device_id → NOT_PAIRED).
+        //
+        // CRITICAL: The backend MUST use its own identity path (separate from the
+        // openclaw CLI's ~/.openclaw/identity/device.json). Sharing the same identity
+        // file causes the gateway to see the backend connection as a "scope upgrade"
+        // of the CLI's paired device (CLI pairs with operator.pairing, backend requests
+        // operator.admin). Scope upgrades cannot be auto-approved by `openclaw devices
+        // approve --latest`, leading to permanent NOT_PAIRED loops.
+        let identity_path = data_dir.join("openclaw").join("identity").join("device.json");
+        let identity = load_or_create_identity_with_fallback(Some(&identity_path), Some(&data_dir))?;
+
         let gateway_process = if !config.gateway.use_external_gateway {
-            let cli_path = config
-                .gateway
-                .cli_path
+            let cli_path = cli_path
                 .as_deref()
                 .ok_or_else(|| AgentError::bad_request("OpenClaw CLI path is required"))?;
 
@@ -112,9 +153,16 @@ impl OpenClawAgentManager {
             None
         };
 
-        let ws_url = normalize_ws_url(host, port);
+        // Auto-approve pending repairs + auto-pair new devices — runs for BOTH
+        // internal and external gateways as long as the CLI is available.
+        if let Some(ref cli) = cli_path {
+            let gw_token = config.gateway.token.as_deref();
+            let gw_password = config.gateway.password.as_deref();
+            auto_approve_pending_device_repairs(cli, host, port, gw_token, gw_password).await;
+            let _ = auto_pair_new_device(cli, host, port, &identity.device_id, gw_token, gw_password).await;
+        }
 
-        let identity = load_or_create_identity(None)?;
+        let ws_url = normalize_ws_url(host, port);
 
         let token = config
             .gateway
@@ -136,16 +184,85 @@ impl OpenClawAgentManager {
             None
         };
 
-        let (connection, hello) = OpenClawConnection::connect(&ws_url, auth, &identity)
-            .await
-            .inspect_err(|e| {
+        // ── Connect (with NOT_PAIRED retry) ──────────────────────────────
+        //
+        // When the device identity is new or changed, the gateway creates a
+        // pending pairing request and returns NOT_PAIRED. We respond by
+        // running `openclaw devices approve --latest`, then retrying the
+        // connection. Up to 2 retries so transient gateway delays are tolerated.
+        let connect_result = OpenClawConnection::connect(&ws_url, auth, &identity).await;
+        let (connection, hello) = match connect_result {
+            Ok(conn_hello) => conn_hello,
+            Err(AgentError::OpenClawNotPaired(ref msg)) => {
+                warn!(
+                    conversation_id = %conversation_id,
+                    device_id = %&identity.device_id[..identity.device_id.len().min(8)],
+                    url = %ws_url,
+                    message = %msg,
+                    "OpenClaw NOT_PAIRED — approving pending request and retrying (attempt 1/2)"
+                );
+                if let Some(ref cli) = cli_path {
+                    let gw_token = config.gateway.token.as_deref();
+                    let gw_password = config.gateway.password.as_deref();
+                    let _ = auto_pair_new_device(cli, host, port, &identity.device_id, gw_token, gw_password).await;
+                } else {
+                    warn!(
+                        conversation_id = %conversation_id,
+                        "OpenClaw NOT_PAIRED but no CLI path available for auto-approve (external gateway?)"
+                    );
+                }
+                // Rebuild auth then retry
+                let retry_auth = rebuild_openclaw_auth(&config, file_config.as_ref(), &identity);
+                match OpenClawConnection::connect(&ws_url, retry_auth, &identity).await {
+                    Ok(conn_hello) => {
+                        info!(conversation_id = %conversation_id, "OpenClaw connected after first retry");
+                        conn_hello
+                    }
+                    Err(AgentError::OpenClawNotPaired(ref msg2)) => {
+                        warn!(
+                            conversation_id = %conversation_id,
+                            device_id = %&identity.device_id[..identity.device_id.len().min(8)],
+                            message = %msg2,
+                            "OpenClaw still NOT_PAIRED — retrying approve once more (attempt 2/2)"
+                        );
+                        if let Some(ref cli) = cli_path {
+                            let gw_token = config.gateway.token.as_deref();
+                            let gw_password = config.gateway.password.as_deref();
+                            let _ = auto_pair_new_device(cli, host, port, &identity.device_id, gw_token, gw_password).await;
+                        }
+                        let retry2_auth = rebuild_openclaw_auth(&config, file_config.as_ref(), &identity);
+                        match OpenClawConnection::connect(&ws_url, retry2_auth, &identity).await {
+                            Ok(conn_hello) => {
+                                info!(conversation_id = %conversation_id, "OpenClaw connected after second retry");
+                                conn_hello
+                            }
+                            Err(e2) => {
+                                error!(
+                                    conversation_id = %conversation_id,
+                                    url = %ws_url,
+                                    device_id = %&identity.device_id[..identity.device_id.len().min(8)],
+                                    cli_path = ?cli_path,
+                                    error = %ErrorChain(&e2),
+                                    "OpenClaw NOT_PAIRED — all retries exhausted. Manual pairing required: openclaw devices approve --latest --url {}",
+                                    ws_url
+                                );
+                                return Err(e2);
+                            }
+                        }
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => {
                 error!(
                     conversation_id = %conversation_id,
                     url = %ws_url,
-                    error = %ErrorChain(e),
+                    error = %ErrorChain(&e),
                     "Failed to connect to OpenClaw gateway"
                 );
-            })?;
+                return Err(e);
+            }
+        };
 
         if let Some(ref auth_info) = hello.auth
             && let Some(ref device_token) = auth_info.device_token
@@ -355,6 +472,12 @@ impl OpenClawAgentManager {
             let mut state = self.state.write().await;
             state.session_key = Some(key.clone());
         }
+        // If the gateway doesn't return a session key, session_key stays
+        // as whatever was set from resume_session_key (or None).  The
+        // event mapper correctly handles None by letting all events through.
+        // Using the conversation_id as a fake session key would cause a
+        // mismatch with the gateway's real session key and silently drop
+        // all events via is_from_other_session() filtering.
 
         Ok(())
     }

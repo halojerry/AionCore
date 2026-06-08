@@ -357,7 +357,11 @@ impl AgentInstance {
                 let sdk_model = m.model().await;
                 let sdk_info = sdk_model.map(map_sdk_model_to_payload);
                 let cc_switch_info = if m.is_managed_backend() {
-                    crate::cc_switch::read_claude_model_info()
+                    let backend = m.backend();
+                    match backend {
+                        Some("codex") => crate::cc_switch::read_codex_model_info(),
+                        _ => crate::cc_switch::read_claude_model_info(),
+                    }
                 } else {
                     None
                 };

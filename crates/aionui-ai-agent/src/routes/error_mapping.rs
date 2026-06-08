@@ -18,6 +18,7 @@ pub(crate) fn agent_error_to_api_error(err: AgentError) -> ApiError {
         AgentError::ConversationArchived(message) => ApiError::ConversationArchived(message),
         AgentError::WorkspacePathRuntimeUnavailable(path) => ApiError::WorkspacePathRuntimeUnavailable(path),
         AgentError::Internal(message) => ApiError::Internal(message),
+        AgentError::OpenClawNotPaired(message) => ApiError::BadGateway(message),
         AgentError::Acp(err) => acp_error_to_api_error(err),
     }
 }

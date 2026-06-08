@@ -51,8 +51,8 @@ npm install -g @anthropic-ai/claude-code
 ### Codex
 ```bash
 # 检测: which codex
-npm install -g @openai/codex-cli
-# 或: bun add -g @openai/codex-cli
+npm install -g @openai/codex
+# 或: bun add -g @openai/codex
 ```
 
 ### OpenClaw

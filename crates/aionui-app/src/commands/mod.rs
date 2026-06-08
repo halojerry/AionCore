@@ -1,9 +1,13 @@
 //! Subcommand implementations for the `poundingcore` binary.
 //!
-//! This file is a façade — module declarations and re-exports only.
+//! This file is a facade — module declarations and re-exports only.
 //! All logic lives in the submodules.
 
 mod bridge;
+pub(crate) mod bundle_cli;
+pub(crate) mod bundle_hermes;
+pub(crate) mod bundle_python;
+pub(crate) mod bundle_uv;
 mod doctor;
 mod prepare_managed_resources;
 mod server;

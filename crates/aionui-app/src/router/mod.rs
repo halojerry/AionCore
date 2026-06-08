@@ -1,5 +1,6 @@
 //! HTTP router assembly for the application.
 
+mod doctor;
 mod health;
 mod routes;
 mod state;
