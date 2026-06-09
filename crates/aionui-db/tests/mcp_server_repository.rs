@@ -343,8 +343,10 @@ async fn delete_one_does_not_affect_others() {
     r.delete(&s1.id).await.unwrap();
 
     let remaining = r.list().await.unwrap();
-    assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].id, s2.id);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_remaining: Vec<_> = remaining.iter().filter(|s| !s.builtin).collect();
+    assert_eq!(user_remaining.len(), 1);
+    assert_eq!(user_remaining[0].id, s2.id);
 }
 
 #[tokio::test]
@@ -383,7 +385,9 @@ async fn batch_upsert_creates_new_servers() {
     assert_eq!(results[2].name, "sse-mcp");
 
     let all = r.list().await.unwrap();
-    assert_eq!(all.len(), 3);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_servers: Vec<_> = all.iter().filter(|s| !s.builtin).collect();
+    assert_eq!(user_servers.len(), 3);
 }
 
 #[tokio::test]
