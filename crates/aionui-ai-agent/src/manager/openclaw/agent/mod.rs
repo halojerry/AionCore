@@ -28,7 +28,10 @@ use super::protocol::{
 mod confirmations;
 mod spawn_helpers;
 
-use spawn_helpers::{auto_approve_pending_device_repairs, auto_pair_new_device, build_spawn_config, is_port_listening, wait_for_gateway_ready};
+use spawn_helpers::{
+    auto_approve_pending_device_repairs, auto_pair_new_device, build_spawn_config, is_port_listening,
+    wait_for_gateway_ready,
+};
 
 pub const DEFAULT_GATEWAY_PORT: u16 = 18789;
 
@@ -64,10 +67,7 @@ fn rebuild_openclaw_auth(
         .token
         .clone()
         .or_else(|| super::config::get_gateway_auth_token(file_config))
-        .or_else(|| {
-            super::device_auth_store::load_device_auth_token(&identity.device_id, "operator")
-                .map(|e| e.token)
-        });
+        .or_else(|| super::device_auth_store::load_device_auth_token(&identity.device_id, "operator").map(|e| e.token));
     let password = config
         .gateway
         .password
@@ -228,7 +228,8 @@ impl OpenClawAgentManager {
                         if let Some(ref cli) = cli_path {
                             let gw_token = config.gateway.token.as_deref();
                             let gw_password = config.gateway.password.as_deref();
-                            let _ = auto_pair_new_device(cli, host, port, &identity.device_id, gw_token, gw_password).await;
+                            let _ =
+                                auto_pair_new_device(cli, host, port, &identity.device_id, gw_token, gw_password).await;
                         }
                         let retry2_auth = rebuild_openclaw_auth(&config, file_config.as_ref(), &identity);
                         match OpenClawConnection::connect(&ws_url, retry2_auth, &identity).await {
@@ -438,7 +439,8 @@ impl OpenClawAgentManager {
             },
         };
 
-        let result = self.connection
+        let result = self
+            .connection
             .request::<Value>("chat.send", serde_json::to_value(params).unwrap_or_default())
             .await;
 

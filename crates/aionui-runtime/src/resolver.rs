@@ -200,12 +200,9 @@ pub fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
             }
             which::which("bunx").ok()
         }
-        "node" => resolve_bundled_binary("node")
-            .or_else(|| which::which("node").ok()),
-        "python3" | "python" => resolve_bundled_binary(cmd)
-            .or_else(|| which::which(cmd).ok()),
-        "uv" => resolve_bundled_binary("uv")
-            .or_else(|| which::which("uv").ok()),
+        "node" => resolve_bundled_binary("node").or_else(|| which::which("node").ok()),
+        "python3" | "python" => resolve_bundled_binary(cmd).or_else(|| which::which(cmd).ok()),
+        "uv" => resolve_bundled_binary("uv").or_else(|| which::which("uv").ok()),
         other => which::which(other).ok().or_else(|| windows_shim_fallback(other)),
     }
 }

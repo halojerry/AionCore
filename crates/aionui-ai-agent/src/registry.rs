@@ -330,13 +330,11 @@ impl AgentRegistry {
 
         // Read manifest to find entrypoint.
         let manifest_path = source.root.join("manifest.json");
-        let manifest_contents = std::fs::read_to_string(&manifest_path).map_err(|e| {
-            AgentError::internal(format!("Failed to read manifest for '{target}': {e}"))
-        })?;
+        let manifest_contents = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| AgentError::internal(format!("Failed to read manifest for '{target}': {e}")))?;
 
-        let manifest: serde_json::Value = serde_json::from_str(&manifest_contents).map_err(|e| {
-            AgentError::internal(format!("Failed to parse manifest for '{target}': {e}"))
-        })?;
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_contents)
+            .map_err(|e| AgentError::internal(format!("Failed to parse manifest for '{target}': {e}")))?;
 
         let entrypoint = manifest["entrypoint"]
             .as_str()
@@ -352,9 +350,8 @@ impl AgentRegistry {
             .join("cli")
             .join(target);
 
-        aionui_runtime::managed_resources::materialize_directory(&source.root, &cache_dir).map_err(|e| {
-            AgentError::internal(format!("Failed to materialize '{target}' bundle: {e}"))
-        })?;
+        aionui_runtime::managed_resources::materialize_directory(&source.root, &cache_dir)
+            .map_err(|e| AgentError::internal(format!("Failed to materialize '{target}' bundle: {e}")))?;
 
         // Determine shim destination — use bun bin dir as the primary install location.
         let bun_bin = dirs::home_dir()
@@ -364,7 +361,11 @@ impl AgentRegistry {
 
         std::fs::create_dir_all(&bun_bin).ok();
 
-        let shim_name = if cfg!(windows) { format!("{target}.cmd") } else { target.to_string() };
+        let shim_name = if cfg!(windows) {
+            format!("{target}.cmd")
+        } else {
+            target.to_string()
+        };
         let shim_path = bun_bin.join(&shim_name);
 
         // Create platform-appropriate shim script.
@@ -375,9 +376,8 @@ impl AgentRegistry {
             format!("#!/usr/bin/env bash\nexec node {} \"$@\"\n", sh_quote(&entrypoint_str))
         };
 
-        std::fs::write(&shim_path, shim_content).map_err(|e| {
-            AgentError::internal(format!("Failed to write shim for '{target}': {e}"))
-        })?;
+        std::fs::write(&shim_path, shim_content)
+            .map_err(|e| AgentError::internal(format!("Failed to write shim for '{target}': {e}")))?;
 
         // Make executable on Unix.
         #[cfg(unix)]

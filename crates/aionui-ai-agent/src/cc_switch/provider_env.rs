@@ -148,9 +148,7 @@ pub fn read_claude_provider_env() -> HashMap<String, String> {
 /// model env keys. Used to sync slot→model mappings to
 /// `~/.claude/settings.json` so Claude Code can resolve slots to the
 /// correct upstream model on process start.
-pub(crate) fn read_claude_provider_full_env_with_paths(
-    paths: &CcSwitchPaths,
-) -> HashMap<String, String> {
+pub(crate) fn read_claude_provider_full_env_with_paths(paths: &CcSwitchPaths) -> HashMap<String, String> {
     let settings_content = match fs::read_to_string(&paths.settings_path) {
         Ok(c) => c,
         Err(_) => return HashMap::new(),
@@ -170,10 +168,7 @@ pub(crate) fn read_claude_provider_full_env_with_paths(
     };
 
     if !paths.database_path.exists() {
-        warn!(
-            provider_id,
-            "cc-switch: database file not found (full env)"
-        );
+        warn!(provider_id, "cc-switch: database file not found (full env)");
         return HashMap::new();
     }
 
@@ -206,12 +201,11 @@ pub(crate) fn sync_claude_settings_model_env_with_paths(paths: &CcSwitchPaths) {
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-    let env_obj = settings
-        .as_object_mut()
-        .and_then(|root| root.entry("env".to_owned()).or_insert_with(|| {
-            serde_json::Value::Object(serde_json::Map::new())
-        })
-        .as_object_mut());
+    let env_obj = settings.as_object_mut().and_then(|root| {
+        root.entry("env".to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+    });
 
     let Some(env_obj) = env_obj else {
         warn!("cc-switch: settings.json 'env' key is not an object; cannot sync model env vars");
@@ -220,10 +214,7 @@ pub(crate) fn sync_claude_settings_model_env_with_paths(paths: &CcSwitchPaths) {
 
     for key in MODEL_ENV_SYNC_KEYS {
         if let Some(value) = full_env.get(*key) {
-            env_obj.insert(
-                key.to_string(),
-                serde_json::Value::String(value.clone()),
-            );
+            env_obj.insert(key.to_string(), serde_json::Value::String(value.clone()));
         }
     }
 

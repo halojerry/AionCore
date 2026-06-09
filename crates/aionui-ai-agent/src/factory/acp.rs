@@ -386,7 +386,9 @@ async fn load_user_mcp_servers(
 const INJECTABLE_BUILTIN_MCP_NAMES: &[&str] = &["pounding-image-generation"];
 
 fn is_builtin_mcp_injectable(name: &str) -> bool {
-    INJECTABLE_BUILTIN_MCP_NAMES.iter().any(|n| name == *n || name.contains(*n))
+    INJECTABLE_BUILTIN_MCP_NAMES
+        .iter()
+        .any(|n| name == *n || name.contains(*n))
 }
 
 /// Convert an `McpServerRow` into the SDK `McpServer` shape used by
