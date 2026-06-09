@@ -333,7 +333,9 @@ mod tests {
     async fn list_empty() {
         let (repo, _db) = setup().await;
         let servers = repo.list().await.unwrap();
-        assert!(servers.is_empty());
+        // Builtin MCP servers (like pounding-image-generation) are created by migration
+        let user_servers: Vec<_> = servers.iter().filter(|s| !s.builtin).collect();
+        assert!(user_servers.is_empty());
     }
 
     #[tokio::test]
@@ -403,9 +405,11 @@ mod tests {
         let s2 = repo.create(http_params()).await.unwrap();
 
         let all = repo.list().await.unwrap();
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].id, s1.id);
-        assert_eq!(all[1].id, s2.id);
+        // Filter to user-created servers (builtin servers exist from migration)
+        let user_servers: Vec<_> = all.iter().filter(|s| !s.builtin).collect();
+        assert_eq!(user_servers.len(), 2);
+        assert_eq!(user_servers[0].id, s1.id);
+        assert_eq!(user_servers[1].id, s2.id);
     }
 
     #[tokio::test]

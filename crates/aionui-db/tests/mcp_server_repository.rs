@@ -148,7 +148,9 @@ async fn find_by_name_nonexistent_returns_none() {
 async fn list_empty_returns_empty_vec() {
     let (r, _db) = repo().await;
     let servers = r.list().await.unwrap();
-    assert!(servers.is_empty());
+    // Builtin MCP servers (like pounding-image-generation) are created by migration
+    let user_servers: Vec<_> = servers.iter().filter(|s| !s.builtin).collect();
+    assert!(user_servers.is_empty());
 }
 
 #[tokio::test]
@@ -159,10 +161,12 @@ async fn list_returns_all_ordered_by_created_at() {
     let s3 = r.create(sse_params()).await.unwrap();
 
     let all = r.list().await.unwrap();
-    assert_eq!(all.len(), 3);
-    assert_eq!(all[0].id, s1.id);
-    assert_eq!(all[1].id, s2.id);
-    assert_eq!(all[2].id, s3.id);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_servers: Vec<_> = all.iter().filter(|s| !s.builtin).collect();
+    assert_eq!(user_servers.len(), 3);
+    assert_eq!(user_servers[0].id, s1.id);
+    assert_eq!(user_servers[1].id, s2.id);
+    assert_eq!(user_servers[2].id, s3.id);
 }
 
 // -- U-1/U-2/U-3: Update fields --
