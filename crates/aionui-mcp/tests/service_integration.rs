@@ -125,7 +125,15 @@ async fn create_same_name_upserts() {
 #[tokio::test]
 async fn list_empty() {
     let svc = make_service().await;
-    assert!(svc.list_servers().await.unwrap().is_empty());
+    // Builtin MCP servers (like pounding-image-generation) are created by migration
+    let user_servers: Vec<_> = svc
+        .list_servers()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| !s.builtin)
+        .collect();
+    assert!(user_servers.is_empty());
 }
 
 #[tokio::test]
@@ -133,7 +141,15 @@ async fn list_returns_all() {
     let svc = make_service().await;
     svc.add_server(stdio_req("a")).await.unwrap();
     svc.add_server(http_req("b")).await.unwrap();
-    assert_eq!(svc.list_servers().await.unwrap().len(), 2);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_servers: Vec<_> = svc
+        .list_servers()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|s| !s.builtin)
+        .collect();
+    assert_eq!(user_servers.len(), 2);
 }
 
 #[tokio::test]
