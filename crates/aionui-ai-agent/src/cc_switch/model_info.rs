@@ -247,7 +247,7 @@ pub fn read_codex_model_info() -> Option<ModelInfoPayload> {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|m| m.as_str())
-                    .filter_map(|id| sanitize_model_value(id))
+                    .filter_map(sanitize_model_value)
                     .map(|id| ModelInfoEntry { label: id.clone(), id })
                     .collect()
             })

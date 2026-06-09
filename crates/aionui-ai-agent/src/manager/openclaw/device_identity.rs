@@ -50,24 +50,24 @@ pub fn load_or_create_identity_with_fallback(
 
     if let Ok(identity) = load_identity(&path) {
         // Identity loaded from file – also persist to DB as backup
-        if let Some(dir) = data_dir {
-            if let Err(e) = save_identity_to_db(dir, &identity) {
-                debug!(error = %e, "Failed to backup device identity to DB");
-            }
+        if let Some(dir) = data_dir
+            && let Err(e) = save_identity_to_db(dir, &identity)
+        {
+            debug!(error = %e, "Failed to backup device identity to DB");
         }
         return Ok(identity);
     }
 
     // File load failed – try DB fallback before generating new
-    if let Some(dir) = data_dir {
-        if let Ok(identity) = load_identity_from_db(dir) {
-            debug!("Loaded device identity from DB fallback");
-            // Restore the file from DB so subsequent loads work
-            if let Err(e) = save_identity(&path, &identity) {
-                error!(error = %e, "Failed to restore device identity file from DB");
-            }
-            return Ok(identity);
+    if let Some(dir) = data_dir
+        && let Ok(identity) = load_identity_from_db(dir)
+    {
+        debug!("Loaded device identity from DB fallback");
+        // Restore the file from DB so subsequent loads work
+        if let Err(e) = save_identity(&path, &identity) {
+            error!(error = %e, "Failed to restore device identity file from DB");
         }
+        return Ok(identity);
     }
 
     // Both file and DB failed – generate new identity
@@ -76,10 +76,10 @@ pub fn load_or_create_identity_with_fallback(
         error!(error = %e, "Failed to save device identity, continuing with ephemeral key");
     }
     // Also persist to DB
-    if let Some(dir) = data_dir {
-        if let Err(e) = save_identity_to_db(dir, &identity) {
-            error!(error = %e, "Failed to save device identity to DB fallback");
-        }
+    if let Some(dir) = data_dir
+        && let Err(e) = save_identity_to_db(dir, &identity)
+    {
+        error!(error = %e, "Failed to save device identity to DB fallback");
     }
     Ok(identity)
 }
