@@ -326,7 +326,9 @@ async fn batch_import_creates_and_upserts() {
     assert_eq!(results.len(), 2);
 
     let all = svc.list_servers().await.unwrap();
-    assert_eq!(all.len(), 2);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_servers: Vec<_> = all.into_iter().filter(|s| !s.builtin).collect();
+    assert_eq!(user_servers.len(), 2);
 }
 
 #[tokio::test]
@@ -345,6 +347,8 @@ async fn batch_import_preserves_enabled_in_database() {
     assert!(result[0].enabled);
 
     let listed = svc.list_servers().await.unwrap();
-    assert_eq!(listed.len(), 1);
-    assert!(listed[0].enabled);
+    // Filter to user-created servers (builtin servers exist from migration)
+    let user_listed: Vec<_> = listed.into_iter().filter(|s| !s.builtin).collect();
+    assert_eq!(user_listed.len(), 1);
+    assert!(user_listed[0].enabled);
 }
