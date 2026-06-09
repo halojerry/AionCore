@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
 import uuid
 from urllib.request import urlopen
@@ -17,6 +18,18 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from scripts._const import DATA_DIR, DEFAULT_CACHE_TTL_SECONDS, get_config_profile
+
+import socket as _socket
+
+
+def _pick_free_port() -> int:
+    """Find a free TCP port on localhost."""
+    sock = _socket.socket()
+    sock.bind(('127.0.0.1', 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    return port
+
 
 _CACHE_TTL = DEFAULT_CACHE_TTL_SECONDS  # 24h — reuse cached probe results within this window
 from scripts._errors import ConfigError, ValidationError
@@ -51,6 +64,7 @@ EXTRACT_1688_JS = r"""
     if (!url) return null;
     return url
       .replace(/\.webp$/i, '.jpg')
+      .replace(/_\.(jpg|webp|png)$/i, '.jpg')
       .replace(/\.jpg_(sum|b)\.jpg$/i, '.jpg')
       .replace(/_(sum|b)\.jpg$/i, '.jpg')
       .replace(/_\d+x\d+\.jpg$/i, '.jpg')
@@ -134,8 +148,8 @@ EXTRACT_1688_JS = r"""
         el?.currentSrc || el?.src || el?.getAttribute?.('src') || el?.getAttribute?.('data-src') || el?.getAttribute?.('data-lazy-src') || el?.getAttribute?.('data-lazyload-src') || el?.getAttribute?.('data-original')
       );
       if (!src) return;
-      if (/data:image|placeholder|icon|logo|sprite|avatar|loading/i.test(src)) return;
-      if (/!!0-0-|_88x88/i.test(src)) return;
+      if (/data:image|placeholder|icon|logo|sprite|avatar|loading|tps-|imgextra/i.test(src)) return;
+      if (/!!0-0-|_88x88|_40x40|_50x50|_60x60|_80x80/i.test(src)) return;
       items.push(src);
     });
     return dedupe(items).slice(0, limit);
@@ -148,7 +162,7 @@ EXTRACT_1688_JS = r"""
         const src = cleanImageUrl(entry?.name);
         if (!src) return;
         if (!/alicdn\.com\/img\/ibank|cbu01\.alicdn|1688|alibaba|cib\.jpg/i.test(src)) return;
-        if (/data:image|placeholder|icon|logo|sprite|avatar|loading|!!0-0-|_88x88|_24x24|_48x48|svg/i.test(src)) return;
+        if (/data:image|placeholder|icon|logo|sprite|avatar|loading|banner|badge|button|arrow|close|search|share|cart|QR|qr_code|barcode|!!0-0-|_!!|_88x88|_24x24|_48x48|_40x40|_50x50|_60x60|_80x80|svg|tps-|gw\\.alicdn|imgextra|overseas|rate\\.jpg/i.test(src)) return;
         items.push(src);
       });
     } catch {}
@@ -375,13 +389,12 @@ EXTRACT_1688_JS = r"""
   };
   const images = dedupe([
     ...readImages([
-      '.gallery-img img', '.main-image img', '.detail-gallery-img img', '.thumb-img img', '.thumbnail img', '.detail-gallery img',
+      '#gallery .preview-img', '#gallery .ant-image-img', '.od-gallery-preview img', '.od-gallery-list img',
+      '.main-image img', '.detail-gallery-img img', '.thumb-img img', '.thumbnail img', '.detail-gallery img',
       '.preview-list img', '.fd-clr img', '.od-pc-offer-tab img', '.offer-detail-tab img', '.main-pic img', '.pic-view img',
       '.preview-wrap img', '.detail-pic img', '.product-image img', '.offer-image img', '.main-img img', '.img-list img',
-      "img[src*='alicdn']", "img[src*='1688']", "img[src*='alibaba']"
-    ], document, 120),
-    ...readResourceImages(120),
-  ]).slice(0, 120);
+    ], document, 20),
+  ]).slice(0, 20);
   const productAttributePairs = dedupe([
     ...readAntDescriptionsPairs(document, 120),
     ...readPairsBySelectors(
@@ -565,8 +578,14 @@ def _candidate_browser_paths() -> list[str]:
     import platform
     system = platform.system()
 
+    # PATH-named executables (Chromium-based browsers, cross-platform)
     paths = [
-        'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome', 'msedge',
+        'google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser',
+        'chrome', 'msedge', 'microsoft-edge',
+        'brave', 'brave-browser',           # Brave (popular privacy browser)
+        'opera', 'vivaldi',                  # Opera / Vivaldi (Chromium-based)
+        '360chrome', '360se',                # 360 浏览器 (China users)
+        'qqbrowser',                         # QQ 浏览器 (China users)
     ]
 
     if system == 'Darwin':
@@ -574,9 +593,11 @@ def _candidate_browser_paths() -> list[str]:
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             '/Applications/Chromium.app/Contents/MacOS/Chromium',
             '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+            '/Applications/Opera.app/Contents/MacOS/Opera',
+            '/Applications/Vivaldi.app/Contents/MacOS/Vivaldi',
         ])
     elif system == 'Windows':
-        # shutil.which handles PATH-located executables; add common install dirs
         import os as _os
         for base in [
             _os.environ.get('ProgramFiles', 'C:\\Program Files'),
@@ -585,11 +606,20 @@ def _candidate_browser_paths() -> list[str]:
         ]:
             if base:
                 paths.extend([
+                    # Chrome
                     f'{base}\\Google\\Chrome\\Application\\chrome.exe',
+                    # Edge (pre-installed on Windows 10+, highest priority for Windows users)
                     f'{base}\\Microsoft\\Edge\\Application\\msedge.exe',
+                    # Brave
+                    f'{base}\\BraveSoftware\\Brave-Browser\\Application\\brave.exe',
+                    # Opera
+                    f'{base}\\Opera\\opera.exe',
+                    # 360 浏览器 (China)
+                    f'{base}\\360Chrome\\Chrome\\Application\\360chrome.exe',
+                    f'{base}\\360\\360se6\\Application\\360se.exe',
                 ])
 
-    # Playwright-bundled Chromium (no system Chrome needed) — all platforms
+    # Playwright-bundled Chromium (fallback when no system Chrome) — all platforms
     paths.extend(_playwright_chromium_paths())
     return paths
 
@@ -630,6 +660,8 @@ def find_browser_executable(explicit: str | None = None) -> str | None:
         if found:
             return found
         raise ConfigError(f'浏览器可执行文件不存在: {candidate}')
+
+    # Phase 1: check all known paths (fast, no subprocess)
     for item in _candidate_browser_paths():
         found = shutil.which(item)
         if found:
@@ -637,6 +669,66 @@ def find_browser_executable(explicit: str | None = None) -> str | None:
         path = Path(item)
         if path.exists():
             return str(path)
+
+    # Phase 2: platform-specific deep search (slower, only runs if Phase 1 fails)
+    import platform
+    system = platform.system()
+
+    if system == 'Darwin':
+        # macOS: use Spotlight (mdfind) to find Chromium-based browsers
+        browser_apps = [
+            'Google Chrome', 'Microsoft Edge', 'Brave Browser',
+            'Chromium', 'Opera', 'Vivaldi',
+        ]
+        for app_name in browser_apps:
+            try:
+                result = subprocess.run(
+                    ['mdfind', f'kMDItemKind == "Application" && kMDItemDisplayName == "{app_name}"'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.strip().split('\n'):
+                    line = line.strip()
+                    if line.endswith('.app'):
+                        executable = f'{line}/Contents/MacOS/{app_name}'
+                        if Path(executable).exists():
+                            return executable
+            except Exception:
+                pass
+
+    elif system == 'Windows':
+        # Windows: try registry query for default browser, then common install paths
+        import os as _os
+        # Check Chrome via registry
+        for reg_key in [
+            r'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe',
+            r'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe',
+        ]:
+            try:
+                result = subprocess.run(
+                    ['reg', 'query', reg_key, '/ve'],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.split('\n'):
+                    if '.exe' in line.lower():
+                        path = line.strip().rsplit('    ', 1)[-1].strip()
+                        if Path(path).exists():
+                            return path
+            except Exception:
+                pass
+        # Edge via registry
+        try:
+            result = subprocess.run(
+                ['reg', 'query', r'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe', '/ve'],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.split('\n'):
+                if '.exe' in line.lower():
+                    path = line.strip().rsplit('    ', 1)[-1].strip()
+                    if Path(path).exists():
+                        return path
+        except Exception:
+            pass
+
     return None
 
 
@@ -940,6 +1032,13 @@ def _resolve_browser_session(profile: str) -> dict[str, Any]:
     recovered = _find_live_cdp_session_for_profile(profile, session)
     if recovered:
         return recovered
+
+    # No live Chrome found — do NOT auto-launch.
+    # Auto-launching creates a new browser window that loses login state
+    # and triggers 1688 anti-bot detection.
+    # Instead: caller (enrich_product_with_cdp) will call _wait_for_login_session()
+    # which explicitly opens the 1688 login page for the user to scan QR,
+    # then keeps Chrome open for subsequent CDP reuse.
     return session
 
 
@@ -1071,11 +1170,14 @@ def _wait_for_login_session(
                 browser = _connect_existing_chrome(p, cdp_url)
                 try:
                     context = browser.contexts[0] if browser.contexts else browser.new_context(locale='zh-CN', viewport={'width': 1440, 'height': 2200})
-                    page = context.new_page()
+                    # Check login on EXISTING page — do NOT navigate to target_url.
+                    # Navigating to 1688 product pages before login triggers anti-bot rate limiting.
+                    page = context.pages[0] if context.pages else context.new_page()
                     try:
-                        page.goto(target_url, wait_until='domcontentloaded', timeout=45000)
+                        # Just read current URL/body — no page load
                         snapshot = _probe_login_snapshot(page)
-                        if not _snapshot_login_required(snapshot.get('url'), snapshot.get('bodyText')):
+                        login_required = _snapshot_login_required(snapshot.get('url'), snapshot.get('bodyText'))
+                        if not login_required:
                             merged = dict(session)
                             merged['cdp_url'] = cdp_url
                             merged['login_detected'] = True
@@ -1197,10 +1299,17 @@ def _auto_install_browser() -> bool:
     """Automatically install Playwright Chromium when no browser is found.
 
     Returns True if a browser became available after installation.
+    Uses npmmirror.com (国内镜像) for both pip and Playwright downloads.
     Does NOT prompt the user — fully automatic.
     """
     import subprocess as _sp
     python = _sp.sys.executable or 'python3'
+
+    # 国内镜像加速 — use npmmirror for pip and playwright downloads
+    mirror_env = {**_sp.os.environ,
+        'PLAYWRIGHT_DOWNLOAD_HOST': 'https://npmmirror.com/mirrors/playwright/',
+        'PIP_INDEX_URL': 'https://pypi.tuna.tsinghua.edu.cn/simple',
+    }
 
     # Step 1: ensure playwright package is installed
     try:
@@ -1208,20 +1317,34 @@ def _auto_install_browser() -> bool:
     except ImportError:
         try:
             _sp.run(
-                [python, '-m', 'pip', 'install', 'playwright'],
-                check=True, capture_output=True, timeout=120,
+                [python, '-m', 'pip', 'install', 'playwright', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple'],
+                check=True, capture_output=True, timeout=120, env=mirror_env,
             )
         except Exception:
-            return False
+            # Fallback: try without mirror
+            try:
+                _sp.run(
+                    [python, '-m', 'pip', 'install', 'playwright'],
+                    check=True, capture_output=True, timeout=120,
+                )
+            except Exception:
+                return False
 
-    # Step 2: install Chromium browser
+    # Step 2: install Chromium browser (with China mirror)
     try:
         _sp.run(
             [python, '-m', 'playwright', 'install', 'chromium'],
-            check=True, capture_output=True, timeout=300,
+            check=True, capture_output=True, timeout=300, env=mirror_env,
         )
     except Exception:
-        return False
+        # Fallback: try without mirror
+        try:
+            _sp.run(
+                [python, '-m', 'playwright', 'install', 'chromium'],
+                check=True, capture_output=True, timeout=300,
+            )
+        except Exception:
+            return False
 
     # Step 3: re-scan for the newly installed browser
     return bool(find_browser_executable(None))

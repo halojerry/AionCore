@@ -81,6 +81,6 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-      - uses: rustsec/audit-check@v3
+      - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

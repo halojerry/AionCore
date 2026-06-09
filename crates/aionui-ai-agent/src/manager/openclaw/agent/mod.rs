@@ -392,8 +392,24 @@ impl OpenClawAgentManager {
     }
 
     async fn do_send_message(&self, is_first: bool, data: SendMessageData) -> Result<(), AgentError> {
+        info!(
+            conversation_id = %self.runtime.conversation_id(),
+            is_first,
+            "OpenClaw do_send_message called"
+        );
+
         if is_first {
+            info!(
+                conversation_id = %self.runtime.conversation_id(),
+                "Resolving OpenClaw session (first message)"
+            );
             self.resolve_session().await?;
+            let resolved_key = self.state.read().await.session_key.clone();
+            info!(
+                conversation_id = %self.runtime.conversation_id(),
+                session_key = ?resolved_key,
+                "OpenClaw session resolved"
+            );
         }
 
         let session_key = self
@@ -403,6 +419,13 @@ impl OpenClawAgentManager {
             .session_key
             .clone()
             .ok_or_else(|| AgentError::internal("No active session key"))?;
+
+        info!(
+            conversation_id = %self.runtime.conversation_id(),
+            session_key = %session_key,
+            message_len = data.content.len(),
+            "Sending chat.send to OpenClaw"
+        );
 
         let params = ChatSendParams {
             session_key,
@@ -415,10 +438,28 @@ impl OpenClawAgentManager {
             },
         };
 
-        self.connection
+        let result = self.connection
             .request::<Value>("chat.send", serde_json::to_value(params).unwrap_or_default())
-            .await?;
+            .await;
 
+        match &result {
+            Ok(resp) => {
+                info!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    response = %resp,
+                    "OpenClaw chat.send succeeded"
+                );
+            }
+            Err(e) => {
+                error!(
+                    conversation_id = %self.runtime.conversation_id(),
+                    error = %ErrorChain(e),
+                    "OpenClaw chat.send failed"
+                );
+            }
+        }
+
+        result?;
         Ok(())
     }
 
