@@ -611,7 +611,10 @@ async fn batch_import_upserts_existing() {
         .await
         .unwrap();
     let json = body_json(resp).await;
-    assert_eq!(json["data"].as_array().unwrap().len(), 2);
+    let servers = json["data"].as_array().unwrap();
+    // Filter out builtins (like pounding-image-generation) to test user servers only
+    let user_servers: Vec<_> = servers.iter().filter(|s| s["builtin"] == false).collect();
+    assert_eq!(user_servers.len(), 2);
 }
 
 #[tokio::test]
