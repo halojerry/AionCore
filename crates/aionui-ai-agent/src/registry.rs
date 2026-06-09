@@ -15,9 +15,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
 
-use aionui_api_types::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy};
+use aionui_api_types::{
+    AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource, AgentSourceInfo, BehaviorPolicy, RepairResult,
+};
 use aionui_common::AgentType;
 use aionui_db::{AgentMetadataRow, IAgentMetadataRepository, UpdateAgentHandshakeParams};
 use aionui_runtime::{
@@ -269,6 +272,230 @@ impl AgentRegistry {
             .collect();
         rows.sort_by(|(a, _), (b, _)| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
         rows
+    }
+
+    /// Startup-oriented diagnostic that includes bundled-source availability.
+    /// Returns structured data suitable for the doctor API.
+    pub async fn startup_diagnostic(&self) -> Vec<(AgentMetadata, Option<UnavailableReason>)> {
+        self.diagnostic_snapshot().await
+    }
+
+    /// Attempt to repair a specific agent by installing its CLI from npm or bundled resources.
+    ///
+    /// Resolution:
+    /// 1. Map the human-readable target name to a managed CLI target (claude/codex/opencode/openclaw/hermes).
+    /// 2. Try bundled materialization first (offline repair from the shipped bundle).
+    /// 3. Fall back to `bun add -g <npm-package>` for network-assisted repair.
+    /// 4. Hermes is handled via `uv pip install` if a bundled wheel exists.
+    pub async fn attempt_repair(&self, target: &str) -> Result<RepairResult, AgentError> {
+        let normalized = target.to_lowercase();
+
+        // Resolve managed CLI target by name substring match.
+        let managed_target = ["hermes", "openclaw", "claude", "codex", "opencode"]
+            .into_iter()
+            .find(|t| normalized.contains(*t));
+
+        let Some(mt) = managed_target else {
+            return Ok(RepairResult {
+                success: false,
+                source: None,
+                error: Some(format!("Unknown repair target: '{target}'")),
+            });
+        };
+
+        // Try bundled materialization first.
+        if let Ok(result) = self.repair_from_bundle(mt).await {
+            if result.success {
+                return Ok(result);
+            }
+            debug!(target = mt, error = ?result.error, "Bundled repair failed, falling back to network");
+        }
+
+        // Fall back to network install via bun/npm.
+        self.repair_from_network(mt).await
+    }
+
+    /// Materialize a CLI from bundled managed resources and create shim scripts.
+    async fn repair_from_bundle(&self, target: &str) -> Result<RepairResult, AgentError> {
+        let platform_key = platform_key();
+        let sources = aionui_runtime::managed_resources::cli_sources(target, &platform_key);
+
+        let Some(source) = sources.first() else {
+            return Ok(RepairResult {
+                success: false,
+                source: Some("bundled".into()),
+                error: Some(format!("No bundled resources found for '{target}'")),
+            });
+        };
+
+        // Read manifest to find entrypoint.
+        let manifest_path = source.root.join("manifest.json");
+        let manifest_contents = std::fs::read_to_string(&manifest_path)
+            .map_err(|e| AgentError::internal(format!("Failed to read manifest for '{target}': {e}")))?;
+
+        let manifest: serde_json::Value = serde_json::from_str(&manifest_contents)
+            .map_err(|e| AgentError::internal(format!("Failed to parse manifest for '{target}': {e}")))?;
+
+        let entrypoint = manifest["entrypoint"]
+            .as_str()
+            .ok_or_else(|| AgentError::internal(format!("Manifest for '{target}' missing entrypoint")))?;
+
+        let entrypoint_abs = source.root.join(entrypoint);
+
+        // Materialize to cache.
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join("pounding")
+            .join("managed-resources")
+            .join("cli")
+            .join(target);
+
+        aionui_runtime::managed_resources::materialize_directory(&source.root, &cache_dir)
+            .map_err(|e| AgentError::internal(format!("Failed to materialize '{target}' bundle: {e}")))?;
+
+        // Determine shim destination — use bun bin dir as the primary install location.
+        let bun_bin = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".bun")
+            .join("bin");
+
+        std::fs::create_dir_all(&bun_bin).ok();
+
+        let shim_name = if cfg!(windows) {
+            format!("{target}.cmd")
+        } else {
+            target.to_string()
+        };
+        let shim_path = bun_bin.join(&shim_name);
+
+        // Create platform-appropriate shim script.
+        let entrypoint_str = entrypoint_abs.to_string_lossy().replace('\\', "/");
+        let shim_content = if cfg!(windows) {
+            format!("@echo off\r\nnode \"{}\" %*\r\n", entrypoint_str)
+        } else {
+            format!("#!/usr/bin/env bash\nexec node {} \"$@\"\n", sh_quote(&entrypoint_str))
+        };
+
+        std::fs::write(&shim_path, shim_content)
+            .map_err(|e| AgentError::internal(format!("Failed to write shim for '{target}': {e}")))?;
+
+        // Make executable on Unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&shim_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o755);
+                let _ = std::fs::set_permissions(&shim_path, perms);
+            }
+        }
+
+        info!(target = target, shim = %shim_path.display(), "Repaired CLI from bundle");
+        Ok(RepairResult {
+            success: true,
+            source: Some("bundled".into()),
+            error: None,
+        })
+    }
+
+    /// Install a CLI from npm registry via `bun add -g`.
+    async fn repair_from_network(&self, target: &str) -> Result<RepairResult, AgentError> {
+        let npm_package = match target {
+            "claude" => "@anthropic-ai/claude-code",
+            "codex" => "@openai/codex",
+            "opencode" => "opencode-ai",
+            "openclaw" => "openclaw",
+            "hermes" => {
+                // Hermes is a Python package — handled via uv/pip.
+                // For network repair, just verify the binary exists or return unsupported.
+                return Ok(RepairResult {
+                    success: resolve_command_path("hermes").is_some(),
+                    source: Some("network".into()),
+                    error: if resolve_command_path("hermes").is_some() {
+                        None
+                    } else {
+                        Some("Hermes network repair requires uv/pip — not supported via bun".into())
+                    },
+                });
+            }
+            _ => {
+                return Ok(RepairResult {
+                    success: false,
+                    source: Some("network".into()),
+                    error: Some(format!("No npm package mapping for '{target}'")),
+                });
+            }
+        };
+
+        // Find bun.
+        let bun_path = match resolve_command_path("bun") {
+            Some(p) => p,
+            None => {
+                return Ok(RepairResult {
+                    success: false,
+                    source: Some("network".into()),
+                    error: Some("bun not found on PATH — cannot install npm packages".into()),
+                });
+            }
+        };
+
+        info!(target = target, package = npm_package, "Installing CLI via bun");
+
+        let output = tokio::process::Command::new(&bun_path)
+            .arg("add")
+            .arg("-g")
+            .arg(format!("{npm_package}@latest"))
+            .env("BUN_CONFIG_REGISTRY", "https://registry.npmmirror.com")
+            .env("npm_config_registry", "https://registry.npmmirror.com")
+            .env("NO_COLOR", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|e| AgentError::internal(format!("Failed to spawn bun for '{target}': {e}")))?;
+
+        if !output.status.success() {
+            let _stderr = String::from_utf8_lossy(&output.stderr);
+            // Try official npm registry as fallback.
+            info!(target = target, "Mirror install failed, trying official npm registry");
+            let output2 = tokio::process::Command::new(&bun_path)
+                .arg("add")
+                .arg("-g")
+                .arg(format!("{npm_package}@latest"))
+                .env("NO_COLOR", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await
+                .map_err(|e| AgentError::internal(format!("Failed to spawn bun for '{target}' (retry): {e}")))?;
+
+            if !output2.status.success() {
+                let stderr2 = String::from_utf8_lossy(&output2.stderr);
+                return Ok(RepairResult {
+                    success: false,
+                    source: Some("network".into()),
+                    error: Some(format!("bun install failed: {stderr2}")),
+                });
+            }
+        }
+
+        // Verify the binary is now on PATH.
+        let installed = resolve_command_path(target).is_some();
+        if installed {
+            info!(target = target, "Successfully installed CLI via bun");
+        } else {
+            warn!(target = target, "bun install succeeded but binary not found on PATH");
+        }
+
+        Ok(RepairResult {
+            success: installed,
+            source: Some("network".into()),
+            error: if installed {
+                None
+            } else {
+                Some("Install completed but binary not found on PATH — may need shell restart".into())
+            },
+        })
     }
 
     /// Clone-cheap handle to the underlying repo, for service-layer
@@ -627,6 +854,26 @@ fn probe_command_candidate(command: &str) -> Option<PathBuf> {
             .is_supported()
             .then(|| PathBuf::from(command)),
     }
+}
+
+/// Build a platform key string matching the bundle layout (e.g. "darwin-arm64").
+fn platform_key() -> String {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64".into(),
+        ("macos", "x86_64") => "darwin-x64".into(),
+        ("linux", "x86_64") => "linux-x64".into(),
+        ("linux", "aarch64") => "linux-arm64".into(),
+        ("windows", "x86_64") => "win32-x64".into(),
+        ("windows", "aarch64") => "win32-arm64".into(),
+        (os, arch) => format!("{os}-{arch}"),
+    }
+}
+
+/// Minimal shell quoting for a path used inside a bash shim script.
+/// Wraps the value in single quotes, escaping any embedded single quotes.
+fn sh_quote(value: &str) -> String {
+    let escaped = value.replace('\'', "'\\''");
+    format!("'{escaped}'")
 }
 
 #[cfg(test)]

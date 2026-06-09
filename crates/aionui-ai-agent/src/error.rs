@@ -27,6 +27,8 @@ pub enum AgentError {
     WorkspacePathRuntimeUnavailable(String),
     #[error("Internal error: {0}")]
     Internal(String),
+    #[error("OpenClaw NOT_PAIRED — device identity changed and must be re-approved: {0}")]
+    OpenClawNotPaired(String),
     #[error(transparent)]
     Acp(#[from] AcpError),
 }
@@ -72,6 +74,10 @@ impl AgentError {
         Self::Internal(message.into())
     }
 
+    pub fn openclaw_not_paired(message: impl Into<String>) -> Self {
+        Self::OpenClawNotPaired(message.into())
+    }
+
     pub(crate) fn public_message(&self) -> String {
         match self {
             Self::BadRequest(message)
@@ -83,7 +89,8 @@ impl AgentError {
             | Self::Timeout(message)
             | Self::ConversationArchived(message)
             | Self::WorkspacePathRuntimeUnavailable(message)
-            | Self::Internal(message) => message.clone(),
+            | Self::Internal(message)
+            | Self::OpenClawNotPaired(message) => message.clone(),
             Self::RateLimited => "Rate limited".to_owned(),
             Self::Acp(err) => err.to_string(),
         }

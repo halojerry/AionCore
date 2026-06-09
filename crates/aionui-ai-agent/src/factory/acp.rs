@@ -335,7 +335,14 @@ async fn load_user_mcp_servers(
         let selected = selected_ids
             .map(|ids| ids.iter().any(|id| id == &row.id))
             .unwrap_or(row.enabled);
-        if !selected || row.builtin {
+        // Builtin MCP servers (e.g. pounding-image-generation) are now injected
+        // into ACP agent sessions so agents can discover builtin tools. Previously
+        // all builtins were skipped, which prevented the image-gen MCP server from
+        // being visible to any agent.
+        if !selected {
+            continue;
+        }
+        if row.builtin && !is_builtin_mcp_injectable(&row.name) {
             continue;
         }
         if !row_supported_by_capabilities(&row, capabilities) {
@@ -370,6 +377,18 @@ async fn load_user_mcp_servers(
         );
     }
     servers
+}
+
+/// Builtin MCP servers that should be injected into ACP agent sessions.
+/// Most builtins are wired through other paths (e.g. team/guide MCP via
+/// dedicated injection), but image-generation needs to be visible to all
+/// agents so they can discover the `pounding_image_generation` tool.
+const INJECTABLE_BUILTIN_MCP_NAMES: &[&str] = &["pounding-image-generation"];
+
+fn is_builtin_mcp_injectable(name: &str) -> bool {
+    INJECTABLE_BUILTIN_MCP_NAMES
+        .iter()
+        .any(|n| name == *n || name.contains(*n))
 }
 
 /// Convert an `McpServerRow` into the SDK `McpServer` shape used by

@@ -179,6 +179,113 @@ pub fn read_claude_model_info() -> Option<ModelInfoPayload> {
     read_claude_model_info_with_paths(&paths)
 }
 
+/// Read Codex model info from `~/.codex/config.toml` and
+/// `~/.codex/pounding-models.json`.
+///
+/// Codex uses a TOML config (not SQLite like Claude). The config.toml format:
+///
+/// ```toml
+/// [model_providers]
+/// [model_providers."pounding-new-api-desktop-newapi-managed-provider"]
+/// model = "deepseek-v4-pro"
+/// name = "POUNDING API"
+/// base_url = "https://api.mxou.cn/v1"
+/// ```
+///
+/// This function finds the first managed provider (id starting with "pounding-")
+/// and extracts its model field as the **current** model.
+///
+/// The full list of available models is read from `~/.codex/pounding-models.json`
+/// (written by the desktop TypeScript process during provider sync). When that
+/// file is present, `available_models` will contain every selectable model
+/// rather than only the currently active one.
+pub fn read_codex_model_info() -> Option<ModelInfoPayload> {
+    let home = dirs::home_dir()?;
+    let codex_dir = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| home.join(".codex"));
+    let config_path = codex_dir.join("config.toml");
+    let models_path = codex_dir.join("pounding-models.json");
+
+    let content = std::fs::read_to_string(&config_path).ok()?;
+
+    // Quick check: does this config reference a managed provider?
+    if !content
+        .lines()
+        .any(|line| line.trim().starts_with("[model_providers.\"pounding-"))
+    {
+        return None;
+    }
+
+    // Parse the TOML manually — format is simple enough:
+    // [model_providers."<id>"]
+    // model = "<value>"
+    let current_model = content
+        .lines()
+        .skip_while(|line| !line.trim().starts_with("[model_providers.\"pounding-"))
+        .skip(1) // skip the section header
+        .take_while(|line| !line.trim().starts_with('['))
+        .find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix("model")
+                .and_then(|rest| rest.trim().strip_prefix('='))
+                .map(|val| val.trim().trim_matches('"').to_owned())
+                .filter(|v| !v.is_empty())
+        })?;
+
+    let current_model_id = sanitize_model_value(&current_model)?;
+
+    // Read the full model list from pounding-models.json (written by desktop TS).
+    // When present, every model in the provider is selectable — not just the one
+    // currently active in config.toml.
+    let available_models: Vec<ModelInfoEntry> = if models_path.exists() {
+        std::fs::read_to_string(&models_path)
+            .ok()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+            .and_then(|v| v.get("models")?.as_array().cloned())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|m| m.as_str())
+                    .filter_map(sanitize_model_value)
+                    .map(|id| ModelInfoEntry { label: id.clone(), id })
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    if available_models.is_empty() {
+        // No models file — return just the current model (backward compat)
+        return Some(ModelInfoPayload {
+            current_model_id: Some(current_model_id.clone()),
+            current_model_label: Some(current_model.clone()),
+            available_models: vec![ModelInfoEntry {
+                id: current_model_id,
+                label: current_model,
+            }],
+        });
+    }
+
+    // Ensure current_model_id is in available_models; fall back to first if not
+    let current_id = if available_models.iter().any(|m| m.id == current_model_id) {
+        current_model_id
+    } else {
+        available_models.first()?.id.clone()
+    };
+    let current_label = available_models
+        .iter()
+        .find(|m| m.id == current_id)
+        .map(|m| m.label.clone());
+
+    Some(ModelInfoPayload {
+        current_model_id: Some(current_id),
+        current_model_label: current_label,
+        available_models,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

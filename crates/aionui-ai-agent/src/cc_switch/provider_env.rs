@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use rusqlite::Connection;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::CcSwitchPaths;
 
@@ -142,6 +142,109 @@ pub fn read_claude_provider_env() -> HashMap<String, String> {
         return HashMap::new();
     };
     read_claude_provider_env_with_paths(&paths)
+}
+
+/// Read the full provider env from cc-switch.db **without** stripping
+/// model env keys. Used to sync slot→model mappings to
+/// `~/.claude/settings.json` so Claude Code can resolve slots to the
+/// correct upstream model on process start.
+pub(crate) fn read_claude_provider_full_env_with_paths(paths: &CcSwitchPaths) -> HashMap<String, String> {
+    let settings_content = match fs::read_to_string(&paths.settings_path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let settings: CcSwitchSettings = match serde_json::from_str(&settings_content) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "cc-switch: failed to parse settings.json (full env)");
+            return HashMap::new();
+        }
+    };
+
+    let provider_id = match settings.current_provider_claude {
+        Some(ref id) if !id.trim().is_empty() => id.clone(),
+        _ => return HashMap::new(),
+    };
+
+    if !paths.database_path.exists() {
+        warn!(provider_id, "cc-switch: database file not found (full env)");
+        return HashMap::new();
+    }
+
+    read_env_from_db(&paths.database_path, &provider_id)
+}
+
+/// Model env var keys to sync from cc-switch.db into
+/// `~/.claude/settings.json`. These keys tell Claude Code which upstream
+/// model each slot (`default` / `opus` / `haiku`) resolves to.
+const MODEL_ENV_SYNC_KEYS: &[&str] = &[
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_MODEL",
+];
+
+/// Write cc-switch model env vars into `~/.claude/settings.json`,
+/// merging with any existing `env` keys so non-model settings
+/// (API key, base URL, etc.) are preserved.
+pub(crate) fn sync_claude_settings_model_env_with_paths(paths: &CcSwitchPaths) {
+    let full_env = read_claude_provider_full_env_with_paths(paths);
+    if full_env.is_empty() {
+        debug!("cc-switch: no provider env available; skipping settings.json sync");
+        return;
+    }
+
+    // Read existing settings.json (may not exist yet).
+    let mut settings: serde_json::Value = fs::read_to_string(&paths.claude_settings_path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    let env_obj = settings.as_object_mut().and_then(|root| {
+        root.entry("env".to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+    });
+
+    let Some(env_obj) = env_obj else {
+        warn!("cc-switch: settings.json 'env' key is not an object; cannot sync model env vars");
+        return;
+    };
+
+    for key in MODEL_ENV_SYNC_KEYS {
+        if let Some(value) = full_env.get(*key) {
+            env_obj.insert(key.to_string(), serde_json::Value::String(value.clone()));
+        }
+    }
+
+    let serialized = match serde_json::to_string_pretty(&settings) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(error = %e, "cc-switch: failed to serialize settings.json for model env sync");
+            return;
+        }
+    };
+
+    if let Err(e) = fs::write(&paths.claude_settings_path, serialized) {
+        warn!(error = %e, path = %paths.claude_settings_path.display(), "cc-switch: failed to write settings.json for model env sync");
+        return;
+    }
+
+    info!(
+        path = %paths.claude_settings_path.display(),
+        keys = ?MODEL_ENV_SYNC_KEYS.iter().filter(|k| full_env.contains_key(**k)).collect::<Vec<_>>(),
+        "cc-switch: synced model env vars to claude settings.json"
+    );
+}
+
+/// Convenience wrapper that resolves system paths and syncs model env
+/// vars from cc-switch.db into `~/.claude/settings.json`.
+pub fn sync_claude_settings_model_env() {
+    let Some(paths) = CcSwitchPaths::system() else {
+        return;
+    };
+    sync_claude_settings_model_env_with_paths(&paths);
 }
 
 #[cfg(test)]

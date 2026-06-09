@@ -7,7 +7,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, warn};
+use tracing::{debug, error};
 
 use super::protocol::{CLIENT_ID, CLIENT_MODE, DeviceAuthParams};
 
@@ -36,15 +36,50 @@ fn default_identity_path() -> PathBuf {
 }
 
 pub fn load_or_create_identity(custom_path: Option<&Path>) -> Result<DeviceIdentity, AgentError> {
+    load_or_create_identity_with_fallback(custom_path, None)
+}
+
+/// Like [`load_or_create_identity`] but also accepts a `data_dir` for DB fallback.
+/// If the file-based identity is lost/corrupt, the DB-stored identity is used instead
+/// of generating a new one, preventing "device identity changed" NOT_PAIRED errors.
+pub fn load_or_create_identity_with_fallback(
+    custom_path: Option<&Path>,
+    data_dir: Option<&Path>,
+) -> Result<DeviceIdentity, AgentError> {
     let path = custom_path.map(PathBuf::from).unwrap_or_else(default_identity_path);
 
     if let Ok(identity) = load_identity(&path) {
+        // Identity loaded from file – also persist to DB as backup
+        if let Some(dir) = data_dir
+            && let Err(e) = save_identity_to_db(dir, &identity)
+        {
+            debug!(error = %e, "Failed to backup device identity to DB");
+        }
         return Ok(identity);
     }
 
+    // File load failed – try DB fallback before generating new
+    if let Some(dir) = data_dir
+        && let Ok(identity) = load_identity_from_db(dir)
+    {
+        debug!("Loaded device identity from DB fallback");
+        // Restore the file from DB so subsequent loads work
+        if let Err(e) = save_identity(&path, &identity) {
+            error!(error = %e, "Failed to restore device identity file from DB");
+        }
+        return Ok(identity);
+    }
+
+    // Both file and DB failed – generate new identity
     let identity = generate_identity();
     if let Err(e) = save_identity(&path, &identity) {
-        warn!(error = %e, "Failed to save device identity, continuing with ephemeral key");
+        error!(error = %e, "Failed to save device identity, continuing with ephemeral key");
+    }
+    // Also persist to DB
+    if let Some(dir) = data_dir
+        && let Err(e) = save_identity_to_db(dir, &identity)
+    {
+        error!(error = %e, "Failed to save device identity to DB fallback");
     }
     Ok(identity)
 }
@@ -198,6 +233,55 @@ fn public_key_base64url(signing_key: &SigningKey) -> String {
     let vk = signing_key.verifying_key();
     let raw = vk.as_bytes();
     URL_SAFE_NO_PAD.encode(raw)
+}
+
+// ── DB Fallback ──────────────────────────────────────────────────────────
+
+fn db_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("pounding-backend.db")
+}
+
+fn save_identity_to_db(data_dir: &Path, identity: &DeviceIdentity) -> Result<(), AgentError> {
+    let path = db_path(data_dir);
+    let conn = rusqlite::Connection::open(&path)
+        .map_err(|e| AgentError::internal(format!("Failed to open DB for identity save: {e}")))?;
+
+    let (pub_pem, priv_pem) = signing_key_to_pem(&identity.signing_key);
+    let now_ms = aionui_common::now_ms();
+
+    conn.execute(
+        "INSERT OR REPLACE INTO device_identity (device_id, private_key_pem, public_key_pem, created_at_ms, updated_at_ms)
+         VALUES (?1, ?2, ?3, COALESCE((SELECT created_at_ms FROM device_identity WHERE device_id = ?1), ?4), ?4)",
+        rusqlite::params![identity.device_id, priv_pem, pub_pem, now_ms],
+    )
+    .map_err(|e| AgentError::internal(format!("Failed to save device identity to DB: {e}")))?;
+
+    Ok(())
+}
+
+fn load_identity_from_db(data_dir: &Path) -> Result<DeviceIdentity, AgentError> {
+    let path = db_path(data_dir);
+    let conn = rusqlite::Connection::open_with_flags(
+        &path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| AgentError::internal(format!("Failed to open DB for identity load: {e}")))?;
+
+    let (_device_id, private_key_pem): (String, String) = conn
+        .query_row(
+            "SELECT device_id, private_key_pem FROM device_identity ORDER BY updated_at_ms DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|e| AgentError::internal(format!("No device identity in DB: {e}")))?;
+
+    let signing_key = pem_to_signing_key(&private_key_pem)?;
+    let derived_id = derive_device_id(&signing_key.verifying_key());
+
+    Ok(DeviceIdentity {
+        device_id: derived_id,
+        signing_key,
+    })
 }
 
 // ── PEM Encoding/Decoding ───────────────────────────────────────────────

@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from scripts.lib.cloud_client import build_envelope, submit_task
+from scripts.lib.cloud_client import build_envelope, submit_envelope, submit_task
 
 COMMAND_NAME = 'publish_flow'
 COMMAND_DESC = '完整发布链路 — 组装信封提交云端执行发布'
@@ -117,7 +117,22 @@ def main(args: list[str]) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
         return 0
 
-    result = submit_task(envelope)
+    # Phase 1: ingest — creates task record in Supabase (required by pipeline)
+    ingested = submit_envelope(envelope, task_id=f'task-{subproject_id}')
+    if ingested.get('status') == 'rejected' or '_auth_error' in ingested:
+        print(json.dumps({"error": "ingest rejected", "detail": ingested}, ensure_ascii=False), flush=True)
+        return 1
+
+    # Merge category from ingest if resolved
+    cat = ingested.get('category_resolution') or {}
+    if cat.get('description_category_id'):
+        envelope.setdefault('resolved', {})['category'] = {
+            'description_category_id': str(cat['description_category_id']),
+            'type_id': str(cat.get('type_id', '')),
+        }
+
+    # Phase 2: pipeline — processes envelope (images, upload, status)
+    result = submit_task(envelope, task_id=ingested.get('task_id'))
     task_id = result.get('task_id', '')
 
     # Poll if requested

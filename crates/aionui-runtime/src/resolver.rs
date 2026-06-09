@@ -137,6 +137,46 @@ fn env_override() -> Option<PathBuf> {
     }
 }
 
+/// Search for a binary in bundled managed-resources directories.
+/// Looks in `node/`, `runtimes/python/`, `runtimes/uv/` under the bundled root.
+fn resolve_bundled_binary(name: &str) -> Option<PathBuf> {
+    let root = crate::managed_resources::bundled_root_path()?;
+    let bin_name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+
+    // Search directories where bundled binaries might live.
+    // Node is under node/<version>/bin/node
+    // Python is under runtimes/python/python/bin/python3
+    // UV is under runtimes/uv/uv
+    let search_dirs = [
+        root.join("node"),
+        root.join("runtimes").join("python"),
+        root.join("runtimes").join("uv"),
+    ];
+
+    for dir in &search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        // Walk up to 4 levels deep to find the binary
+        for entry in walkdir::WalkDir::new(dir).max_depth(4) {
+            let Ok(entry) = entry else { continue };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy();
+            // Match exact name or name.exe
+            if file_name == bin_name || file_name == format!("{name}.exe") {
+                return Some(entry.path().to_path_buf());
+            }
+        }
+    }
+    None
+}
+
 /// Resolve a command name to an absolute path.
 ///
 /// For `bun` / `bunx` we go through `aionui_runtime` so the bundled
@@ -160,6 +200,9 @@ pub fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
             }
             which::which("bunx").ok()
         }
+        "node" => resolve_bundled_binary("node").or_else(|| which::which("node").ok()),
+        "python3" | "python" => resolve_bundled_binary(cmd).or_else(|| which::which(cmd).ok()),
+        "uv" => resolve_bundled_binary("uv").or_else(|| which::which("uv").ok()),
         other => which::which(other).ok().or_else(|| windows_shim_fallback(other)),
     }
 }

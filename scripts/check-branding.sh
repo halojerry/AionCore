@@ -89,7 +89,7 @@ check_exists "cc_switch integration tests" "$ROOT/crates/aionui-ai-agent/tests/c
 # ---- Repo & Release Config ----
 check "version.rs: DEFAULT_REPO is halojerry" 'halojerry/AionCore' "$ROOT/crates/aionui-system/src/version.rs"
 check "sync-upstream.yml: validate job exists" 'validate' "$ROOT/.github/workflows/sync-upstream.yml"
-check "release.yml: creates -Pounding tag" 'Pounding' "$ROOT/.github/workflows/release.yml"
+check "release.yml: uploads to poundingcore" 'halojerry/poundingcore' "$ROOT/.github/workflows/release.yml"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

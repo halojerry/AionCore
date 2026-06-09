@@ -260,11 +260,29 @@ impl OpenClawConnection {
                     if res.ok {
                         let _ = tx.send(Ok(res.payload.unwrap_or(Value::Null)));
                     } else {
+                        // Gateway v2 may wrap NOT_PAIRED as UNKNOWN_UPSTREAM_ERROR;
+                        // check both the error code and the message text.
+                        let is_not_paired = res
+                            .error
+                            .as_ref()
+                            .map(|e| {
+                                e.code == "NOT_PAIRED"
+                                    || e.code == "UNKNOWN_UPSTREAM_ERROR"
+                                    || e.message.to_lowercase().contains("not_paired")
+                                    || e.message.to_lowercase().contains("pairing required")
+                                    || e.message.to_lowercase().contains("device identity changed")
+                            })
+                            .unwrap_or(false);
                         let msg = res
                             .error
                             .map(|e| format!("{}: {}", e.code, e.message))
                             .unwrap_or_else(|| "Unknown error".into());
-                        let _ = tx.send(Err(AgentError::internal(msg)));
+                        let err = if is_not_paired {
+                            AgentError::openclaw_not_paired(msg)
+                        } else {
+                            AgentError::internal(msg)
+                        };
+                        let _ = tx.send(Err(err));
                     }
                 }
             }

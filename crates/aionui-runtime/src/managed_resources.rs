@@ -65,6 +65,134 @@ pub fn acp_tool_sources(tool_slug: &str, version: &str, platform_key: &str) -> V
         .collect()
 }
 
+/// Find bundled CLI resources for a given target (e.g. "claude", "codex").
+pub fn cli_sources(target: &str, platform_key: &str) -> Vec<ManagedResourceSource> {
+    resource_roots()
+        .into_iter()
+        .flat_map(|source| {
+            let cli_root = source.root.join("cli").join(target);
+            let mut results = Vec::new();
+            for entry in WalkDir::new(&cli_root).max_depth(2) {
+                let Ok(entry) = entry else {
+                    continue;
+                };
+                if !entry.file_type().is_dir() {
+                    continue;
+                }
+                if entry.file_name().to_string_lossy() != platform_key {
+                    continue;
+                }
+                results.push(ManagedResourceSource {
+                    root: entry.path().to_path_buf(),
+                    ..source
+                });
+            }
+            results
+        })
+        .collect()
+}
+
+/// Find bundled runtime resources (e.g. "uv", "python", "hermes").
+pub fn runtime_sources(name: &str, platform_key: &str) -> Vec<ManagedResourceSource> {
+    resource_roots()
+        .into_iter()
+        .map(|source| ManagedResourceSource {
+            root: source.root.join("runtimes").join(name).join(platform_key),
+            ..source
+        })
+        .filter(|source| source.root.is_dir())
+        .collect()
+}
+
+/// Export CLI bundle to bundle root (mirrors export_node_runtime_to_root pattern).
+pub fn export_cli_to_root(
+    root: &Path,
+    source_root: &Path,
+    target: &str,
+    version: &str,
+    platform_key: &str,
+) -> std::io::Result<PathBuf> {
+    let target_path = root.join("cli").join(target).join(version).join(platform_key);
+    materialize_directory(source_root, &target_path)?;
+    Ok(target_path)
+}
+
+/// Export runtime resource to bundle root.
+pub fn export_runtime_to_root(root: &Path, source_root: &Path, name: &str) -> std::io::Result<PathBuf> {
+    let target_path = root.join("runtimes").join(name);
+    materialize_directory(source_root, &target_path)?;
+    Ok(target_path)
+}
+
+/// Verify bundle integrity by checking all manifest.json entries exist.
+pub fn verify_bundle_integrity(root: &Path) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for entry in WalkDir::new(root).max_depth(6) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(format!("walk error: {error}"));
+                continue;
+            }
+        };
+
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        if entry.file_name() != "manifest.json" {
+            continue;
+        }
+
+        let manifest_path = entry.path();
+        let manifest_parent = match manifest_path.parent() {
+            Some(p) => p,
+            None => continue,
+        };
+
+        match fs::read_to_string(manifest_path) {
+            Ok(contents) => {
+                match serde_json::from_str::<serde_json::Value>(&contents) {
+                    Ok(manifest) => {
+                        // Check entrypoint exists.
+                        if let Some(entrypoint) = manifest["entrypoint"].as_str() {
+                            let entrypoint_path = manifest_parent.join(entrypoint);
+                            if !entrypoint_path.exists() {
+                                errors.push(format!(
+                                    "entrypoint missing: {entrypoint_path:?} (from {manifest_path:?})"
+                                ));
+                            }
+                        }
+
+                        // Check path_entries exist.
+                        if let Some(path_entries) = manifest["path_entries"].as_array() {
+                            for entry_str in path_entries {
+                                if let Some(path) = entry_str.as_str() {
+                                    let full_path = manifest_parent.join(path);
+                                    if !full_path.exists() {
+                                        errors.push(format!(
+                                            "path_entry missing: {full_path:?} (from {manifest_path:?})"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        errors.push(format!("invalid manifest.json at {manifest_path:?}: {error}"));
+                    }
+                }
+            }
+            Err(error) => {
+                errors.push(format!("read manifest.json at {manifest_path:?}: {error}"));
+            }
+        }
+    }
+
+    errors
+}
+
 pub fn export_node_runtime_to_root(root: &Path, source_root: &Path, directory_name: &str) -> std::io::Result<PathBuf> {
     let target = root.join("node").join(directory_name);
     materialize_directory(source_root, &target)?;

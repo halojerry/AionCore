@@ -232,14 +232,30 @@ just push                                             # fmt → clippy → test 
 
 ```
 iOfficeAI/AionCore (上游)
-    ↓ sync-upstream workflow
-halojerry/AionCore (开发复刻 — 此仓库)
-    ↓ PR: dev → release/pounding-v*.*.x → main
-halojerry/poundingcore (发布仓库 — 最终产物)
+    ↓ sync-upstream (此仓库的 workflow)
+halojerry/AionCore (开发仓库 — 此仓库，POUNDING 保护层)
+    ↓ sync-downstream (poundingcore 发布仓库的 workflow)
+halojerry/poundingcore (发布仓库 — 最终产物，二进制发布)
 ```
 
 **`halojerry/poundingcore` 是最终发布仓库**，只接收 `halojerry/AionCore` 的稳定代码。
 **永远不要**从 `iOfficeAI/AionCore` 直接同步到 `halojerry/poundingcore`。
+
+### Sync Downstream (Dev → Release)
+
+代码从开发仓库同步到发布仓库由 `halojerry/poundingcore` 的 `sync-downstream.yml` 负责。
+该 workflow 从 `halojerry/AionCore`（此仓库）拉取代码，经过 branding 检查后创建 PR。
+
+**触发方式**: 在 `halojerry/poundingcore` 仓库手动 `workflow_dispatch` → `sync-downstream.yml`。
+
+**流程**:
+1. 验证目标分支（阻止直接同步到 main/dev）
+2. 运行 `check-branding.sh` 作为预检门禁
+3. Fast-forward 合并到 `feature/downstream-sync` 分支
+4. 再次运行 branding 检查
+5. 创建 PR 供人工审核
+
+**发布仓库永远不直接从 iOfficeAI 同步** — 所有上游变更必须先经过此开发仓库处理。
 
 **main is the stable POUNDING release branch. NEVER merge upstream directly into main.**
 
@@ -266,7 +282,7 @@ main (stable — triggers release builds via tag)
 
 **Trigger**: Manual `workflow_dispatch` via GitHub Actions → `sync-upstream.yml`.
 
-**⚠️ AionCore sync-upstream.yml lacks the `validate` job** that AionUi has. It does NOT block direct sync to `main`/`dev`. Always manually specify `feature/upstream-sync` as the target branch.
+The `sync-upstream.yml` workflow blocks direct sync to `main`/`dev` via its `validate` job. Always use `feature/upstream-sync` as the target branch.
 
 **What the workflow does automatically**:
 1. Fetches from `iOfficeAI/AionCore` upstream
@@ -385,3 +401,89 @@ Lessons from POUNDING development sessions. When debugging similar symptoms, che
 
 **Fix**: Renamed `resources/bundled-aioncore/` → `resources/bundled-poundingcore/`. Updated `~/.local/bin/poundingcore` symlink to point to `target/release/poundingcore`.
 
+### OpenClaw NOT_PAIRED — device identity scope-upgrade deadlock
+
+**Symptom**: OpenClaw conversations fail with `NOT_PAIRED: pairing required: device identity changed and must be re-approved`. The auto_pair retry (2 attempts) runs `openclaw devices approve --latest` but it never succeeds, leading to permanent NOT_PAIRED loop.
+
+**Root cause**: The poundingcore backend and the openclaw CLI shared the SAME device identity file (`~/.openclaw/identity/device.json`). The CLI pairs first with `operator.pairing` scope. When the backend connects with the same deviceId requesting `operator.admin` scope, the gateway sees this as a **scope upgrade** — not a new device. `openclaw devices approve --latest` cannot auto-approve scope upgrades, and the CLI itself is blocked by the same scope-upgrade rejection, creating a chicken-and-egg deadlock.
+
+**Fix**: Changed `mod.rs:111` to use a POUNDING-specific identity path instead of sharing the CLI's identity:
+```rust
+// BEFORE (broken):
+let identity = load_or_create_identity_with_fallback(None, Some(&data_dir))?;
+
+// AFTER (fixed):
+let identity_path = data_dir.join("openclaw").join("identity").join("device.json");
+let identity = load_or_create_identity_with_fallback(Some(&identity_path), Some(&data_dir))?;
+```
+The backend now has its own device identity (different deviceId), so the gateway sees it as a **new device** rather than a scope upgrade. The gateway's `local` mode auto-accepts new local devices.
+
+**Key files**: `crates/aionui-ai-agent/src/manager/openclaw/agent/mod.rs:111`, `crates/aionui-ai-agent/src/manager/openclaw/agent/spawn_helpers.rs:auto_pair_new_device()`, `crates/aionui-ai-agent/src/manager/openclaw/device_identity.rs`
+
+**Diagnostic commands**:
+```bash
+# Check device identities
+cat ~/.openclaw/identity/device.json       # CLI identity (shared with openclaw CLI)
+cat ~/.pounding/openclaw/identity/device.json  # Backend identity (POUNDING-specific)
+
+# Check gateway pairing state
+openclaw devices list --json --url ws://127.0.0.1:18789 --token "<gateway-token>"
+
+# Manual recovery (if stale scope-upgrade exists):
+rm -f ~/.openclaw/devices/paired.json ~/.openclaw/devices/pending.json ~/.openclaw/state/device_pairing_pending.db
+# Then restart gateway
+```
+
+### Codex UNKNOWN_UPSTREAM_ERROR — Responses API not supported
+
+**Symptom**: Codex conversations fail with `UNKNOWN_UPSTREAM_ERROR` / `Agent internal error (code -32603)`. The Codex CLI error shows `convert_request_failed` / `not implemented` from the API.
+
+**Root cause**: Codex CLI requires `wire_api = "responses"` in `config.toml` (it rejects `chat_completions` as an unknown variant). This makes Codex use the OpenAI Responses API format (`POST /v1/responses`). However, the POUNDING API (`api.mxou.cn`) only supports the Responses API endpoint for some models (e.g., `doubao-seed-1-8-251228`) — for `deepseek-v4-pro` it returns `"not implemented"` with `code: "convert_request_failed"`. The Chat Completions endpoint (`POST /v1/chat/completions`) works fine for all models.
+
+**Fix**: Built a local HTTP proxy (`codexApiProxy.mjs`) that translates:
+- Requests: Responses API format → Chat Completions API format (mapping `input`→`messages`, `developer` role→`system`, `input_text` type→`text`)
+- Responses: Chat Completions JSON → Responses API SSE streaming (`response.created` → `response.output_item.added` → `response.content_part.added` → `response.output_text.delta` → `response.completed`)
+- Model metadata: Enriches `/v1/models` with `context_window`, `max_output_tokens`, `pricing` fields
+- Port handling: Auto-selects available port (increment on EADDRINUSE), writes actual port to `~/.pounding/codex-proxy-port`
+
+The proxy is auto-started by `CodexProxyManager` (Electron main process) and auto-restarted on crash. Codex `config.toml` points `base_url` to `http://127.0.0.1:<actual-port>/v1` (the proxy) instead of the real API.
+
+**Key files**: `AionUi/.../codexApiProxy.mjs` (proxy script), `AionUi/.../CodexProxyManager.ts` (lifecycle manager), `AionUi/.../NewApiDesktopAccountService.ts:resolveCodexBaseUrl()`, `~/.codex/config.toml`
+
+**Reference**: pumpkinai-config (npm) — direct API access works for them because their API (`code.ddsst.online`) supports the Responses endpoint natively. CC-Switch (GitHub: farion1231/cc-switch) — uses a local proxy approach similar to ours, writes `cc-switch-model-catalog.json` with `context_window` metadata.
+
+### Codex "Model metadata not found" warning
+
+**Symptom**: Codex shows: `Model metadata for deepseek-v4-pro not found. Defaulting to fallback metadata; this can degrade performance and cause issues.` The warning appears briefly then disappears, and Codex functions normally.
+
+**Root cause**: The POUNDING API's `/v1/models` response only returns 5 fields (`id`, `object`, `created`, `owned_by`, `supported_endpoint_types`) — it lacks `context_window`, `max_output_tokens`, `pricing`, and other metadata fields that Codex expects. Additionally, stale `models_cache.json` can override enriched metadata from config files.
+
+**Fix (two layers + cache busting)**:
+1. **Proxy `/v1/models` enrichment**: The `codexApiProxy.mjs` adds `context_window`, `max_output_tokens`, and `pricing` to every model in the `/v1/models` API response.
+2. **`pounding-models.json` enrichment**: The TypeScript `writeCodexConfigForProviderSync()` now writes model objects with `context_window` and `max_output_tokens` fields (instead of bare strings), following CC-Switch's `cc-switch-model-catalog.json` pattern.
+3. **Cache busting**: `models_cache.json` is auto-deleted on every config sync so Codex always reads fresh metadata.
+
+**Key files**: `AionUi/.../codexApiProxy.mjs` (METADATA constant), `AionUi/.../NewApiDesktopAccountService.ts:MODEL_META`
+
+### Codex proxy auto-start (开箱即用 gap)
+
+**Symptom**: After installing POUNDING, Codex conversations fail silently — the proxy is never started.
+
+**Root cause**: The proxy script was a standalone file that needed manual terminal invocation. The Electron main process had no child-process management for it, and the script was not bundled in production builds.
+
+**Fix**: `CodexProxyManager.ts` (in AionUi) manages the proxy lifecycle:
+- `fork()`s `codexApiProxy.mjs` when the backend signals readiness
+- Auto-restarts on crash (3 attempts within 30s window)
+- Writes actual port to `~/.pounding/codex-proxy-port` (handles port conflicts)
+- Restarts on login (picks up API key from `~/.pounding/config.json`)
+- Stops cleanly on app quit (`will-quit` handler)
+
+The proxy script is bundled via `viteStaticCopy` (dev) and unpacked from ASAR (production, `electron-builder.yml` asarUnpack).
+
+**AionCore relevance**: No Rust changes needed. The proxy is a pure AionUi (Electron) concern. When debugging Codex issues from the AionCore side:
+- Check if proxy is alive: `ps aux | grep codexApiProxy`
+- Check port file: `cat ~/.pounding/codex-proxy-port`
+- Verify proxy responds: `curl http://127.0.0.1:<port>/v1/models`
+- Logs: look for `[CodexProxyManager]` and `[proxy]` prefixed lines
+
+**Key files**: `AionUi/.../CodexProxyManager.ts`, `AionUi/.../codexApiProxy.mjs`, `AionUi/.../index.ts`, `AionUi/.../electron-builder.yml`

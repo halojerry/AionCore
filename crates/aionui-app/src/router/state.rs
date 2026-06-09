@@ -47,6 +47,7 @@ use crate::services::AppServices;
 ///
 /// Reduces parameter bloat on router constructors and makes it easy for
 /// tests to override individual modules.
+#[derive(Clone)]
 pub struct ModuleStates {
     pub system: SystemRouterState,
     pub conversation: ConversationRouterState,

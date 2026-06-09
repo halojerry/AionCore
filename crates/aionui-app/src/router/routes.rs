@@ -32,6 +32,7 @@ use aionui_team::team_routes;
 
 use crate::services::AppServices;
 
+use super::doctor::doctor_routes;
 use super::health::{guide_mcp_status, health_check};
 use super::state::{ModuleStates, build_module_states, build_ws_state};
 use super::trace::with_access_log;
@@ -135,6 +136,9 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         local: services.local,
     };
 
+    // Clone ModuleStates before partial moves so doctor routes can use it.
+    let doctor_states = states.clone();
+
     // System routes protected by auth middleware
     let system_authenticated =
         system_routes(states.system).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -206,6 +210,10 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let assistant_authenticated =
         assistant_routes(states.assistant).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Doctor diagnostic and repair routes protected by auth middleware
+    let doctor_authenticated =
+        doctor_routes(doctor_states).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Guide MCP diagnostic endpoint protected by auth middleware
     let guide_mcp_authenticated = Router::new()
         .route("/api/system/guide-mcp", get(guide_mcp_status))
@@ -241,6 +249,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
+        .merge(doctor_authenticated)
         .merge(guide_mcp_authenticated);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
