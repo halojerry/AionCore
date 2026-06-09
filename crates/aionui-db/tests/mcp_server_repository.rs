@@ -543,7 +543,9 @@ async fn full_crud_lifecycle() {
     // Delete
     r.delete(&created.id).await.unwrap();
     assert!(r.find_by_id(&created.id).await.unwrap().is_none());
-    assert!(r.list().await.unwrap().is_empty());
+    // Builtin servers still exist from migration
+    let user_servers: Vec<_> = r.list().await.unwrap().into_iter().filter(|s| !s.builtin).collect();
+    assert!(user_servers.is_empty());
 }
 
 // -- Builtin server --
