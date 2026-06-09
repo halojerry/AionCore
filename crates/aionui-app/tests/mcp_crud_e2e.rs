@@ -311,7 +311,14 @@ async fn list_servers_empty() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
-    assert_eq!(json["data"], json!([]));
+    // No user-created servers, but builtin servers (like image-gen) may exist
+    let user_servers: Vec<_> = json["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["builtin"] == false)
+        .collect();
+    assert_eq!(user_servers.len(), 0);
 }
 
 // ===========================================================================
