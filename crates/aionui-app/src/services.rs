@@ -122,6 +122,11 @@ impl AppServices {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to hydrate agent registry: {e}"))?;
 
+        // Kick off background download of any missing managed runtimes
+        // (node, ACP tool artifacts) so builtin agents that failed the
+        // initial probe can heal without a restart.
+        agent_registry.launch_background_self_heal();
+
         let acp_session_repo: Arc<dyn IAcpSessionRepository> =
             Arc::new(SqliteAcpSessionRepository::new(database.pool().clone()));
         let acp_agent_service = AcpSessionSyncService::new(acp_session_repo.clone());

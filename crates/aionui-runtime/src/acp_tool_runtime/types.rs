@@ -43,6 +43,10 @@ impl ManagedAcpToolId {
         match backend {
             "codex" => Some(Self::CodexAcp),
             "claude" => Some(Self::ClaudeAgentAcp),
+            // Hermes speaks the same ACP protocol as Claude and reuses
+            // the same managed ACP tool artifacts. The backend
+            // identifier "hermes" is the canonical seed-data value.
+            "hermes" => Some(Self::ClaudeAgentAcp),
             _ => None,
         }
     }

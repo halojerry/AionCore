@@ -21,7 +21,8 @@ use aionui_api_types::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource
 use aionui_common::AgentType;
 use aionui_db::{AgentMetadataRow, IAgentMetadataRepository, UpdateAgentHandshakeParams};
 use aionui_runtime::{
-    ManagedAcpToolId, RuntimeCommandProbe, probe_managed_acp_tool_supported, probe_node_runtime_supported,
+    ManagedAcpToolId, RuntimeCommandProbe, ensure_managed_acp_tool, ensure_node_runtime,
+    probe_managed_acp_tool_supported, probe_node_runtime_supported,
     probe_runtime_command, resolve_command_path,
 };
 use serde_json::Value;
@@ -181,6 +182,89 @@ impl AgentRegistry {
         self.hydrate().await?;
         self.refresh_availability().await;
         Ok(())
+    }
+
+    /// Launch a background task that eagerly downloads managed runtimes
+    /// for every builtin agent backed by a managed ACP tool (Claude Code,
+    /// Codex CLI). Returns immediately — the heal runs concurrently and
+    /// calls [`Self::refresh_availability`] when finished.
+    ///
+    /// Why eager instead of only-on-failure: the probe in
+    /// [`probe_resolved_command`] checks *platform support*, not whether
+    /// the artifacts are actually on disk. An agent can show as available
+    /// even when its node runtime / ACP tool tarball hasn't been
+    /// downloaded yet, causing a confusing spawn-time failure. Eagerly
+    /// downloading during startup prevents that class of bug.
+    ///
+    /// Agents that depend on user-installed third-party CLIs (e.g.
+    /// `gemini`, `cursor`) are **not** touched — poundingcore cannot
+    /// silently install vendor CLIs on the user's machine.
+    pub fn launch_background_self_heal(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            // Use the unfiltered snapshot so we catch managed agents even
+            // when the probe (incorrectly) marks them as unavailable.
+            let all = this.list_all_including_hidden().await;
+            let mut healed: usize = 0;
+
+            for meta in &all {
+                // Only builtin agents whose backend maps to a managed tool.
+                let Some(backend) = meta.backend.as_deref() else {
+                    continue;
+                };
+                let Some(tool) = ManagedAcpToolId::from_backend(backend) else {
+                    continue;
+                };
+                if meta.agent_source != AgentSource::Builtin {
+                    continue;
+                }
+
+                info!(
+                    id = %meta.id,
+                    name = %meta.name,
+                    tool = tool.slug(),
+                    "self-heal: ensuring managed runtime"
+                );
+
+                // Node first — the ACP tool needs it.
+                if let Err(e) = ensure_node_runtime().await {
+                    warn!(
+                        id = %meta.id,
+                        name = %meta.name,
+                        error = %e,
+                        "self-heal: node runtime download failed"
+                    );
+                    continue;
+                }
+
+                match ensure_managed_acp_tool(tool).await {
+                    Ok(resolved) => {
+                        info!(
+                            id = %meta.id,
+                            name = %meta.name,
+                            version = %resolved.version,
+                            entrypoint = %resolved.entrypoint.display(),
+                            "self-heal: managed ACP tool ready"
+                        );
+                        healed += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            id = %meta.id,
+                            name = %meta.name,
+                            tool = tool.slug(),
+                            error = %e,
+                            "self-heal: managed ACP tool download failed"
+                        );
+                    }
+                }
+            }
+
+            if healed > 0 {
+                info!(healed, "self-heal: refreshing agent availability");
+                this.refresh_availability().await;
+            }
+        });
     }
 
     pub async fn get(&self, id: &str) -> Option<AgentMetadata> {
@@ -384,15 +468,29 @@ fn log_probe_result(meta: &AgentMetadata, reason: &Option<UnavailableReason>) {
             );
         }
         (false, Some(reason)) => {
-            info!(
-                id = %meta.id,
-                name = %meta.name,
-                backend,
-                source = %source,
-                command = meta.command.as_deref().unwrap_or("-"),
-                reason = %reason,
-                "agent unavailable"
-            );
+            // Builtin agents should never be unavailable on a supported
+            // platform — surface them at warn so they stand out in the
+            // default poundingcore.log without needing --log-level debug.
+            if meta.agent_source == AgentSource::Builtin {
+                warn!(
+                    id = %meta.id,
+                    name = %meta.name,
+                    backend,
+                    source = %source,
+                    reason = %reason,
+                    "builtin agent unavailable"
+                );
+            } else {
+                info!(
+                    id = %meta.id,
+                    name = %meta.name,
+                    backend,
+                    source = %source,
+                    command = meta.command.as_deref().unwrap_or("-"),
+                    reason = %reason,
+                    "agent unavailable"
+                );
+            }
         }
         (false, None) => {
             // Probe succeeded internally but `available` still false —
@@ -604,7 +702,20 @@ fn probe_resolved_command(meta: &AgentMetadata) -> Result<PathBuf, UnavailableRe
             bridge: bridge.to_owned(),
         });
     }
-    if let Some(primary) = meta.agent_source_info.binary_name.as_deref()
+    // Skip the primary-binary PATH check when the bridge itself resolves
+    // through the managed node runtime (npx / node). Those runtimes
+    // download the primary npm package on first invocation, so the
+    // primary binary does NOT need to be pre-installed on the user's
+    // machine. Without this, npx-bridged agents (CodeBuddy, OpenCode)
+    // would incorrectly show as unavailable on fresh installs.
+    let bridge_can_resolve_primary = meta
+        .agent_source_info
+        .bridge_binary
+        .as_deref()
+        .is_some_and(|b| matches!(probe_runtime_command(b), RuntimeCommandProbe::NodeTool { .. }));
+
+    if !bridge_can_resolve_primary
+        && let Some(primary) = meta.agent_source_info.binary_name.as_deref()
         && primary != cmd
         && meta.agent_source_info.bridge_binary.as_deref() != Some(primary)
         && probe_command_candidate(primary).is_none()

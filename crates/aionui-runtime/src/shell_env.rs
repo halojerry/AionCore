@@ -29,8 +29,20 @@ pub unsafe fn enhance_process_path() -> String {
     let login = login_shell_path();
     let extras = platform_extra_bins();
     let bun_dir = crate::bun_bin_dir();
+    let bundled_cli = bundled_cli_bins();
 
     let merged = merge_paths(bun_dir.as_deref(), &extras, &current, login.as_deref());
+
+    // Append bundled CLI directories so they take effect after the
+    // merge (they win only when no higher-priority source provides
+    // the same binary). We want managed ACP tools to win over CLI
+    // bundles for Claude/Codex/Hermes, but CLI bundles to fill the
+    // gap for OpenCode/OpenClaw.
+    let merged = if bundled_cli.is_empty() {
+        merged
+    } else {
+        append_paths(&merged, &bundled_cli)
+    };
 
     if merged == current {
         tracing::warn!("PATH enhancement produced no changes; continuing with inherited PATH");
@@ -90,6 +102,53 @@ fn merge_paths(bun_dir: Option<&Path>, extras: &[PathBuf], current: &str, login:
         .unwrap_or_default()
 }
 
+/// Append `extra` entries to an already-joined PATH string, skipping
+/// any that are already present (dedup by path). No reordering of the
+/// existing entries — new entries go at the end.
+fn append_paths(existing: &str, extra: &[PathBuf]) -> String {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut parts: Vec<PathBuf> = Vec::new();
+    for p in std::env::split_paths(existing) {
+        if seen.insert(p.clone()) {
+            parts.push(p);
+        }
+    }
+    for p in extra {
+        if seen.insert(p.clone()) {
+            parts.push(p.clone());
+        }
+    }
+    std::env::join_paths(&parts)
+        .map(|os| os.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| existing.to_owned())
+}
+
+/// Directories under the bundled managed-resources tree that contain
+/// pre-packaged CLI binaries (OpenCode, OpenClaw, etc.). These are
+/// shipped alongside the Electron app and materialised by the managed
+/// CLI installer into `~/.bun/bin` at first launch. Adding them to
+/// PATH here handles the edge case where the installer hasn't run yet
+/// (e.g. first-launch race, or the user launched poundingcore
+/// standalone).
+fn bundled_cli_bins() -> Vec<PathBuf> {
+    let root = match std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES") {
+        Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => return Vec::new(),
+    };
+    let cli_root = root.join("cli");
+    if !cli_root.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(&cli_root) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect()
+}
+
 fn platform_extra_bins() -> Vec<PathBuf> {
     platform_extra_bins_at(dirs::home_dir().as_deref())
 }
@@ -109,6 +168,9 @@ fn platform_extra_bins_at(home: Option<&Path>) -> Vec<PathBuf> {
         push_if_dir(h.join(".deno").join("bin"));
         push_if_dir(h.join(".local").join("bin"));
         push_if_dir(h.join(".volta").join("bin"));
+        // Hermes pip venv shim — created by the Electron managed CLI
+        // installer for the Python-based hermes-agent[acp] package.
+        push_if_dir(h.join(".hermes").join("bin"));
         for nvm_bin in nvm_version_bins(h) {
             push_if_dir(nvm_bin);
         }
@@ -126,6 +188,10 @@ fn platform_extra_bins_at(home: Option<&Path>) -> Vec<PathBuf> {
             push_if_dir(PathBuf::from(&local).join("Microsoft").join("WinGet").join("Links"));
             // Yarn classic global bin.
             push_if_dir(PathBuf::from(&local).join("Yarn").join("bin"));
+            // App Execution Aliases (python, python3, etc.) — delivered
+            // through the Windows user PATH via the registry but sometimes
+            // missing from the process PATH launched from a shortcut.
+            push_if_dir(PathBuf::from(&local).join("Microsoft").join("WindowsApps"));
         }
         if let Ok(pf) = std::env::var("ProgramFiles") {
             push_if_dir(PathBuf::from(&pf).join("Git").join("cmd"));
