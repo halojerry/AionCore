@@ -153,6 +153,7 @@ fn resolve_bundled_binary(name: &str) -> Option<PathBuf> {
     // UV is under runtimes/uv/uv
     let search_dirs = [
         root.join("node"),
+        root.join("runtimes").join("bun"),
         root.join("runtimes").join("python"),
         root.join("runtimes").join("uv"),
     ];
@@ -189,7 +190,29 @@ fn resolve_bundled_binary(name: &str) -> Option<PathBuf> {
 /// trimmed `PATHEXT` would otherwise see them as missing.
 pub fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
     match cmd {
-        "bun" => resolve_bun().ok().or_else(|| which::which("bun").ok()),
+        "bun" => {
+            // First try bundled runtime directories (runtimes/bun/).
+            // On Windows bun is shipped as `node.exe` inside a bun-<version>
+            // directory, so we look for `node` under runtimes/bun/.
+            resolve_bundled_binary("bun")
+                .or_else(|| {
+                    // Fallback: search for node.exe in bun-versioned dirs
+                    let root = crate::managed_resources::bundled_root_path()?;
+                    let bun_runtime_dir = root.join("runtimes").join("bun");
+                    if !bun_runtime_dir.is_dir() {
+                        return None;
+                    }
+                    walkdir::WalkDir::new(&bun_runtime_dir).max_depth(4).into_iter()
+                        .filter_map(|e| e.ok())
+                        .find(|e| {
+                            e.file_type().is_file()
+                            && e.file_name().to_string_lossy().contains("node")
+                        })
+                        .map(|e| e.path().to_path_buf())
+                })
+                .or_else(|| resolve_bun().ok())
+                .or_else(|| which::which("bun").ok())
+        },
         "bunx" => {
             let bunx_name = if cfg!(windows) { "bunx.exe" } else { "bunx" };
             if let Some(dir) = bun_bin_dir() {
@@ -201,6 +224,11 @@ pub fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
             which::which("bunx").ok()
         }
         "node" => resolve_bundled_binary("node").or_else(|| which::which("node").ok()),
+        "npx" => {
+            // Use the managed node runtime's npx so it runs from a clean
+            // environment (not the app's project dir with conflicting deps).
+            resolve_bundled_binary("npx").or_else(|| which::which("npx").ok())
+        }
         "python3" | "python" => resolve_bundled_binary(cmd).or_else(|| which::which(cmd).ok()),
         "uv" => resolve_bundled_binary("uv").or_else(|| which::which("uv").ok()),
         other => which::which(other).ok().or_else(|| windows_shim_fallback(other)),

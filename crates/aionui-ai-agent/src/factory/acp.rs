@@ -314,9 +314,13 @@ async fn load_user_mcp_servers(
     conversation_id: &str,
     capabilities: &AcpMcpCapabilities,
 ) -> Vec<McpServer> {
+    // When selected_ids is provided, we load those specific servers.
+    // But we ALWAYS also need to load all enabled rows so that builtin
+    // injectable servers (e.g. pounding-image-generation) are visible
+    // regardless of the per-conversation mcp_server_ids selection.
     let rows_result = match selected_ids {
-        Some(ids) => repo.list_by_ids_any(ids).await,
-        None => repo.list().await,
+        Some(ids) if !ids.is_empty() => repo.list_by_ids_any(ids).await,
+        _ => repo.list().await,
     };
     let rows = match rows_result {
         Ok(r) => r,
@@ -330,10 +334,26 @@ async fn load_user_mcp_servers(
         }
     };
 
+    // When selected_ids is Some, we also need to load all enabled rows
+    // so builtin injectable servers are always included.
+    let all_rows = if selected_ids.is_some() {
+        match repo.list().await {
+            Ok(r) => r,
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
     let mut servers = Vec::with_capacity(rows.len());
+    let selected_set: Option<std::collections::HashSet<&str>> =
+        selected_ids.map(|ids| ids.iter().map(|s| s.as_str()).collect());
+
+    // Process explicitly selected rows first
     for row in rows {
-        let selected = selected_ids
-            .map(|ids| ids.iter().any(|id| id == &row.id))
+        let selected = selected_set
+            .as_ref()
+            .map(|set| set.contains(row.id.as_str()))
             .unwrap_or(row.enabled);
         // Builtin MCP servers (e.g. pounding-image-generation) are now injected
         // into ACP agent sessions so agents can discover builtin tools. Previously
@@ -365,6 +385,51 @@ async fn load_user_mcp_servers(
                     error = %err,
                     "user_mcp: failed to convert row; skipping"
                 );
+            }
+        }
+    }
+
+    // When selected_ids was provided, also include any builtin injectable
+    // servers from the full list that weren't already included.
+    // This ensures pounding-image-generation is always visible to agents
+    // even when the conversation has mcp_server_ids=[].
+    if !all_rows.is_empty() {
+        let existing_names: std::collections::HashSet<String> =
+            servers.iter().filter_map(|s| match s {
+                McpServer::Stdio(s) => Some(s.name.clone()),
+                McpServer::Http(s) => Some(s.name.clone()),
+                McpServer::Sse(s) => Some(s.name.clone()),
+                _ => None,
+            }).collect();
+        for row in &all_rows {
+            if !row.enabled || !row.builtin || !is_builtin_mcp_injectable(&row.name) {
+                continue;
+            }
+            if existing_names.contains(row.name.as_str()) {
+                continue;
+            }
+            if !row_supported_by_capabilities(row, capabilities) {
+                continue;
+            }
+            match row_to_sdk_mcp_server(row).await {
+                Ok(server) => {
+                    info!(
+                        conversation_id,
+                        server_id = %row.id,
+                        server_name = %row.name,
+                        "user_mcp: builtin injectable added"
+                    );
+                    servers.push(server);
+                }
+                Err(err) => {
+                    warn!(
+                        conversation_id,
+                        server_id = %row.id,
+                        server_name = %row.name,
+                        error = %err,
+                        "user_mcp: failed to convert builtin row; skipping"
+                    );
+                }
             }
         }
     }
