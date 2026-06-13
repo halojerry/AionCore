@@ -13,28 +13,33 @@ use aionui_ai_agent::{AgentError, AgentSendError, IWorkerTaskManager};
 
 use crate::response_middleware::{CronCommandResult, CronCreateParams, CronUpdateParams, ICronService};
 use aionui_api_types::{
-    AgentErrorCode, AgentModeResponse, ConversationArtifactKind, GetModelInfoResponse, ModelInfoEntry,
-    ModelInfoPayload, SetModeRequest, SetModelRequest,
+    AgentErrorCode, AgentModeResponse, ConversationArtifactKind, ConversationResponse, GetModelInfoResponse,
+    ModelInfoEntry, ModelInfoPayload, SetModeRequest, SetModelRequest,
 };
 use aionui_api_types::{
     CloneConversationRequest, CreateConversationRequest, ListConversationsQuery, SearchMessagesQuery,
     SendMessageRequest, UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
-    AgentKillReason, AgentType, Confirmation, ConversationSource, ConversationStatus, PaginatedResult, TimestampMs,
+    AgentKillReason, AgentType, Confirmation, ConversationSource, ConversationStatus, PaginatedResult,
+    ProviderWithModel, TimestampMs,
 };
 use aionui_db::models::{
-    AcpSessionRow, AgentMetadataRow, ConversationArtifactRow, ConversationRow, MessageRow, UpdateAgentHandshakeParams,
-    UpsertAgentMetadataParams,
+    AcpSessionRow, AgentMetadataRow, ConversationArtifactRow, ConversationAssistantSnapshotRow, ConversationRow,
+    MessageRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams,
 };
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, DbError, IAcpSessionRepository,
-    IAgentMetadataRepository, IConversationRepository, MessageRowUpdate, MessageSearchRow, PersistedSessionState,
-    SaveRuntimeStateParams, SortOrder,
+    IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
+    IAssistantPreferenceRepository, IConversationRepository, MessageRowUpdate, MessageSearchRow, PersistedSessionState,
+    SaveRuntimeStateParams, SortOrder, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantPreferenceRepository, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
+    UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams, init_database_memory,
 };
+use aionui_extension::{AssistantRuleDispatcher, ExtensionError};
 use aionui_realtime::EventBroadcaster;
 use serde_json::json;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 
 use crate::ConversationError;
 use crate::service::ConversationService;
@@ -53,6 +58,37 @@ struct SkillLinkCall {
 struct RecordingSkillResolver {
     names: Vec<String>,
     links: Arc<Mutex<Vec<SkillLinkCall>>>,
+}
+
+struct StaticAssistantDispatcher {
+    rules: std::collections::HashMap<String, String>,
+}
+
+#[async_trait::async_trait]
+impl AssistantRuleDispatcher for StaticAssistantDispatcher {
+    async fn read_rule(&self, id: &str, _locale: Option<&str>) -> Result<String, ExtensionError> {
+        Ok(self.rules.get(id).cloned().unwrap_or_default())
+    }
+
+    async fn write_rule(&self, _id: &str, _locale: Option<&str>, _content: &str) -> Result<(), ExtensionError> {
+        Ok(())
+    }
+
+    async fn delete_rule(&self, _id: &str) -> Result<bool, ExtensionError> {
+        Ok(true)
+    }
+
+    async fn read_skill(&self, _id: &str, _locale: Option<&str>) -> Result<String, ExtensionError> {
+        Ok(String::new())
+    }
+
+    async fn write_skill(&self, _id: &str, _locale: Option<&str>, _content: &str) -> Result<(), ExtensionError> {
+        Ok(())
+    }
+
+    async fn delete_skill(&self, _id: &str) -> Result<bool, ExtensionError> {
+        Ok(true)
+    }
 }
 
 impl RecordingSkillResolver {
@@ -133,6 +169,7 @@ struct MockRepo {
     rows: Mutex<Vec<ConversationRow>>,
     messages: Mutex<Vec<MessageRow>>,
     artifacts: Mutex<Vec<ConversationArtifactRow>>,
+    assistant_snapshots: Mutex<Vec<ConversationAssistantSnapshotRow>>,
 }
 
 impl MockRepo {
@@ -141,6 +178,7 @@ impl MockRepo {
             rows: Mutex::new(vec![]),
             messages: Mutex::new(vec![]),
             artifacts: Mutex::new(vec![]),
+            assistant_snapshots: Mutex::new(vec![]),
         }
     }
 }
@@ -249,6 +287,53 @@ impl IConversationRepository for MockRepo {
         Ok(vec![])
     }
 
+    async fn get_assistant_snapshot(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationAssistantSnapshotRow>, aionui_db::DbError> {
+        let rows = self.assistant_snapshots.lock().unwrap();
+        Ok(rows.iter().find(|row| row.conversation_id == conversation_id).cloned())
+    }
+
+    async fn upsert_assistant_snapshot(
+        &self,
+        params: &UpsertConversationAssistantSnapshotParams<'_>,
+    ) -> Result<Option<ConversationAssistantSnapshotRow>, aionui_db::DbError> {
+        let row = ConversationAssistantSnapshotRow {
+            conversation_id: params.conversation_id.to_owned(),
+            assistant_definition_id: params.assistant_definition_id.to_owned(),
+            assistant_key: params.assistant_key.to_owned(),
+            assistant_source: params.assistant_source.to_owned(),
+            assistant_name: params.assistant_name.to_owned(),
+            assistant_avatar_type: params.assistant_avatar_type.to_owned(),
+            assistant_avatar_value: params.assistant_avatar_value.map(ToOwned::to_owned),
+            agent_backend: params.agent_backend.to_owned(),
+            rules_content: params.rules_content.to_owned(),
+            default_model_mode: params.default_model_mode.to_owned(),
+            resolved_model_id: params.resolved_model_id.map(ToOwned::to_owned),
+            default_permission_mode: params.default_permission_mode.to_owned(),
+            resolved_permission_value: params.resolved_permission_value.map(ToOwned::to_owned),
+            default_skills_mode: params.default_skills_mode.to_owned(),
+            resolved_skill_ids: params.resolved_skill_ids.to_owned(),
+            resolved_disabled_builtin_skill_ids: params.resolved_disabled_builtin_skill_ids.to_owned(),
+            default_mcps_mode: params.default_mcps_mode.to_owned(),
+            resolved_mcp_ids: params.resolved_mcp_ids.to_owned(),
+            created_at: 1,
+            updated_at: 1,
+        };
+        let mut rows = self.assistant_snapshots.lock().unwrap();
+        rows.retain(|existing| existing.conversation_id != params.conversation_id);
+        rows.push(row.clone());
+        Ok(Some(row))
+    }
+
+    async fn delete_assistant_snapshot(&self, conversation_id: &str) -> Result<bool, aionui_db::DbError> {
+        let mut rows = self.assistant_snapshots.lock().unwrap();
+        let before = rows.len();
+        rows.retain(|row| row.conversation_id != conversation_id);
+        Ok(rows.len() != before)
+    }
+
     async fn get_messages(
         &self,
         conv_id: &str,
@@ -328,6 +413,19 @@ impl IConversationRepository for MockRepo {
                     && message.r#type == msg_type
             })
             .cloned())
+    }
+
+    async fn list_stale_runtime_messages(&self) -> Result<Vec<MessageRow>, aionui_db::DbError> {
+        let messages = self.messages.lock().unwrap();
+        Ok(messages
+            .iter()
+            .filter(|message| {
+                message.position.as_deref() == Some("left")
+                    && matches!(message.status.as_deref(), Some("work" | "pending"))
+                    && matches!(message.r#type.as_str(), "text" | "thinking")
+            })
+            .cloned()
+            .collect())
     }
 
     async fn search_messages(
@@ -610,6 +708,56 @@ fn make_service_with_mock_task_manager(
     (svc, broadcaster, repo)
 }
 
+async fn make_service_with_mock_task_manager_and_assistant_support(
+    task_mgr: Arc<MockTaskManager>,
+) -> (
+    ConversationService,
+    Arc<MockBroadcaster>,
+    Arc<MockRepo>,
+    Arc<SqliteAssistantDefinitionRepository>,
+    Arc<SqliteAssistantOverlayRepository>,
+    Arc<dyn IAssistantPreferenceRepository>,
+) {
+    let (svc, broadcaster, repo) = make_service_with_mock_task_manager(task_mgr);
+    let db = init_database_memory().await.unwrap();
+    let definition_repo = Arc::new(SqliteAssistantDefinitionRepository::new(db.pool().clone()));
+    let overlay_repo = Arc::new(SqliteAssistantOverlayRepository::new(db.pool().clone()));
+    let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
+        Arc::new(SqliteAssistantPreferenceRepository::new(db.pool().clone()));
+
+    svc.with_assistant_definition_repo(definition_repo.clone());
+    svc.with_assistant_state_repo(overlay_repo.clone());
+    svc.with_assistant_preference_repo(preference_repo.clone());
+
+    (svc, broadcaster, repo, definition_repo, overlay_repo, preference_repo)
+}
+
+async fn make_service_with_assistant_support(
+    skill_resolver: Arc<dyn crate::skill_resolver::SkillResolver>,
+    dispatcher: Arc<dyn AssistantRuleDispatcher>,
+) -> (
+    ConversationService,
+    Arc<MockBroadcaster>,
+    Arc<MockRepo>,
+    Arc<SqliteAssistantDefinitionRepository>,
+    Arc<SqliteAssistantOverlayRepository>,
+    Arc<dyn IAssistantPreferenceRepository>,
+) {
+    let (svc, broadcaster, repo, _task_mgr) = make_service_with_resolver(skill_resolver);
+    let db = init_database_memory().await.unwrap();
+    let definition_repo = Arc::new(SqliteAssistantDefinitionRepository::new(db.pool().clone()));
+    let state_repo = Arc::new(SqliteAssistantOverlayRepository::new(db.pool().clone()));
+    let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
+        Arc::new(SqliteAssistantPreferenceRepository::new(db.pool().clone()));
+
+    svc.with_assistant_definition_repo(definition_repo.clone());
+    svc.with_assistant_state_repo(state_repo.clone());
+    svc.with_assistant_preference_repo(preference_repo.clone());
+    svc.with_assistant_dispatcher(dispatcher);
+
+    (svc, broadcaster, repo, definition_repo, state_repo, preference_repo)
+}
+
 fn make_create_req() -> CreateConversationRequest {
     let workspace = ensure_test_workspace_path();
     serde_json::from_value(json!({
@@ -623,6 +771,110 @@ fn ensure_test_workspace_path() -> String {
     let workspace = std::env::temp_dir().join("aionui-conversation-service-test-project");
     std::fs::create_dir_all(&workspace).unwrap();
     workspace.to_string_lossy().to_string()
+}
+
+async fn upsert_test_assistant_definition(
+    repo: &SqliteAssistantDefinitionRepository,
+    definition_id: &str,
+    assistant_key: &str,
+    agent_backend: &str,
+    default_model_mode: &str,
+    default_permission_mode: &str,
+) {
+    repo.upsert(&UpsertAssistantDefinitionParams {
+        definition_id,
+        assistant_key,
+        source: "builtin",
+        owner_type: "system",
+        source_ref: Some(assistant_key),
+        source_version: None,
+        source_hash: None,
+        name: assistant_key,
+        name_i18n: "{}",
+        description: Some("desc"),
+        description_i18n: "{}",
+        avatar_type: "emoji",
+        avatar_value: Some("🤖"),
+        agent_backend,
+        rule_resource_type: "builtin_asset",
+        rule_resource_ref: Some(assistant_key),
+        rule_inline_content: None,
+        recommended_prompts: "[]",
+        recommended_prompts_i18n: "{}",
+        default_model_mode,
+        default_model_value: None,
+        default_permission_mode,
+        default_permission_value: None,
+        default_skills_mode: "auto",
+        default_skill_ids: "[]",
+        custom_skill_names: "[]",
+        default_disabled_builtin_skill_ids: "[]",
+        default_mcps_mode: "auto",
+        default_mcp_ids: "[]",
+    })
+    .await
+    .unwrap();
+}
+
+async fn create_assistant_backed_conversation(
+    svc: &ConversationService,
+    user_id: &str,
+    conversation_type: &str,
+    backend: &str,
+    assistant_id: &str,
+) -> ConversationResponse {
+    let workspace = ensure_test_workspace_path();
+    let mut payload = json!({
+        "type": conversation_type,
+        "name": "assistant conversation",
+        "assistant": {
+            "id": assistant_id,
+            "locale": "en-US"
+        },
+        "extra": {
+            "workspace": workspace,
+            "backend": backend
+        }
+    });
+
+    if conversation_type == "aionrs" {
+        payload["model"] = json!({
+            "provider_id": "provider-1",
+            "model": "model-a",
+            "use_model": "model-a"
+        });
+    }
+
+    let req: CreateConversationRequest = serde_json::from_value(payload).unwrap();
+    svc.create(user_id, req).await.unwrap()
+}
+
+async fn insert_conversation_with_type(repo: &Arc<MockRepo>, user_id: &str, agent_type: AgentType) -> ConversationRow {
+    let id = format!(
+        "legacy-{}-{}",
+        agent_type.serde_name(),
+        aionui_common::generate_short_id()
+    );
+    let row = ConversationRow {
+        id,
+        user_id: user_id.to_owned(),
+        name: format!("legacy {}", agent_type.serde_name()),
+        r#type: agent_type.serde_name().to_owned(),
+        extra: json!({
+            "workspace": ensure_test_workspace_path()
+        })
+        .to_string(),
+        model: None,
+        status: Some("finished".into()),
+        source: Some("aionui".into()),
+        channel_chat_id: None,
+        pinned: false,
+        pinned_at: None,
+        created_at: 1,
+        updated_at: 1,
+    };
+    repo.create(&row).await.unwrap();
+    row
 }
 
 // ── Create tests ───────────────────────────────────────────────────
@@ -651,6 +903,35 @@ async fn create_returns_conversation_with_defaults() {
     assert_eq!(events[0].data["action"], "created");
     assert_eq!(events[0].data["conversation_id"], resp.id);
     assert_eq!(events[0].data["source"], "aionui");
+}
+
+#[tokio::test]
+async fn create_rejects_deprecated_agent_types_for_new_conversations() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+
+    for agent_type in [
+        AgentType::Gemini,
+        AgentType::Codex,
+        AgentType::OpenclawGateway,
+        AgentType::Nanobot,
+        AgentType::Remote,
+    ] {
+        let mut req = make_create_req();
+        req.r#type = agent_type;
+        req.model = None;
+        req.extra = json!({
+            "workspace": ensure_test_workspace_path()
+        });
+
+        let err = svc.create("user_1", req).await.unwrap_err();
+        assert_eq!(err.error_code(), "BAD_REQUEST");
+        assert!(
+            err.to_string()
+                .contains("This agent type is no longer supported for new conversations."),
+            "unexpected error for {}: {err}",
+            agent_type.serde_name()
+        );
+    }
 }
 
 #[tokio::test]
@@ -1057,8 +1338,10 @@ async fn delete_invokes_registered_hook_before_row_delete() {
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
     svc.delete("user_1", &conv.id).await.unwrap();
 
-    let observations = hook.observations.lock().unwrap();
-    assert_eq!(observations.as_slice(), &[true]);
+    {
+        let observations = hook.observations.lock().unwrap();
+        assert_eq!(observations.as_slice(), &[true]);
+    }
     assert!(repo.get(&conv.id).await.unwrap().is_none());
 }
 
@@ -1285,6 +1568,7 @@ struct MockAgent {
     stopped: Mutex<bool>,
     mode: Mutex<String>,
     model_id: Mutex<String>,
+    keep_reported_model_on_set: bool,
     confirmations: Mutex<Vec<Confirmation>>,
     approval_memory: Mutex<std::collections::HashMap<String, bool>>,
     allow_direct_confirm: bool,
@@ -1293,6 +1577,25 @@ struct MockAgent {
 }
 
 impl MockAgent {
+    fn build_model_response(current: &str) -> GetModelInfoResponse {
+        GetModelInfoResponse {
+            model_info: Some(ModelInfoPayload {
+                current_model_id: Some(current.to_owned()),
+                current_model_label: Some(current.to_owned()),
+                available_models: vec![
+                    ModelInfoEntry {
+                        id: "model-a".to_owned(),
+                        label: "Model A".to_owned(),
+                    },
+                    ModelInfoEntry {
+                        id: "model-b".to_owned(),
+                        label: "Model B".to_owned(),
+                    },
+                ],
+            }),
+        }
+    }
+
     fn new(conversation_id: &str) -> Self {
         let (event_tx, _) = broadcast::channel(64);
         Self {
@@ -1301,6 +1604,7 @@ impl MockAgent {
             stopped: Mutex::new(false),
             mode: Mutex::new("default".to_owned()),
             model_id: Mutex::new("model-a".to_owned()),
+            keep_reported_model_on_set: false,
             confirmations: Mutex::new(vec![]),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: false,
@@ -1316,6 +1620,7 @@ impl MockAgent {
             stopped: Mutex::new(false),
             mode: Mutex::new("default".to_owned()),
             model_id: Mutex::new("model-a".to_owned()),
+            keep_reported_model_on_set: false,
             confirmations: Mutex::new(confirmations),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: false,
@@ -1331,9 +1636,26 @@ impl MockAgent {
             stopped: Mutex::new(false),
             mode: Mutex::new("default".to_owned()),
             model_id: Mutex::new("model-a".to_owned()),
+            keep_reported_model_on_set: false,
             confirmations: Mutex::new(vec![]),
             approval_memory: Mutex::new(std::collections::HashMap::new()),
             allow_direct_confirm: true,
+            workspace_override: None,
+        }
+    }
+
+    fn with_stale_reported_model_after_set(conversation_id: &str) -> Self {
+        let (event_tx, _) = broadcast::channel(64);
+        Self {
+            conversation_id: conversation_id.to_owned(),
+            event_tx,
+            stopped: Mutex::new(false),
+            mode: Mutex::new("default".to_owned()),
+            model_id: Mutex::new("model-a".to_owned()),
+            keep_reported_model_on_set: true,
+            confirmations: Mutex::new(vec![]),
+            approval_memory: Mutex::new(std::collections::HashMap::new()),
+            allow_direct_confirm: false,
             workspace_override: None,
         }
     }
@@ -1425,29 +1747,112 @@ impl IMockAgent for MockAgent {
 
     async fn get_model(&self) -> Result<GetModelInfoResponse, AgentError> {
         let current = self.model_id.lock().unwrap().clone();
-        Ok(GetModelInfoResponse {
-            model_info: Some(ModelInfoPayload {
-                current_model_id: Some(current.clone()),
-                current_model_label: Some(current.clone()),
-                available_models: vec![
-                    ModelInfoEntry {
-                        id: "model-a".to_owned(),
-                        label: "Model A".to_owned(),
-                    },
-                    ModelInfoEntry {
-                        id: "model-b".to_owned(),
-                        label: "Model B".to_owned(),
-                    },
-                ],
-            }),
-        })
+        Ok(Self::build_model_response(&current))
     }
 
     async fn set_model(&self, model_id: &str) -> Result<(), AgentError> {
-        *self.model_id.lock().unwrap() = model_id.to_owned();
+        if !self.keep_reported_model_on_set {
+            *self.model_id.lock().unwrap() = model_id.to_owned();
+        }
+        Ok(())
+    }
+
+    async fn set_model_confirmed(&self, model_id: &str) -> Result<GetModelInfoResponse, AgentError> {
+        self.set_model(model_id).await?;
+        Ok(Self::build_model_response(model_id))
+    }
+}
+
+struct BlockingCancelAgent {
+    conversation_id: String,
+    agent_type: AgentType,
+    event_tx: broadcast::Sender<AgentStreamEvent>,
+    send_started: Notify,
+    finish_notify: Notify,
+    cancel_count: AtomicUsize,
+    cancel_error: bool,
+}
+
+impl BlockingCancelAgent {
+    fn new(conversation_id: &str) -> Self {
+        Self::new_with_type(conversation_id, AgentType::Acp)
+    }
+
+    fn new_with_type(conversation_id: &str, agent_type: AgentType) -> Self {
+        let (event_tx, _) = broadcast::channel(64);
+        Self {
+            conversation_id: conversation_id.to_owned(),
+            agent_type,
+            event_tx,
+            send_started: Notify::new(),
+            finish_notify: Notify::new(),
+            cancel_count: AtomicUsize::new(0),
+            cancel_error: false,
+        }
+    }
+
+    fn new_with_cancel_error(conversation_id: &str) -> Self {
+        let mut agent = Self::new(conversation_id);
+        agent.cancel_error = true;
+        agent
+    }
+
+    async fn wait_until_send_started(&self) {
+        self.send_started.notified().await;
+    }
+
+    fn release_finish(&self) {
+        self.finish_notify.notify_waiters();
+    }
+}
+
+#[async_trait::async_trait]
+impl IAgentTask for BlockingCancelAgent {
+    fn agent_type(&self) -> AgentType {
+        self.agent_type
+    }
+
+    fn conversation_id(&self) -> &str {
+        &self.conversation_id
+    }
+
+    fn workspace(&self) -> &str {
+        "/tmp/test"
+    }
+
+    fn status(&self) -> Option<ConversationStatus> {
+        Some(ConversationStatus::Running)
+    }
+
+    fn last_activity_at(&self) -> TimestampMs {
+        0
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<AgentStreamEvent> {
+        self.event_tx.subscribe()
+    }
+
+    async fn send_message(&self, _data: SendMessageData) -> Result<(), AgentSendError> {
+        self.send_started.notify_waiters();
+        self.finish_notify.notified().await;
+        let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData::default()));
+        Ok(())
+    }
+
+    async fn cancel(&self) -> Result<(), AgentError> {
+        self.cancel_count.fetch_add(1, Ordering::SeqCst);
+        if self.cancel_error {
+            return Err(AgentError::bad_gateway("cancel failed"));
+        }
+        Ok(())
+    }
+
+    fn kill(&self, _reason: Option<AgentKillReason>) -> Result<(), AgentError> {
         Ok(())
     }
 }
+
+impl IMockAgent for BlockingCancelAgent {}
 
 // ── Mock WorkerTaskManager ──────────────────────────────────────
 
@@ -1486,6 +1891,58 @@ struct FailingBuildTaskManager {
 impl FailingBuildTaskManager {
     fn new(error: impl Into<String>) -> Self {
         Self { error: error.into() }
+    }
+}
+
+struct DelayedFailingBuildTaskManager {
+    delay: Duration,
+    error: String,
+}
+
+impl DelayedFailingBuildTaskManager {
+    fn new(delay: Duration, error: impl Into<String>) -> Self {
+        Self {
+            delay,
+            error: error.into(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IWorkerTaskManager for DelayedFailingBuildTaskManager {
+    fn get_task(&self, _conversation_id: &str) -> Option<AgentInstance> {
+        None
+    }
+
+    async fn get_or_build_task(
+        &self,
+        _conversation_id: &str,
+        _options: BuildTaskOptions,
+    ) -> Result<AgentInstance, AgentError> {
+        tokio::time::sleep(self.delay).await;
+        Err(AgentError::bad_gateway(self.error.clone()))
+    }
+
+    fn kill(&self, _conversation_id: &str, _reason: Option<AgentKillReason>) -> Result<(), AgentError> {
+        Ok(())
+    }
+
+    fn kill_and_wait(
+        &self,
+        _conversation_id: &str,
+        _reason: Option<AgentKillReason>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn clear(&self) {}
+
+    fn active_count(&self) -> usize {
+        0
+    }
+
+    fn collect_idle(&self, _idle_threshold_ms: TimestampMs) -> Vec<String> {
+        vec![]
     }
 }
 
@@ -1864,13 +2321,74 @@ async fn send_message_returns_accepted() {
     let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
 
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
-    let msg_id = svc
+    let response = svc
         .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
         .await
         .unwrap();
 
-    assert!(!msg_id.is_empty(), "msg_id must be non-empty");
-    assert_eq!(msg_id.len(), 8, "msg_id should be an 8-char short hex ID");
+    assert!(!response.msg_id.is_empty(), "msg_id must be non-empty");
+    assert_eq!(response.msg_id.len(), 8, "msg_id should be an 8-char short hex ID");
+    assert!(response.turn_id.starts_with("turn_"), "turn_id must use turn_ prefix");
+    assert_ne!(response.msg_id, response.turn_id, "turn_id must not reuse msg_id");
+}
+
+#[tokio::test]
+async fn send_message_returns_msg_id_and_turn_id_and_summary_tracks_turn() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let slow_task_mgr = Arc::new(SlowBuildTaskManager::new(Duration::from_millis(500)));
+    let task_mgr: Arc<dyn IWorkerTaskManager> = slow_task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let response = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+        .await
+        .unwrap();
+
+    assert!(!response.msg_id.is_empty(), "msg_id must be non-empty");
+    assert!(response.turn_id.starts_with("turn_"), "turn_id must use turn_ prefix");
+    assert_ne!(response.msg_id, response.turn_id, "turn_id must not reuse msg_id");
+    assert_eq!(
+        response.runtime.turn_id.as_deref(),
+        Some(response.turn_id.as_str()),
+        "send response runtime must identify the accepted turn"
+    );
+    assert!(response.runtime.is_processing);
+    assert!(!response.runtime.can_send_message);
+
+    let runtime = svc.runtime_summary_for(&conv.id).await;
+    assert_eq!(response.runtime, runtime);
+    assert_eq!(runtime.turn_id.as_deref(), Some(response.turn_id.as_str()));
+    assert!(runtime.is_processing);
+    assert!(!runtime.can_send_message);
+}
+
+#[tokio::test]
+async fn send_message_rejects_legacy_runtime_conversations_as_archived() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
+
+    for agent_type in [
+        AgentType::Gemini,
+        AgentType::Codex,
+        AgentType::OpenclawGateway,
+        AgentType::Nanobot,
+        AgentType::Remote,
+    ] {
+        let conv = insert_conversation_with_type(&repo, "user_1", agent_type).await;
+
+        let err = svc
+            .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.error_code(), "CONVERSATION_ARCHIVED");
+        assert!(
+            err.to_string()
+                .contains("This historical conversation can no longer be continued. Please start a new conversation."),
+            "unexpected archived message for {}: {err}",
+            agent_type.serde_name()
+        );
+    }
 }
 
 #[tokio::test]
@@ -1917,6 +2435,406 @@ async fn set_model_returns_confirmed_model_from_active_agent() {
 }
 
 #[tokio::test]
+async fn set_model_returns_confirmed_model_even_if_get_model_is_stale() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, _repo) = make_service_with_mock_task_manager(task_mgr.clone());
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(MockAgent::with_stale_reported_model_after_set(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent.clone()));
+
+    let response = svc
+        .set_model(
+            &conv.id,
+            SetModelRequest {
+                model_id: "model-b".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let model_info = response.model_info.expect("model info should be returned");
+    assert_eq!(
+        model_info.current_model_id.as_deref(),
+        Some("model-b"),
+        "set_model should return the confirmed model, not a stale get_model snapshot"
+    );
+
+    let stale_model_info = agent
+        .get_model()
+        .await
+        .unwrap()
+        .model_info
+        .expect("mock agent should still report model info");
+    assert_eq!(stale_model_info.current_model_id.as_deref(), Some("model-a"));
+}
+
+#[tokio::test]
+async fn set_model_updates_assistant_preference_only_when_snapshot_model_mode_is_auto() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, repo, definition_repo, overlay_repo, preference_repo) =
+        make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_model_auto",
+        "assistant-model-auto",
+        "claude",
+        "auto",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_model_auto",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_model_auto",
+            last_model_id: Some("legacy-model"),
+            last_permission_value: None,
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let auto_conv = create_assistant_backed_conversation(&svc, "user_1", "acp", "claude", "assistant-model-auto").await;
+    task_mgr.insert_agent(
+        &auto_conv.id,
+        AgentInstance::Mock(Arc::new(MockAgent::new(&auto_conv.id))),
+    );
+
+    let response = svc
+        .set_model(
+            &auto_conv.id,
+            SetModelRequest {
+                model_id: "model-b".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response
+            .model_info
+            .as_ref()
+            .and_then(|info| info.current_model_id.as_deref()),
+        Some("model-b")
+    );
+    let auto_pref = preference_repo.get("asstdef_model_auto").await.unwrap().unwrap();
+    assert_eq!(auto_pref.last_model_id.as_deref(), Some("model-b"));
+    let auto_snapshot = repo.get_assistant_snapshot(&auto_conv.id).await.unwrap().unwrap();
+    assert_eq!(auto_snapshot.resolved_model_id.as_deref(), Some("model-b"));
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_model_fixed",
+        "assistant-model-fixed",
+        "claude",
+        "fixed",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_model_fixed",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_model_fixed",
+            last_model_id: Some("legacy-fixed-model"),
+            last_permission_value: None,
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let fixed_conv =
+        create_assistant_backed_conversation(&svc, "user_1", "acp", "claude", "assistant-model-fixed").await;
+    task_mgr.insert_agent(
+        &fixed_conv.id,
+        AgentInstance::Mock(Arc::new(MockAgent::new(&fixed_conv.id))),
+    );
+
+    let _ = svc
+        .set_model(
+            &fixed_conv.id,
+            SetModelRequest {
+                model_id: "model-c".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fixed_pref = preference_repo.get("asstdef_model_fixed").await.unwrap().unwrap();
+    assert_eq!(fixed_pref.last_model_id.as_deref(), Some("legacy-fixed-model"));
+    let fixed_snapshot = repo.get_assistant_snapshot(&fixed_conv.id).await.unwrap().unwrap();
+    assert_eq!(fixed_snapshot.resolved_model_id.as_deref(), Some("model-c"));
+}
+
+#[tokio::test]
+async fn set_mode_updates_assistant_preference_only_when_snapshot_permission_mode_is_auto() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, repo, definition_repo, overlay_repo, preference_repo) =
+        make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_mode_auto",
+        "assistant-mode-auto",
+        "claude",
+        "auto",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_mode_auto",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_mode_auto",
+            last_model_id: None,
+            last_permission_value: Some("legacy-mode"),
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let auto_conv = create_assistant_backed_conversation(&svc, "user_1", "acp", "claude", "assistant-mode-auto").await;
+    task_mgr.insert_agent(
+        &auto_conv.id,
+        AgentInstance::Mock(Arc::new(MockAgent::new(&auto_conv.id))),
+    );
+
+    let response = svc
+        .set_mode(
+            &auto_conv.id,
+            SetModeRequest {
+                mode: "plan".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.mode, "plan");
+    let auto_pref = preference_repo.get("asstdef_mode_auto").await.unwrap().unwrap();
+    assert_eq!(auto_pref.last_permission_value.as_deref(), Some("plan"));
+    let auto_snapshot = repo.get_assistant_snapshot(&auto_conv.id).await.unwrap().unwrap();
+    assert_eq!(auto_snapshot.resolved_permission_value.as_deref(), Some("plan"));
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_mode_fixed",
+        "assistant-mode-fixed",
+        "claude",
+        "auto",
+        "fixed",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_mode_fixed",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_mode_fixed",
+            last_model_id: None,
+            last_permission_value: Some("legacy-fixed-mode"),
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let fixed_conv =
+        create_assistant_backed_conversation(&svc, "user_1", "acp", "claude", "assistant-mode-fixed").await;
+    task_mgr.insert_agent(
+        &fixed_conv.id,
+        AgentInstance::Mock(Arc::new(MockAgent::new(&fixed_conv.id))),
+    );
+
+    let _ = svc
+        .set_mode(
+            &fixed_conv.id,
+            SetModeRequest {
+                mode: "acceptEdits".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let fixed_pref = preference_repo.get("asstdef_mode_fixed").await.unwrap().unwrap();
+    assert_eq!(fixed_pref.last_permission_value.as_deref(), Some("legacy-fixed-mode"));
+    let fixed_snapshot = repo.get_assistant_snapshot(&fixed_conv.id).await.unwrap().unwrap();
+    assert_eq!(fixed_snapshot.resolved_permission_value.as_deref(), Some("acceptEdits"));
+}
+
+#[tokio::test]
+async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_model_mode_is_auto() {
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let (svc, _broadcaster, repo, definition_repo, overlay_repo, preference_repo) =
+        make_service_with_mock_task_manager_and_assistant_support(task_mgr.clone()).await;
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_aionrs_auto",
+        "assistant-aionrs-auto",
+        "aionrs",
+        "auto",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_aionrs_auto",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_aionrs_auto",
+            last_model_id: Some("legacy-aionrs-model"),
+            last_permission_value: None,
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let auto_conv =
+        create_assistant_backed_conversation(&svc, "user_1", "aionrs", "aionrs", "assistant-aionrs-auto").await;
+    let updated = svc
+        .update(
+            "user_1",
+            &auto_conv.id,
+            UpdateConversationRequest {
+                model: Some(ProviderWithModel {
+                    provider_id: "provider-2".to_owned(),
+                    model: "model-z".to_owned(),
+                    use_model: Some("model-z".to_owned()),
+                }),
+                name: None,
+                extra: None,
+                pinned: None,
+            },
+            &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        updated.model.as_ref().and_then(|model| model.use_model.as_deref()),
+        Some("model-z")
+    );
+    let auto_pref = preference_repo.get("asstdef_aionrs_auto").await.unwrap().unwrap();
+    assert_eq!(auto_pref.last_model_id.as_deref(), Some("model-z"));
+    let auto_snapshot = repo.get_assistant_snapshot(&auto_conv.id).await.unwrap().unwrap();
+    assert_eq!(auto_snapshot.resolved_model_id.as_deref(), Some("model-z"));
+
+    upsert_test_assistant_definition(
+        &definition_repo,
+        "asstdef_aionrs_fixed",
+        "assistant-aionrs-fixed",
+        "aionrs",
+        "fixed",
+        "auto",
+    )
+    .await;
+    overlay_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_aionrs_fixed",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: None,
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_aionrs_fixed",
+            last_model_id: Some("legacy-aionrs-fixed-model"),
+            last_permission_value: None,
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let fixed_conv =
+        create_assistant_backed_conversation(&svc, "user_1", "aionrs", "aionrs", "assistant-aionrs-fixed").await;
+    let _ = svc
+        .update(
+            "user_1",
+            &fixed_conv.id,
+            UpdateConversationRequest {
+                model: Some(ProviderWithModel {
+                    provider_id: "provider-3".to_owned(),
+                    model: "model-y".to_owned(),
+                    use_model: Some("model-y".to_owned()),
+                }),
+                name: None,
+                extra: None,
+                pinned: None,
+            },
+            &(task_mgr as Arc<dyn IWorkerTaskManager>),
+        )
+        .await
+        .unwrap();
+
+    let fixed_pref = preference_repo.get("asstdef_aionrs_fixed").await.unwrap().unwrap();
+    assert_eq!(fixed_pref.last_model_id.as_deref(), Some("legacy-aionrs-fixed-model"));
+    let fixed_snapshot = repo.get_assistant_snapshot(&fixed_conv.id).await.unwrap().unwrap();
+    assert_eq!(fixed_snapshot.resolved_model_id.as_deref(), Some("model-y"));
+
+    // Ensure the update path used the repository row, not a no-op.
+    let updated_row = repo.get(&fixed_conv.id).await.unwrap().unwrap();
+    assert!(
+        updated_row
+            .model
+            .as_deref()
+            .is_some_and(|model| model.contains("model-y"))
+    );
+}
+
+#[tokio::test]
 async fn send_message_missing_workspace_persists_message_and_failure_tip() {
     let (svc, broadcaster, repo, _task_mgr) = make_service();
     let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
@@ -1934,12 +2852,12 @@ async fn send_message_missing_workspace_persists_message_and_failure_tip() {
     .await
     .unwrap();
 
-    let msg_id = svc
+    let response = svc
         .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
         .await
         .unwrap();
     assert!(
-        !msg_id.is_empty(),
+        !response.msg_id.is_empty(),
         "msg_id must still be returned when runtime workspace validation fails"
     );
 
@@ -1961,7 +2879,7 @@ async fn send_message_missing_workspace_persists_message_and_failure_tip() {
         .iter()
         .find(|message| message.r#type == "text")
         .expect("missing workspace failure should persist the user message");
-    assert_eq!(user_message.msg_id.as_deref(), Some(msg_id.as_str()));
+    assert_eq!(user_message.msg_id.as_deref(), Some(response.msg_id.as_str()));
 
     let error_tip = messages
         .iter()
@@ -1983,11 +2901,13 @@ async fn send_message_missing_workspace_persists_message_and_failure_tip() {
         error_tip_event.data["data"]["code"],
         "WORKSPACE_PATH_RUNTIME_UNAVAILABLE"
     );
+    assert_eq!(error_tip_event.data["turn_id"], response.turn_id);
 
     let turn_event = events
         .iter()
         .find(|event| event.name == "turn.completed")
         .expect("missing workspace failure should complete the turn");
+    assert_eq!(turn_event.data["turn_id"], response.turn_id);
     assert_eq!(turn_event.data["runtime"]["is_processing"], false);
     assert_eq!(turn_event.data["runtime"]["can_send_message"], true);
 }
@@ -2001,7 +2921,7 @@ async fn send_message_broadcasts_user_created_event() {
     // Clear events from create
     broadcaster.take_events();
 
-    let msg_id = svc
+    let response = svc
         .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
         .await
         .unwrap();
@@ -2013,7 +2933,7 @@ async fn send_message_broadcasts_user_created_event() {
         .expect("should broadcast message.userCreated event");
 
     assert_eq!(user_created.data["conversation_id"], conv.id);
-    assert_eq!(user_created.data["msg_id"], msg_id);
+    assert_eq!(user_created.data["msg_id"], response.msg_id);
     assert_eq!(user_created.data["content"], "Hello");
     assert_eq!(user_created.data["position"], "right");
 }
@@ -2025,7 +2945,7 @@ async fn send_message_returns_before_cold_agent_build_completes() {
     let task_mgr: Arc<dyn IWorkerTaskManager> = slow_task_mgr.clone();
 
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
-    let msg_id = tokio::time::timeout(
+    let response = tokio::time::timeout(
         Duration::from_millis(50),
         svc.send_message("user_1", &conv.id, make_send_req(), &task_mgr),
     )
@@ -2033,7 +2953,8 @@ async fn send_message_returns_before_cold_agent_build_completes() {
     .expect("send_message should return before cold agent build finishes")
     .unwrap();
 
-    assert!(!msg_id.is_empty(), "msg_id must be non-empty");
+    assert!(!response.msg_id.is_empty(), "msg_id must be non-empty");
+    assert!(response.turn_id.starts_with("turn_"));
     assert!(
         !slow_task_mgr.was_built(),
         "cold agent build should continue in the background after send_message returns"
@@ -2081,12 +3002,13 @@ async fn send_message_persists_error_tip_when_agent_build_fails() {
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
     broadcaster.take_events();
 
-    let msg_id = svc
+    let response = svc
         .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
         .await
         .unwrap();
 
-    assert!(!msg_id.is_empty(), "msg_id must be non-empty");
+    assert!(!response.msg_id.is_empty(), "msg_id must be non-empty");
+    assert!(response.turn_id.starts_with("turn_"));
 
     let messages = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -2136,6 +3058,7 @@ async fn send_message_persists_error_tip_when_agent_build_fails() {
         .expect("agent build failure should broadcast the error tips message");
     assert_eq!(error_tip_event.data["status"], "error");
     assert_eq!(error_tip_event.data["data"]["code"], "BAD_GATEWAY");
+    assert_eq!(error_tip_event.data["turn_id"], response.turn_id);
 }
 
 #[tokio::test]
@@ -2219,7 +3142,7 @@ async fn send_message_rejects_active_runtime_claim() {
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
     let _claim = svc
         .runtime_state()
-        .try_claim_turn(&conv.id)
+        .try_claim_turn(&conv.id, "turn-test")
         .expect("test claim should be created");
 
     let err = svc
@@ -2227,6 +3150,60 @@ async fn send_message_rejects_active_runtime_claim() {
         .await
         .unwrap_err();
     assert!(matches!(err, ConversationError::Busy { .. }));
+}
+
+#[tokio::test]
+async fn send_message_rejects_when_runtime_is_shutting_down() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    svc.runtime_state().mark_shutting_down();
+
+    let err = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ConversationError::Busy { .. }));
+
+    let messages = repo.get_messages(&conv.id, 1, 20, SortOrder::Asc).await.unwrap().items;
+    assert!(
+        messages.is_empty(),
+        "shutdown rejection must not persist a user message"
+    );
+}
+
+#[tokio::test]
+async fn send_message_build_failure_while_deleting_skips_failure_tip_and_completion() {
+    let (svc, broadcaster, repo, _task_mgr) = make_service();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(DelayedFailingBuildTaskManager::new(
+        Duration::from_millis(100),
+        "delayed build failure",
+    ));
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    broadcaster.take_events();
+
+    let response = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+        .await
+        .unwrap();
+    assert!(!response.msg_id.is_empty());
+
+    svc.runtime_state().mark_deleting(&conv.id);
+    wait_for_turn_released(&svc, &conv.id).await;
+
+    let messages = repo.get_messages(&conv.id, 1, 20, SortOrder::Asc).await.unwrap().items;
+    assert!(
+        messages.iter().all(|message| message.r#type != "tips"),
+        "deleting conversation must skip build-failure tips"
+    );
+
+    let events = broadcaster.take_events();
+    assert!(
+        events.iter().all(|event| event.name != "turn.completed"),
+        "deleting conversation must not publish turn.completed"
+    );
 }
 
 #[tokio::test]
@@ -2271,6 +3248,55 @@ async fn send_message_persists_factory_resolved_workspace() {
     .await
     .expect("factory-resolved workspace should be persisted in the background");
     assert_eq!(updated.extra["workspace"], auto_workspace);
+}
+
+#[tokio::test]
+async fn startup_recovery_closes_stale_runtime_messages_without_failure_tip() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    repo.insert_message(&MessageRow {
+        id: "visible-stale".into(),
+        conversation_id: conv.id.clone(),
+        msg_id: Some("visible-stale".into()),
+        r#type: "text".into(),
+        content: json!({ "content": "partial output" }).to_string(),
+        position: Some("left".into()),
+        status: Some("work".into()),
+        hidden: false,
+        created_at: 1,
+    })
+    .await
+    .unwrap();
+    repo.insert_message(&MessageRow {
+        id: "empty-stale".into(),
+        conversation_id: conv.id.clone(),
+        msg_id: Some("empty-stale".into()),
+        r#type: "thinking".into(),
+        content: json!({ "content": "" }).to_string(),
+        position: Some("left".into()),
+        status: Some("pending".into()),
+        hidden: false,
+        created_at: 2,
+    })
+    .await
+    .unwrap();
+
+    svc.recover_stale_runtime_state_on_startup().await;
+
+    let messages = repo.get_messages(&conv.id, 1, 20, SortOrder::Asc).await.unwrap().items;
+    let visible = messages.iter().find(|message| message.id == "visible-stale").unwrap();
+    assert_eq!(visible.status.as_deref(), Some("finish"));
+    assert!(!visible.hidden);
+
+    let empty = messages.iter().find(|message| message.id == "empty-stale").unwrap();
+    assert_eq!(empty.status.as_deref(), Some("finish"));
+    assert!(empty.hidden);
+
+    assert!(
+        messages.iter().all(|message| message.r#type != "tips"),
+        "startup recovery must not write failure tips"
+    );
 }
 
 #[tokio::test]
@@ -2462,20 +3488,164 @@ async fn stop_stream_with_active_agent() {
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
 
     // Build agent via send_message
-    svc.send_message(
-        "user_1",
-        &conv.id,
-        make_send_req(),
-        &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>),
-    )
-    .await
-    .unwrap();
+    let send = svc
+        .send_message(
+            "user_1",
+            &conv.id,
+            make_send_req(),
+            &(task_mgr.clone() as Arc<dyn IWorkerTaskManager>),
+        )
+        .await
+        .unwrap();
 
     // Stop should succeed since agent exists
     let result = svc
-        .cancel("user_1", &conv.id, &(task_mgr as Arc<dyn IWorkerTaskManager>))
+        .cancel(
+            "user_1",
+            &conv.id,
+            &send.turn_id,
+            &(task_mgr as Arc<dyn IWorkerTaskManager>),
+        )
         .await;
     assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn cancel_with_mismatched_turn_id_does_not_cancel_and_returns_current_runtime() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let slow_task_mgr = Arc::new(SlowBuildTaskManager::new(Duration::from_millis(500)));
+    let task_mgr: Arc<dyn IWorkerTaskManager> = slow_task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr)
+        .await
+        .unwrap();
+
+    let response = svc.cancel("user_1", &conv.id, "turn_stale", &task_mgr).await.unwrap();
+
+    assert_eq!(response.runtime.turn_id.as_deref(), Some(send.turn_id.as_str()));
+    assert!(response.runtime.is_processing);
+    assert!(svc.runtime_state().is_claimed(&conv.id));
+}
+
+#[tokio::test]
+async fn cancel_keeps_turn_claim_until_agent_terminal_event() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(BlockingCancelAgent::new(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent.clone()));
+
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .unwrap();
+    agent.wait_until_send_started().await;
+
+    let cancel = svc
+        .cancel("user_1", &conv.id, &send.turn_id, &task_mgr_dyn)
+        .await
+        .unwrap();
+
+    assert_eq!(cancel.runtime.turn_id.as_deref(), Some(send.turn_id.as_str()));
+    assert!(cancel.runtime.is_processing);
+    assert!(!cancel.runtime.can_send_message);
+    assert!(svc.runtime_state().is_claimed(&conv.id));
+
+    let second = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .unwrap_err();
+    assert!(matches!(second, ConversationError::Busy { .. }));
+
+    agent.release_finish();
+    wait_for_turn_released(&svc, &conv.id).await;
+}
+
+#[tokio::test]
+async fn cancel_error_clears_cancelling_state() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(BlockingCancelAgent::new_with_cancel_error(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent.clone()));
+
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .unwrap();
+    agent.wait_until_send_started().await;
+
+    let err = svc
+        .cancel("user_1", &conv.id, &send.turn_id, &task_mgr_dyn)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, ConversationError::BadGateway { .. }));
+    assert!(!svc.runtime_state().is_cancelling(&conv.id));
+
+    agent.release_finish();
+    wait_for_turn_released(&svc, &conv.id).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancel_timeout_kills_acp_task_when_turn_still_claimed() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(BlockingCancelAgent::new(&conv.id));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent));
+
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .unwrap();
+
+    svc.cancel("user_1", &conv.id, &send.turn_id, &task_mgr_dyn)
+        .await
+        .unwrap();
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(15) + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    assert_eq!(
+        task_mgr.kill_records(),
+        vec![(conv.id.clone(), Some(AgentKillReason::UserCancelTimeout))]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancel_timeout_does_not_kill_non_acp_task() {
+    let (svc, _broadcaster, _repo, _task_mgr) = make_service();
+    let task_mgr = Arc::new(MockTaskManager::new());
+    let task_mgr_dyn: Arc<dyn IWorkerTaskManager> = task_mgr.clone();
+
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let agent = Arc::new(BlockingCancelAgent::new_with_type(&conv.id, AgentType::Aionrs));
+    task_mgr.insert_agent(&conv.id, AgentInstance::Mock(agent));
+
+    let send = svc
+        .send_message("user_1", &conv.id, make_send_req(), &task_mgr_dyn)
+        .await
+        .unwrap();
+
+    svc.cancel("user_1", &conv.id, &send.turn_id, &task_mgr_dyn)
+        .await
+        .unwrap();
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(15) + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+
+    assert!(task_mgr.kill_records().is_empty());
 }
 
 #[tokio::test]
@@ -2483,7 +3653,10 @@ async fn stop_stream_conversation_not_found() {
     let (svc, _broadcaster, _repo, _task_mgr) = make_service();
     let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
 
-    let err = svc.cancel("user_1", "no-such-id", &task_mgr).await.unwrap_err();
+    let err = svc
+        .cancel("user_1", "no-such-id", "turn-test", &task_mgr)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
@@ -2494,7 +3667,7 @@ async fn stop_stream_no_active_agent_is_idempotent() {
 
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
 
-    let result = svc.cancel("user_1", &conv.id, &task_mgr).await;
+    let result = svc.cancel("user_1", &conv.id, "turn-test", &task_mgr).await;
     assert!(result.is_ok());
 }
 
@@ -2504,7 +3677,10 @@ async fn stop_stream_wrong_user_returns_not_found() {
     let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
 
     let conv = svc.create("user_1", make_create_req()).await.unwrap();
-    let err = svc.cancel("user_2", &conv.id, &task_mgr).await.unwrap_err();
+    let err = svc
+        .cancel("user_2", &conv.id, "turn-test", &task_mgr)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ConversationError::NotFound { .. }));
 }
 
@@ -2524,6 +3700,32 @@ async fn warmup_creates_agent_task() {
 
     // Agent should now exist
     assert!(task_mgr.get_task(&conv.id).is_some());
+}
+
+#[tokio::test]
+async fn warmup_rejects_legacy_runtime_conversations_as_archived() {
+    let (svc, _broadcaster, repo, _task_mgr) = make_service();
+    let task_mgr: Arc<dyn IWorkerTaskManager> = Arc::new(MockTaskManager::new());
+
+    for agent_type in [
+        AgentType::Gemini,
+        AgentType::Codex,
+        AgentType::OpenclawGateway,
+        AgentType::Nanobot,
+        AgentType::Remote,
+    ] {
+        let conv = insert_conversation_with_type(&repo, "user_1", agent_type).await;
+
+        let err = svc.warmup("user_1", &conv.id, &task_mgr).await.unwrap_err();
+
+        assert_eq!(err.error_code(), "CONVERSATION_ARCHIVED");
+        assert!(
+            err.to_string()
+                .contains("This historical conversation can no longer be continued. Please start a new conversation."),
+            "unexpected archived message for {}: {err}",
+            agent_type.serde_name()
+        );
+    }
 }
 
 #[tokio::test]
@@ -2906,6 +4108,308 @@ async fn create_writes_extra_skills_from_auto_inject_and_preset() {
     assert_eq!(resp.extra["skills"], json!(["cron", "pdf"]));
     assert!(resp.extra.get("preset_enabled_skills").is_none());
     assert!(resp.extra.get("exclude_auto_inject_skills").is_none());
+}
+
+#[tokio::test]
+async fn create_resolves_assistant_snapshot_and_updates_preferences() {
+    let resolver = Arc::new(FixedSkillResolver {
+        names: vec!["cron".into(), "todo-tracker".into()],
+    });
+    let dispatcher = Arc::new(StaticAssistantDispatcher {
+        rules: std::collections::HashMap::from([("preset-1".to_string(), "assistant rule body".to_string())]),
+    });
+    let (svc, _broadcaster, repo, definition_repo, state_repo, preference_repo) =
+        make_service_with_assistant_support(resolver, dispatcher).await;
+    let workspace = ensure_test_workspace_path();
+
+    definition_repo
+        .upsert(&UpsertAssistantDefinitionParams {
+            definition_id: "asstdef_preset_1",
+            assistant_key: "preset-1",
+            source: "builtin",
+            owner_type: "system",
+            source_ref: Some("preset-1"),
+            source_version: None,
+            source_hash: None,
+            name: "Preset",
+            name_i18n: "{}",
+            description: Some("desc"),
+            description_i18n: "{}",
+            avatar_type: "emoji",
+            avatar_value: Some("🤖"),
+            agent_backend: "claude",
+            rule_resource_type: "builtin_asset",
+            rule_resource_ref: Some("preset-1"),
+            rule_inline_content: None,
+            recommended_prompts: "[]",
+            recommended_prompts_i18n: "{}",
+            default_model_mode: "auto",
+            default_model_value: None,
+            default_permission_mode: "auto",
+            default_permission_value: None,
+            default_skills_mode: "auto",
+            default_skill_ids: "[]",
+            custom_skill_names: "[]",
+            default_disabled_builtin_skill_ids: "[]",
+            default_mcps_mode: "auto",
+            default_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+    state_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_preset_1",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: Some("codex"),
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_preset_1",
+            last_model_id: Some("old-model"),
+            last_permission_value: Some("workspace-write"),
+            last_skill_ids: r#"["legacy-skill"]"#,
+            last_disabled_builtin_skill_ids: r#"["legacy-disabled"]"#,
+            last_mcp_ids: r#"["legacy-mcp"]"#,
+        })
+        .await
+        .unwrap();
+
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "name": "t",
+        "assistant": {
+            "id": "preset-1",
+            "locale": "zh-CN",
+            "conversation_overrides": {
+                "model": "new-model",
+                "skill_ids": ["pdf"],
+                "disabled_builtin_skill_ids": ["todo-tracker"],
+            }
+        },
+        "extra": {
+            "workspace": workspace,
+            "backend": "claude"
+        },
+    }))
+    .unwrap();
+    let resp = svc.create("user-1", req).await.unwrap();
+
+    assert_eq!(resp.extra["assistant_id"], json!("preset-1"));
+    assert_eq!(resp.extra["preset_assistant_id"], json!("preset-1"));
+    assert_eq!(resp.extra["preset_context"], json!("assistant rule body"));
+    assert_eq!(resp.extra["current_model_id"], json!("new-model"));
+    assert_eq!(resp.extra["skills"], json!(["cron", "pdf"]));
+    assert!(resp.extra.get("assistant_snapshot").is_none());
+
+    let snapshot = repo.get_assistant_snapshot(&resp.id).await.unwrap().unwrap();
+    assert_eq!(snapshot.assistant_definition_id, "asstdef_preset_1");
+    assert_eq!(snapshot.assistant_key, "preset-1");
+    assert_eq!(snapshot.agent_backend, "codex");
+    assert_eq!(snapshot.rules_content, "assistant rule body");
+    assert_eq!(snapshot.default_model_mode, "auto");
+    assert_eq!(snapshot.resolved_model_id.as_deref(), Some("new-model"));
+    assert_eq!(snapshot.default_skills_mode, "auto");
+    assert_eq!(snapshot.resolved_skill_ids, r#"["pdf"]"#);
+
+    let updated_pref = preference_repo.get("asstdef_preset_1").await.unwrap().unwrap();
+    assert_eq!(updated_pref.last_model_id.as_deref(), Some("new-model"));
+    assert_eq!(updated_pref.last_skill_ids, r#"["pdf"]"#);
+    assert_eq!(updated_pref.last_disabled_builtin_skill_ids, r#"["todo-tracker"]"#);
+}
+
+#[tokio::test]
+async fn create_does_not_overwrite_preferences_for_fixed_skills_and_mcps() {
+    let resolver = Arc::new(FixedSkillResolver {
+        names: vec!["cron".into(), "todo-tracker".into()],
+    });
+    let dispatcher = Arc::new(StaticAssistantDispatcher {
+        rules: std::collections::HashMap::from([("preset-fixed".to_string(), "assistant rule body".to_string())]),
+    });
+    let (svc, _broadcaster, _repo, definition_repo, state_repo, preference_repo) =
+        make_service_with_assistant_support(resolver, dispatcher).await;
+    let workspace = ensure_test_workspace_path();
+
+    definition_repo
+        .upsert(&UpsertAssistantDefinitionParams {
+            definition_id: "asstdef_preset_fixed",
+            assistant_key: "preset-fixed",
+            source: "builtin",
+            owner_type: "system",
+            source_ref: Some("preset-fixed"),
+            source_version: None,
+            source_hash: None,
+            name: "Preset Fixed",
+            name_i18n: "{}",
+            description: Some("desc"),
+            description_i18n: "{}",
+            avatar_type: "emoji",
+            avatar_value: Some("🤖"),
+            agent_backend: "claude",
+            rule_resource_type: "builtin_asset",
+            rule_resource_ref: Some("preset-fixed"),
+            rule_inline_content: None,
+            recommended_prompts: "[]",
+            recommended_prompts_i18n: "{}",
+            default_model_mode: "auto",
+            default_model_value: None,
+            default_permission_mode: "auto",
+            default_permission_value: None,
+            default_skills_mode: "fixed",
+            default_skill_ids: r#"["pdf"]"#,
+            custom_skill_names: "[]",
+            default_disabled_builtin_skill_ids: r#"["todo-tracker"]"#,
+            default_mcps_mode: "fixed",
+            default_mcp_ids: r#"["mcp-fixed"]"#,
+        })
+        .await
+        .unwrap();
+    state_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_preset_fixed",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: Some("codex"),
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_preset_fixed",
+            last_model_id: Some("legacy-model"),
+            last_permission_value: Some("workspace-write"),
+            last_skill_ids: r#"["legacy-skill"]"#,
+            last_disabled_builtin_skill_ids: r#"["legacy-disabled"]"#,
+            last_mcp_ids: r#"["legacy-mcp"]"#,
+        })
+        .await
+        .unwrap();
+
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "name": "t",
+        "assistant": {
+            "id": "preset-fixed",
+            "locale": "zh-CN",
+            "conversation_overrides": {
+                "model": "new-model",
+                "permission": "workspace-read",
+                "skill_ids": ["pdf", "cron"],
+                "disabled_builtin_skill_ids": [],
+                "mcp_ids": ["mcp-temp"]
+            }
+        },
+        "extra": {
+            "workspace": workspace,
+            "backend": "claude"
+        },
+    }))
+    .unwrap();
+    let _resp = svc.create("user-1", req).await.unwrap();
+
+    let updated_pref = preference_repo.get("asstdef_preset_fixed").await.unwrap().unwrap();
+    assert_eq!(updated_pref.last_model_id.as_deref(), Some("new-model"));
+    assert_eq!(updated_pref.last_permission_value.as_deref(), Some("workspace-read"));
+    assert_eq!(updated_pref.last_skill_ids, r#"["legacy-skill"]"#);
+    assert_eq!(updated_pref.last_disabled_builtin_skill_ids, r#"["legacy-disabled"]"#);
+    assert_eq!(updated_pref.last_mcp_ids, r#"["legacy-mcp"]"#);
+}
+
+#[tokio::test]
+async fn create_with_auto_builtin_defaults_without_preferences_keeps_snapshot_values_empty() {
+    let resolver = Arc::new(FixedSkillResolver {
+        names: vec!["cron".into(), "todo-tracker".into()],
+    });
+    let dispatcher = Arc::new(StaticAssistantDispatcher {
+        rules: std::collections::HashMap::from([("preset-auto".to_string(), "assistant rule body".to_string())]),
+    });
+    let (svc, _broadcaster, _repo, definition_repo, state_repo, preference_repo) =
+        make_service_with_assistant_support(resolver, dispatcher).await;
+    let workspace = ensure_test_workspace_path();
+
+    definition_repo
+        .upsert(&UpsertAssistantDefinitionParams {
+            definition_id: "asstdef_preset_auto",
+            assistant_key: "preset-auto",
+            source: "builtin",
+            owner_type: "system",
+            source_ref: Some("preset-auto"),
+            source_version: None,
+            source_hash: None,
+            name: "Preset Unset",
+            name_i18n: "{}",
+            description: Some("desc"),
+            description_i18n: "{}",
+            avatar_type: "emoji",
+            avatar_value: Some("🤖"),
+            agent_backend: "claude",
+            rule_resource_type: "builtin_asset",
+            rule_resource_ref: Some("preset-auto"),
+            rule_inline_content: None,
+            recommended_prompts: "[]",
+            recommended_prompts_i18n: "{}",
+            default_model_mode: "auto",
+            default_model_value: None,
+            default_permission_mode: "auto",
+            default_permission_value: None,
+            default_skills_mode: "fixed",
+            default_skill_ids: r#"["pdf"]"#,
+            custom_skill_names: "[]",
+            default_disabled_builtin_skill_ids: "[]",
+            default_mcps_mode: "auto",
+            default_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+    state_repo
+        .upsert(&UpsertAssistantOverlayParams {
+            definition_id: "asstdef_preset_auto",
+            enabled: true,
+            sort_order: 0,
+            agent_backend_override: Some("codex"),
+            last_used_at: None,
+        })
+        .await
+        .unwrap();
+    preference_repo
+        .upsert(&UpsertAssistantPreferenceParams {
+            definition_id: "asstdef_preset_auto",
+            last_model_id: None,
+            last_permission_value: None,
+            last_skill_ids: "[]",
+            last_disabled_builtin_skill_ids: "[]",
+            last_mcp_ids: "[]",
+        })
+        .await
+        .unwrap();
+
+    let req: CreateConversationRequest = serde_json::from_value(json!({
+        "type": "acp",
+        "name": "t",
+        "assistant": {
+            "id": "preset-auto",
+            "locale": "zh-CN"
+        },
+        "extra": {
+            "workspace": workspace,
+            "backend": "claude"
+        },
+    }))
+    .unwrap();
+    let resp = svc.create("user-1", req).await.unwrap();
+
+    assert!(resp.extra.get("current_model_id").is_none());
+    assert!(resp.extra.get("permission_mode").is_none());
+    assert!(resp.extra.get("assistant_snapshot").is_none());
+
+    let updated_pref = preference_repo.get("asstdef_preset_auto").await.unwrap().unwrap();
+    assert_eq!(updated_pref.last_model_id, None);
+    assert_eq!(updated_pref.last_permission_value, None);
+    assert_eq!(updated_pref.last_mcp_ids, "[]");
 }
 
 #[tokio::test]

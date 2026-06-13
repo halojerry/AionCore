@@ -5,14 +5,14 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use axum::routing::{get, patch, post};
 
 use aionui_api_types::{
-    ApiResponse, AssistantResponse, CreateAssistantRequest, ImportAssistantsRequest, ImportAssistantsResult,
-    SetAssistantStateRequest, UpdateAssistantRequest,
+    ApiResponse, AssistantDetailResponse, AssistantResponse, CreateAssistantRequest, ImportAssistantsRequest,
+    ImportAssistantsResult, SetAssistantStateRequest, UpdateAssistantRequest,
 };
 use aionui_common::ApiError;
 
@@ -23,11 +23,16 @@ pub use crate::state::AssistantRouterState;
 pub fn assistant_routes(state: AssistantRouterState) -> Router {
     Router::new()
         .route("/api/assistants", get(list).post(create))
-        .route("/api/assistants/{id}", axum::routing::put(update).delete(delete_one))
+        .route("/api/assistants/{id}", get(get_one).put(update).delete(delete_one))
         .route("/api/assistants/{id}/state", patch(set_state))
         .route("/api/assistants/{id}/avatar", get(get_avatar))
         .route("/api/assistants/import", post(import))
         .with_state(state)
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+struct GetAssistantDetailQuery {
+    locale: Option<String>,
 }
 
 impl From<AssistantError> for ApiError {
@@ -53,9 +58,18 @@ async fn create(
     State(state): State<AssistantRouterState>,
     body: Result<Json<CreateAssistantRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<AssistantResponse>>), ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let created = state.service.create(req).await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(created))))
+}
+
+async fn get_one(
+    State(state): State<AssistantRouterState>,
+    Path(id): Path<String>,
+    Query(query): Query<GetAssistantDetailQuery>,
+) -> Result<Json<ApiResponse<AssistantDetailResponse>>, ApiError> {
+    let detail = state.service.get_detail(&id, query.locale.as_deref()).await?;
+    Ok(Json(ApiResponse::ok(detail)))
 }
 
 async fn update(
@@ -63,7 +77,7 @@ async fn update(
     Path(id): Path<String>,
     body: Result<Json<UpdateAssistantRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<AssistantResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let updated = state.service.update(&id, req).await?;
     Ok(Json(ApiResponse::ok(updated)))
 }
@@ -81,7 +95,7 @@ async fn set_state(
     Path(id): Path<String>,
     body: Result<Json<SetAssistantStateRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<AssistantResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let resp = state.service.set_state(&id, req).await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
@@ -90,7 +104,7 @@ async fn import(
     State(state): State<AssistantRouterState>,
     body: Result<Json<ImportAssistantsRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ImportAssistantsResult>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let result = state.service.import(req).await?;
     Ok(Json(ApiResponse::ok(result)))
 }

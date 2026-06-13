@@ -28,7 +28,6 @@ use aionui_db::{
 };
 use aionui_realtime::EventBroadcaster;
 
-use aionui_cron::busy_guard::CronBusyGuard;
 use aionui_cron::events::CronEventEmitter;
 use aionui_cron::executor::JobExecutor;
 use aionui_cron::scheduler::CronScheduler;
@@ -167,6 +166,36 @@ impl IConversationRepository for StubConvRepo {
                     "agent_name": "Gemini",
                     "workspace": ensure_named_workspace_path("aionui-cron-service-gemini-workspace"),
                     "session_mode": "yolo",
+                    "current_model_id": "gemini-2.5-pro"
+                })
+                .to_string(),
+                pinned: false,
+                pinned_at: None,
+                created_at: 1000,
+                updated_at: 1000,
+            }
+        } else if id == "conv_mode_hermes" {
+            aionui_db::models::ConversationRow {
+                id: id.into(),
+                user_id: "u1".into(),
+                name: "Hermes Chat".into(),
+                r#type: "acp".into(),
+                model: Some(
+                    serde_json::json!({
+                        "provider_id": "hermes",
+                        "model": "gemini-2.5-pro",
+                        "use_model": "gemini-2.5-pro"
+                    })
+                    .to_string(),
+                ),
+                status: Some("active".into()),
+                source: None,
+                channel_chat_id: None,
+                extra: serde_json::json!({
+                    "backend": "hermes",
+                    "agent_name": "Hermes",
+                    "workspace": ensure_named_workspace_path("aionui-cron-service-hermes-workspace"),
+                    "session_mode": "default",
                     "current_model_id": "gemini-2.5-pro"
                 })
                 .to_string(),
@@ -570,12 +599,10 @@ async fn setup_with_conv_repo() -> (
     ));
     let agent_registry = AgentRegistry::new(agent_metadata_repo);
     agent_registry.hydrate().await.unwrap();
-    let busy_guard = Arc::new(CronBusyGuard::new());
     let executor = Arc::new(JobExecutor::new(
         task_manager,
         stub_conv_repo_trait,
         conv_service,
-        busy_guard,
         data_dir.clone(),
         data_dir.clone(),
         bc.clone() as Arc<dyn EventBroadcaster>,
@@ -647,6 +674,24 @@ async fn cj1_create_cron_job() {
     let events = bc.take_events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].name, "cron.job-created");
+}
+
+#[tokio::test]
+async fn create_job_rejects_deprecated_agent_types() {
+    let (svc, _, _) = setup().await;
+
+    for agent_type in ["openclaw-gateway", "nanobot", "remote", "gemini", "codex"] {
+        let mut req = make_create_req(&format!("Deprecated {agent_type}"), every_60s());
+        req.agent_type = agent_type.to_owned();
+
+        let err = svc.add_job(req).await.unwrap_err();
+        assert!(matches!(err, aionui_cron::error::CronError::InvalidAgentConfig(_)));
+        assert!(
+            err.to_string()
+                .contains("This agent type is no longer supported for new conversations."),
+            "unexpected error for {agent_type}: {err}"
+        );
+    }
 }
 
 // ── CJ-2: Create three schedule types ──────────────────────────────
@@ -1300,6 +1345,9 @@ async fn icron_service_create_job_forces_full_auto_mode_for_generated_crons() {
     let claude = ICronService::create_job(&svc, "user_1", "conv_mode_claude", &params).await;
     assert!(claude.success);
 
+    let hermes = ICronService::create_job(&svc, "user_1", "conv_mode_hermes", &params).await;
+    assert!(hermes.success);
+
     let aionrs = ICronService::create_job(&svc, "user_1", "conv_mode_aionrs", &params).await;
     assert!(aionrs.success);
 
@@ -1343,6 +1391,20 @@ async fn icron_service_create_job_forces_full_auto_mode_for_generated_crons() {
             .as_ref()
             .and_then(|config| config.mode.as_deref()),
         Some("bypassPermissions")
+    );
+
+    let hermes_jobs = svc
+        .list_jobs(&ListCronJobsQuery {
+            conversation_id: Some("conv_mode_hermes".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        hermes_jobs[0]
+            .agent_config
+            .as_ref()
+            .and_then(|config| config.mode.as_deref()),
+        Some("default")
     );
 
     let aionrs_jobs = svc

@@ -23,6 +23,10 @@ pub(crate) struct Cli {
     #[arg(long, default_value = "data")]
     pub data_dir: PathBuf,
 
+    /// Parent process ID used to terminate the backend when the desktop app dies.
+    #[arg(long)]
+    pub parent_pid: Option<u32>,
+
     /// Working directory for conversation workspaces.
     /// Falls back to AIONUI_WORK_DIR env, then to data-dir.
     #[arg(long)]
@@ -89,6 +93,22 @@ pub(crate) enum Command {
     PrepareManagedResources(PrepareManagedResourcesArgs),
 }
 
+impl Command {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::McpBridge => "mcp-bridge",
+            Self::McpGuideStdio => "mcp-guide-stdio",
+            Self::McpTeamStdio => "mcp-team-stdio",
+            Self::Doctor => "doctor",
+            Self::PrepareManagedResources(_) => "prepare-managed-resources",
+        }
+    }
+
+    pub(crate) fn need_runtime(&self) -> bool {
+        matches!(self, Self::Doctor | Self::PrepareManagedResources(_))
+    }
+}
+
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct PrepareManagedResourcesArgs {
     /// Bundle output root. Aioncore writes the managed resources under
@@ -99,10 +119,12 @@ pub(crate) struct PrepareManagedResourcesArgs {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use clap::Parser;
     use clap::error::ErrorKind;
 
-    use super::{Cli, Command, ManagedResourcesModeArg};
+    use super::{Cli, Command, ManagedResourcesModeArg, PrepareManagedResourcesArgs};
 
     #[test]
     fn long_version_flag_uses_workspace_package_version() {
@@ -173,6 +195,34 @@ mod tests {
     fn managed_resources_mode_accepts_download() {
         let cli = Cli::parse_from(["aioncore", "--managed-resources-mode", "download"]);
         assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
+    }
+
+    #[test]
+    fn parent_pid_accepts_positive_integer() {
+        let cli = Cli::parse_from(["aioncore", "--parent-pid", "4242"]);
+        assert_eq!(cli.parent_pid, Some(4242));
+    }
+
+    #[test]
+    fn command_as_str_returns_clap_subcommand_names() {
+        let prepare_args = PrepareManagedResourcesArgs {
+            bundle_out: PathBuf::from("/tmp/aioncore-bundle"),
+        };
+
+        let cases = [
+            (Command::McpBridge, "mcp-bridge"),
+            (Command::McpGuideStdio, "mcp-guide-stdio"),
+            (Command::McpTeamStdio, "mcp-team-stdio"),
+            (Command::Doctor, "doctor"),
+            (
+                Command::PrepareManagedResources(prepare_args),
+                "prepare-managed-resources",
+            ),
+        ];
+
+        for (command, expected) in cases {
+            assert_eq!(command.as_str(), expected);
+        }
     }
 
     #[test]

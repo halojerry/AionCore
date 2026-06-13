@@ -17,10 +17,10 @@ use crate::registry::CatalogSender;
 use crate::shared_kernel::{ModeId, ModelId, SessionId as DomainSessionId};
 use crate::types::SendMessageData;
 use agent_client_protocol::schema::{
-    CancelNotification, SessionId, SessionModelState, SessionNotification, SetSessionModeRequest,
+    AvailableCommand, CancelNotification, SessionId, SessionModelState, SessionNotification, SetSessionModeRequest,
     SetSessionModelRequest, UsageUpdate,
 };
-use aionui_api_types::{AgentHandshake, SlashCommandItem};
+use aionui_api_types::{AgentHandshake, SlashCommandCompletionBehavior, SlashCommandItem};
 use aionui_common::{
     AgentKillReason, AgentType, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
 };
@@ -141,6 +141,55 @@ pub(super) fn sdk_to_snake_value<T: serde::Serialize>(value: &T) -> Option<Value
     let mut v = serde_json::to_value(value).ok()?;
     normalize_keys_to_snake_case(&mut v);
     Some(v)
+}
+
+fn parse_completion_behavior(meta: &serde_json::Map<String, Value>) -> Option<SlashCommandCompletionBehavior> {
+    match meta.get("completion_behavior").and_then(Value::as_str) {
+        Some("normal") => Some(SlashCommandCompletionBehavior::Normal),
+        Some("neutral_tip_on_empty") => Some(SlashCommandCompletionBehavior::NeutralTipOnEmpty),
+        _ => None,
+    }
+}
+
+fn slash_command_item(command: &AvailableCommand) -> SlashCommandItem {
+    let meta = command.meta.as_ref();
+    let completion_behavior = meta.and_then(parse_completion_behavior);
+    let empty_turn_tip_code = meta
+        .and_then(|meta| meta.get("empty_turn_tip_code"))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let empty_turn_tip_params = meta
+        .and_then(|meta| meta.get("empty_turn_tip_params"))
+        .filter(|value| value.is_object())
+        .cloned();
+
+    SlashCommandItem {
+        command: command.name.clone(),
+        description: command.description.clone(),
+        completion_behavior,
+        empty_turn_tip_code,
+        empty_turn_tip_params,
+    }
+}
+
+fn slash_command_items(commands: &[AvailableCommand]) -> Vec<SlashCommandItem> {
+    commands.iter().map(slash_command_item).collect()
+}
+
+fn leading_slash_token(raw_user_input: &str) -> Option<&str> {
+    raw_user_input
+        .split_whitespace()
+        .next()?
+        .strip_prefix('/')
+        .filter(|token| !token.is_empty())
+}
+
+fn matched_slash_command(raw_user_input: &str, commands: &[AvailableCommand]) -> Option<SlashCommandItem> {
+    let token = leading_slash_token(raw_user_input)?;
+    commands
+        .iter()
+        .find(|command| command.name == token)
+        .map(slash_command_item)
 }
 
 /// Manages a single ACP Agent instance.
@@ -382,6 +431,11 @@ impl AcpAgentManager {
 }
 
 impl AcpAgentManager {
+    fn record_user_cancel_request(runtime: &AgentRuntime, session: &mut AcpSession) {
+        session.record_close_reason(Some(CloseReason::UserCancel));
+        runtime.bump_activity();
+    }
+
     pub(crate) async fn mode(&self) -> Result<aionui_api_types::AgentModeResponse, AgentError> {
         let desired = self
             .session
@@ -498,10 +552,7 @@ impl AcpAgentManager {
         Ok(())
     }
 
-    /// Set the model for the current session.
-    pub(crate) async fn set_model(&self, model_id: &str) -> Result<(), AgentError> {
-        let normalized_model_id =
-            normalize_requested_model_id_for_backend(self.params.metadata.backend.as_deref(), model_id);
+    async fn apply_confirmed_model_selection(&self, model_id: &str) -> Result<SessionModelState, AgentError> {
         let session_id = {
             let session = self.session.read().await;
             if !session.can_select_model(&normalized_model_id) {
@@ -568,6 +619,10 @@ impl AcpAgentManager {
         if self.params.metadata.behavior_policy.self_identity_sticky {
             session.set_pending_model_notice(model);
         }
+        let confirmed_model = session
+            .model_info()
+            .cloned()
+            .unwrap_or_else(|| SessionModelState::new(model_id.to_owned(), Vec::new()));
         self.commit_session_changes(&mut session).await;
         info!(
             conversation_id = %self.params.conversation_id,
@@ -575,7 +630,19 @@ impl AcpAgentManager {
             confirmed_model_id = %normalized_model_id,
             "acp_set_model_confirmed"
         );
+        Ok(confirmed_model)
+    }
+
+    /// Set the model for the current session.
+    pub(crate) async fn set_model(&self, model_id: &str) -> Result<(), AgentError> {
+        self.apply_confirmed_model_selection(model_id).await?;
         Ok(())
+    }
+
+    /// Set the model and return the confirmed model state from this write,
+    /// without re-reading the asynchronously mutable session cache.
+    pub(crate) async fn set_model_confirmed(&self, model_id: &str) -> Result<SessionModelState, AgentError> {
+        self.apply_confirmed_model_selection(model_id).await
     }
 
     /// Return available slash commands from the session aggregate.
@@ -583,14 +650,7 @@ impl AcpAgentManager {
         let session = self.session.read().await;
         let items = session
             .available_commands()
-            .map(|cmds| {
-                cmds.iter()
-                    .map(|c| SlashCommandItem {
-                        command: c.name.clone(),
-                        description: c.description.clone(),
-                    })
-                    .collect()
-            })
+            .map(slash_command_items)
             .unwrap_or_default();
         Ok(items)
     }
@@ -673,6 +733,13 @@ impl AcpAgentManager {
     async fn ensure_session_and_send(&self, data: &SendMessageData) -> Result<PromptOutcome, AcpSendFailure> {
         let sid = self.ensure_session_opened().await.map_err(AcpSendFailure::from)?;
         self.runtime.reset_for_new_turn(ConversationStatus::Running);
+        let raw_user_input = data.content.clone();
+        let matched_command = {
+            let session = self.session.read().await;
+            session
+                .available_commands()
+                .and_then(|commands| matched_slash_command(&raw_user_input, commands))
+        };
 
         let content = {
             let mut s = self.session.write().await;
@@ -691,7 +758,8 @@ impl AcpAgentManager {
             content,
             ..data.clone()
         };
-        self.prompt_existing_session(&data, Some(&sid)).await
+        self.prompt_existing_session(&data, Some(&sid), matched_command.as_ref())
+            .await
     }
 
     /// Pre-open the ACP session without sending a prompt. Called by the
@@ -739,6 +807,12 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
     #[tracing::instrument(skip_all, fields(conversation_id = %self.params.conversation_id, msg_id = %data.msg_id))]
     async fn send_message(&self, data: SendMessageData) -> Result<(), AgentSendError> {
         self.runtime.bump_activity();
+        info!(
+            conversation_id = %self.params.conversation_id,
+            msg_id = %data.msg_id,
+            turn_id = data.turn_id.as_deref().unwrap_or("none"),
+            "ACP send_message started"
+        );
 
         match self.ensure_session_and_send(&data).await {
             Ok(PromptOutcome::Completed { session_id }) => {
@@ -761,13 +835,26 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
                 self.runtime.emit_finish(Some(session_id));
                 Ok(())
             }
-            Ok(PromptOutcome::EmptyResponse { session_id, error }) => {
+            Ok(PromptOutcome::InfoTip { session_id, tips } | PromptOutcome::WarningTip { session_id, tips }) => {
                 info!(
                     agent_type = "acp",
-                    terminal_kind = "error",
+                    terminal_kind = "finish",
                     source = "empty_response",
                     session_id = %session_id,
                     "ACP send_message completed without visible output"
+                );
+                self.runtime.emit(AgentStreamEvent::Tips(tips));
+                self.runtime.emit_finish(Some(session_id));
+                Ok(())
+            }
+            Ok(PromptOutcome::TerminalError { session_id, error }) => {
+                info!(
+                    agent_type = "acp",
+                    terminal_kind = "error",
+                    source = "empty_response_stderr",
+                    session_id = %session_id,
+                    error_code = ?error.code,
+                    "ACP send_message empty turn classified as terminal upstream error"
                 );
                 self.runtime.emit_error_data(error);
                 Ok(())
@@ -813,24 +900,17 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
         }
         self.permission_router.cancel_all();
 
-        // Distinguish a deliberate user-cancel from a crash: the toast can
-        // say "Conversation cancelled" instead of a generic "session closed".
-        // We still emit Finish (not Error) here — cancel is a clean
-        // termination — but record the close reason so anyone consulting
-        // the aggregate state for diagnostics sees the canonical signal.
         {
             let mut session = self.session.write().await;
-            session.record_close_reason(Some(CloseReason::UserCancel));
+            Self::record_user_cancel_request(&self.runtime, &mut session);
         }
 
         info!(
             agent_type = "acp",
-            terminal_kind = "finish",
             source = "cancel_request",
             session_id = session_id.as_deref().unwrap_or("none"),
-            "ACP cancel emitting terminal finish"
+            "ACP cancel requested; waiting for prompt outcome before terminal finish"
         );
-        self.runtime.emit_finish(None);
 
         Ok(())
     }
@@ -878,15 +958,22 @@ impl crate::agent_task::IAgentTask for AcpAgentManager {
 
         self.permission_router.cancel_all();
 
-        // m1 fix: emit error with the kill reason so the status goes to
-        // Finished and subscribers see a terminal event. Idempotent.
-        // Source of truth for the toast text is `CloseReason::Killed`.
-        let close_reason = CloseReason::Killed { reason };
-        let message = close_reason.user_facing_message();
-        if let Ok(mut session) = self.session.try_write() {
-            session.record_close_reason(Some(close_reason));
+        if matches!(reason, Some(AgentKillReason::UserCancelTimeout)) {
+            if let Ok(mut session) = self.session.try_write() {
+                session.record_close_reason(Some(CloseReason::UserCancel));
+            }
+            self.runtime.emit_finish(None);
+        } else {
+            // m1 fix: emit error with the kill reason so the status goes to
+            // Finished and subscribers see a terminal event. Idempotent.
+            // Source of truth for the toast text is `CloseReason::Killed`.
+            let close_reason = CloseReason::Killed { reason };
+            let message = close_reason.user_facing_message();
+            if let Ok(mut session) = self.session.try_write() {
+                session.record_close_reason(Some(close_reason));
+            }
+            self.runtime.emit_error(message);
         }
-        self.runtime.emit_error(message);
 
         Ok(())
     }
@@ -936,7 +1023,12 @@ impl AcpAgentManager {
 #[cfg(test)]
 mod tests {
     use super::{exit_status_parts, user_facing_message};
+    use crate::agent_runtime::AgentRuntime;
     use crate::error::AgentError;
+    use crate::manager::acp::{AcpAgentManager, AcpSession};
+    use crate::protocol::error::CloseReason;
+    use agent_client_protocol::schema::AvailableCommand;
+    use serde_json::json;
 
     #[test]
     fn exit_status_parts_handles_missing_status() {
@@ -984,6 +1076,20 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn acp_cancel_request_records_user_cancel_without_terminal_finish() {
+        let runtime = AgentRuntime::new("conv-1", "/tmp/workspace", 8);
+        let mut rx = runtime.subscribe();
+        let mut session = AcpSession::new(None, None, Default::default());
+
+        AcpAgentManager::record_user_cancel_request(&runtime, &mut session);
+
+        assert!(matches!(session.last_close_reason(), Some(CloseReason::UserCancel)));
+        assert_eq!(runtime.status(), None);
+        let res = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(res.is_err(), "cancel request must not emit a terminal event");
+    }
+
     // ---- augment_with_stderr behavioral tests ------------------------------
     //
     // We can't easily construct a real AcpAgentManager in a unit test (it
@@ -1014,7 +1120,8 @@ mod tests {
             env: vec![],
             cwd: None,
         };
-        let proc = CliAgentProcess::spawn(config).await.unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let proc = CliAgentProcess::spawn_for_sdk(config, data_dir.path()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), proc.wait_for_exit())
             .await
             .unwrap();
@@ -1065,6 +1172,59 @@ mod tests {
         let err = AgentError::bad_gateway("Agent internal error (code -32603)");
 
         assert!(augment_via_process(&proc, &err).await.is_none());
+    }
+
+    #[test]
+    fn session_command_loading_preserves_empty_turn_meta() {
+        let mut session = AcpSession::new(None, None, Default::default());
+        let mut command = AvailableCommand::new("review", "Review the current diff");
+        command.meta = Some(
+            serde_json::from_value(json!({
+                "completion_behavior": "neutral_tip_on_empty",
+                "empty_turn_tip_code": "acp.empty_turn.choose_command",
+                "empty_turn_tip_params": {
+                    "command_count": 1
+                }
+            }))
+            .unwrap(),
+        );
+        session.apply_advertised_commands(vec![command]);
+
+        let items = super::slash_command_items(session.available_commands().expect("commands advertised"));
+
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.command, "review");
+        assert_eq!(item.description, "Review the current diff");
+        assert_eq!(
+            item.completion_behavior,
+            Some(aionui_api_types::SlashCommandCompletionBehavior::NeutralTipOnEmpty)
+        );
+        assert_eq!(
+            item.empty_turn_tip_code.as_deref(),
+            Some("acp.empty_turn.choose_command")
+        );
+        assert_eq!(item.empty_turn_tip_params, Some(json!({ "command_count": 1 })));
+    }
+
+    #[test]
+    fn matches_leading_slash_token_against_advertised_commands() {
+        let mut command = AvailableCommand::new("ctx-flush", "Flush context");
+        command.meta = Some(
+            serde_json::from_value(json!({
+                "completion_behavior": "neutral_tip_on_empty",
+            }))
+            .unwrap(),
+        );
+
+        let matched = super::matched_slash_command("/ctx-flush now", &[command]).expect("command should match");
+
+        assert_eq!(matched.command, "ctx-flush");
+        assert_eq!(
+            matched.completion_behavior,
+            Some(aionui_api_types::SlashCommandCompletionBehavior::NeutralTipOnEmpty)
+        );
+        assert_eq!(matched.empty_turn_tip_code.as_deref(), None);
     }
 
     // Close-reason compositional tests live in `agent_close.rs` so that

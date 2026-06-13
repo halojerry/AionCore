@@ -21,7 +21,6 @@ pub fn conversation_ops_routes(state: ConversationRouterState) -> Router {
         .route("/api/conversations/{id}/usage", get(get_usage))
         .route("/api/conversations/{id}/mode", get(get_mode).put(set_mode))
         .route("/api/conversations/{id}/model", get(get_model).put(set_model))
-        .route("/api/conversations/{id}/openclaw/runtime", get(get_openclaw_runtime))
         .route("/api/conversations/{id}/workspace", get(browse_workspace))
         .with_state(state)
 }
@@ -44,7 +43,7 @@ async fn set_mode(
     Path(id): Path<String>,
     body: Result<Json<SetModeRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<AgentModeResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(
         state.service.set_mode(&id, req).await.map_err(ApiError::from)?,
     )))
@@ -66,7 +65,7 @@ async fn set_model(
     Path(id): Path<String>,
     body: Result<Json<SetModelRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<GetModelInfoResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(
         state.service.set_model(&id, req).await.map_err(ApiError::from)?,
     )))
@@ -104,16 +103,6 @@ async fn get_slash_commands(
 ) -> Result<Json<ApiResponse<Vec<SlashCommandItem>>>, ApiError> {
     Ok(Json(ApiResponse::ok(
         state.service.get_slash_commands(&id).await.map_err(ApiError::from)?,
-    )))
-}
-
-async fn get_openclaw_runtime(
-    State(state): State<ConversationRouterState>,
-    Extension(_user): Extension<CurrentUser>,
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<serde_json::Value>>, ApiError> {
-    Ok(Json(ApiResponse::ok(
-        state.service.get_openclaw_runtime(&id).await.map_err(ApiError::from)?,
     )))
 }
 

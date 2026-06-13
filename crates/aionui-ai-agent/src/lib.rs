@@ -15,6 +15,7 @@ pub mod registry;
 pub mod routes;
 pub(crate) mod runtime_status;
 pub(crate) mod services;
+pub mod session_context;
 pub mod shared_kernel;
 pub mod task_manager;
 pub mod types;
@@ -23,10 +24,7 @@ pub use agent_runtime::AgentRuntime;
 #[cfg(any(test, feature = "test-support"))]
 pub use agent_task::IMockAgent;
 pub use agent_task::{AgentInstance, IAgentTask};
-pub use aionui_api_types::{
-    AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, OpenClawBuildExtra, OpenClawGatewayConfig, RemoteBuildExtra,
-    SlashCommandItem,
-};
+pub use aionui_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SlashCommandItem};
 pub use capability::skill_manager::{
     AcpSkillManager, SkillDefinition, SkillIndex, build_skills_index_text, build_system_instructions,
     build_system_instructions_with_skills_index, detect_skill_load_request, prepare_first_message,
@@ -43,4 +41,8 @@ pub use registry::{AgentRegistry, UnavailableReason};
 pub use routes::{AgentRouterState, RemoteAgentRouterState, agent_routes, remote_agent_routes};
 pub use services::AgentService;
 pub use services::RemoteAgentService;
+pub use session_context::{
+    AcpSessionBuildContext, AgentSessionContext, AgentSessionKind, AionrsSessionBuildContext, ConversationContext,
+    WorkspaceContext,
+};
 pub use task_manager::{IWorkerTaskManager, WorkerTaskManagerImpl};

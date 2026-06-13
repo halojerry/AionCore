@@ -7,11 +7,12 @@ use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 
 use aionui_api_types::{
-    ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CloneConversationRequest,
-    ConfirmRequest, ConfirmationListResponse, ConversationArtifactListResponse, ConversationArtifactResponse,
-    ConversationListResponse, ConversationResponse, CreateConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
-    SendMessageRequest, SendMessageResponse, UpdateConversationArtifactRequest, UpdateConversationRequest,
+    ActiveCountResponse, ApiResponse, ApprovalCheckQuery, ApprovalCheckResponse, CancelConversationRequest,
+    CancelConversationResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
+    ConversationArtifactListResponse, ConversationArtifactResponse, ConversationListResponse, ConversationResponse,
+    CreateConversationRequest, ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse,
+    MessageSearchResponse, SearchMessagesQuery, SendMessageRequest, SendMessageResponse,
+    UpdateConversationArtifactRequest, UpdateConversationRequest,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
@@ -80,7 +81,7 @@ async fn create(
     Extension(user): Extension<CurrentUser>,
     body: Result<Json<CreateConversationRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<ConversationResponse>>), ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let conversation = state.service.create(&user.id, req).await.map_err(ApiError::from)?;
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(conversation))))
 }
@@ -99,7 +100,7 @@ async fn clone(
     Extension(user): Extension<CurrentUser>,
     body: Result<Json<CloneConversationRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<ConversationResponse>>), ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let conversation = state
         .service
         .clone_create(&user.id, req)
@@ -123,7 +124,7 @@ async fn update(
     Path(id): Path<String>,
     body: Result<Json<UpdateConversationRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ConversationResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let conversation = state
         .service
         .update(&user.id, &id, req, &state.task_manager)
@@ -203,16 +204,13 @@ async fn send_msg(
     Path(id): Path<String>,
     body: Result<Json<SendMessageRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<SendMessageResponse>>), ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    let msg_id = state
+    let Json(req) = body.map_err(ApiError::from)?;
+    let response = state
         .service
         .send_message(&user.id, &id, req, &state.task_manager)
         .await
         .map_err(ApiError::from)?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(ApiResponse::ok(SendMessageResponse { msg_id })),
-    ))
+    Ok((StatusCode::ACCEPTED, Json(ApiResponse::ok(response))))
 }
 
 async fn list_artifacts(
@@ -241,7 +239,7 @@ async fn update_artifact(
     Path(params): Path<ArtifactPathParams>,
     body: Result<Json<UpdateConversationArtifactRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<ConversationArtifactResponse>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     let artifact = state
         .service
         .update_artifact(&user.id, &params.id, &params.artifact_id, req)
@@ -254,13 +252,15 @@ async fn cancel(
     State(state): State<ConversationRouterState>,
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
-) -> Result<Json<ApiResponse<()>>, ApiError> {
-    state
+    body: Result<Json<CancelConversationRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<CancelConversationResponse>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let response = state
         .service
-        .cancel(&user.id, &id, &state.task_manager)
+        .cancel(&user.id, &id, &req.turn_id, &state.task_manager)
         .await
         .map_err(ApiError::from)?;
-    Ok(Json(ApiResponse::success()))
+    Ok(Json(ApiResponse::ok(response)))
 }
 
 async fn warmup(
@@ -317,7 +317,7 @@ async fn confirm(
     Path(params): Path<ConfirmPathParams>,
     body: Result<Json<ConfirmRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let Json(req) = body.map_err(ApiError::from)?;
     state
         .service
         .confirm(&user.id, &params.id, &params.call_id, req, &state.task_manager)

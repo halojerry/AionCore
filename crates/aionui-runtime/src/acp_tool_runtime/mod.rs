@@ -22,6 +22,7 @@ pub use types::{
 };
 
 static INSTALL_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+const MANAGED_ACP_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy)]
 struct PlatformSpec {
@@ -41,6 +42,16 @@ struct InstalledPackageJson {
     name: String,
     #[serde(default)]
     bin: serde_json::Value,
+    #[serde(default)]
+    main: Option<String>,
+    #[serde(default)]
+    exports: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PackageSmokeTarget {
+    Import(PathBuf),
+    SyntaxCheck(PathBuf),
 }
 
 #[derive(Debug, Serialize)]
@@ -71,19 +82,114 @@ pub async fn ensure_managed_acp_tool_with_reporter(
         return Ok(installed);
     }
 
-    if let Some(installed) = activate_local_tool_source(tool, spec, &root, reporter)? {
+    if let Some(installed) =
+        activate_local_tool_source(tool, spec, &root, reporter).map_err(|error| report_failure(error, reporter))?
+    {
         return Ok(installed);
     }
 
-    if maybe_prepare_local_runtime_tool_source(tool, spec, reporter).await? {
-        return validate_tool_root(tool, &root, reporter);
+    if maybe_prepare_local_runtime_tool_source(tool, spec, reporter)
+        .await
+        .map_err(|error| report_failure(error, reporter))?
+    {
+        return validate_tool_root(tool, &root, reporter).map_err(|error| report_failure(error, reporter));
     }
 
-    Err(ManagedAcpToolError::invalid(format!(
+    Err(report_failure(unavailable_error(tool, &root), reporter))
+}
+
+pub async fn prepare_managed_acp_tool_to_root(
+    tool: ManagedAcpToolId,
+    root: &Path,
+) -> Result<ResolvedManagedAcpTool, ManagedAcpToolError> {
+    let spec = platform_spec()?;
+    let node_runtime = ensure_node_runtime_with_reporter(None)
+        .await
+        .map_err(|error| ManagedAcpToolError::invalid(format!("prepare managed Node runtime: {error}")))?;
+    let target_root = bundle_tool_root(root, tool, spec);
+    let staging_root = bundle_prepare_staging_root(tool, spec, root);
+    if staging_root.exists() {
+        let _ = fs::remove_dir_all(&staging_root);
+    }
+    fs::create_dir_all(&staging_root).map_err(ManagedAcpToolError::io)?;
+
+    let result = prepare_local_tool_source_to_root(tool, spec, &node_runtime, &staging_root, &target_root).await;
+
+    if let Err(error) = fs::remove_dir_all(&staging_root)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        warn!(
+            tool = tool.slug(),
+            version = tool.version(),
+            staging_root = %staging_root.display(),
+            error = %error,
+            "failed to clean up managed ACP bundle preparation staging directory"
+        );
+    }
+
+    result
+}
+
+fn report_failure(
+    error: ManagedAcpToolError,
+    reporter: Option<&dyn ManagedAcpToolProgressReporter>,
+) -> ManagedAcpToolError {
+    let (kind, status_code) = classify_error(&error);
+    emit_progress(
+        reporter,
+        match status_code {
+            Some(status) => ManagedAcpToolProgress::failed_with_status(kind, status, error.to_string()),
+            None => ManagedAcpToolProgress::failed(kind, error.to_string()),
+        },
+    );
+    error
+}
+
+fn classify_error(error: &ManagedAcpToolError) -> (ManagedAcpToolFailureKind, Option<u16>) {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("timed out") {
+        return (ManagedAcpToolFailureKind::Timeout, None);
+    }
+    if let Some(status) = parse_http_status(&message) {
+        return (ManagedAcpToolFailureKind::HttpStatus, Some(status));
+    }
+    if message.contains("unsupported") {
+        return (ManagedAcpToolFailureKind::UnsupportedPlatform, None);
+    }
+    if message.contains("bundled managed") && message.contains("artifact missing") {
+        return (ManagedAcpToolFailureKind::BundledResourceMissing, None);
+    }
+    if message.contains("bundled managed") && message.contains("artifact failed validation") {
+        return (ManagedAcpToolFailureKind::BundledResourceInvalid, None);
+    }
+    if message.contains("bundled managed") && message.contains("artifact is invalid") {
+        return (ManagedAcpToolFailureKind::BundledResourceInvalid, None);
+    }
+    if message.contains("checksum mismatch") {
+        return (ManagedAcpToolFailureKind::ChecksumMismatch, None);
+    }
+    if message.contains("validate") || message.contains("entrypoint missing") {
+        return (ManagedAcpToolFailureKind::ValidationFailed, None);
+    }
+    if message.contains("download") || message.contains("extract") || message.contains("connect failed") {
+        return (ManagedAcpToolFailureKind::DownloadFailed, None);
+    }
+    (ManagedAcpToolFailureKind::Unknown, None)
+}
+
+fn parse_http_status(message: &str) -> Option<u16> {
+    let marker = "http ";
+    let start = message.find(marker)? + marker.len();
+    let digits: String = message[start..].chars().take_while(|ch| ch.is_ascii_digit()).collect();
+    digits.parse::<u16>().ok()
+}
+
+fn unavailable_error(tool: ManagedAcpToolId, root: &Path) -> ManagedAcpToolError {
+    ManagedAcpToolError::invalid(format!(
         "managed {} artifact unavailable under {} and could not be prepared locally",
         tool.display_name(),
         root.display()
-    )))
+    ))
 }
 
 pub fn probe_managed_acp_tool_supported(tool: ManagedAcpToolId) -> ManagedAcpToolSupport {
@@ -280,6 +386,9 @@ fn validate_tool_root(
         )));
     }
 
+    let spec = platform_spec()?;
+    validate_platform_binary(tool, root, spec)?;
+
     let env_path_entries = manifest
         .path_entries
         .into_iter()
@@ -365,6 +474,18 @@ async fn prepare_local_tool_source(
     staging_root: &Path,
     target_root: &Path,
 ) -> Result<(), ManagedAcpToolError> {
+    prepare_local_tool_source_to_root(tool, spec, node_runtime, staging_root, target_root)
+        .await
+        .map(|_| ())
+}
+
+async fn prepare_local_tool_source_to_root(
+    tool: ManagedAcpToolId,
+    spec: PlatformSpec,
+    node_runtime: &crate::ResolvedNodeRuntime,
+    staging_root: &Path,
+    target_root: &Path,
+) -> Result<ResolvedManagedAcpTool, ManagedAcpToolError> {
     let project_dir = staging_root.join("project");
     let npm_cache_dir = staging_root.join("npm-cache");
     fs::create_dir_all(&project_dir).map_err(ManagedAcpToolError::io)?;
@@ -415,6 +536,8 @@ async fn prepare_local_tool_source(
     let manifest = build_local_artifact_manifest(tool, &project_dir)?;
     validate_bridge_entrypoint(&project_dir, &manifest)?;
     validate_platform_binary(tool, &project_dir, spec)?;
+    validate_dependency_tree(node_runtime, &project_dir, &npm_cache_dir, tool).await?;
+    validate_package_smoke(node_runtime, &project_dir, tool).await?;
 
     let manifest_path = project_dir.join("manifest.json");
     fs::write(
@@ -425,6 +548,9 @@ async fn prepare_local_tool_source(
     .map_err(ManagedAcpToolError::io)?;
 
     managed_resources::materialize_directory(&project_dir, target_root).map_err(ManagedAcpToolError::io)?;
+    let resolved = validate_tool_root(tool, target_root, None)?;
+    validate_dependency_tree(node_runtime, target_root, &npm_cache_dir, tool).await?;
+    validate_package_smoke(node_runtime, target_root, tool).await?;
     info!(
         tool = tool.slug(),
         version = tool.version(),
@@ -432,7 +558,7 @@ async fn prepare_local_tool_source(
         target_root = %target_root.display(),
         "prepared managed ACP tool under local runtime resources"
     );
-    Ok(())
+    Ok(resolved)
 }
 
 async fn run_npm_prepare_step<const N: usize>(
@@ -561,12 +687,90 @@ fn validate_platform_binary(
     }
 }
 
+async fn validate_dependency_tree(
+    node_runtime: &crate::ResolvedNodeRuntime,
+    project_dir: &Path,
+    npm_cache_dir: &Path,
+    tool: ManagedAcpToolId,
+) -> Result<(), ManagedAcpToolError> {
+    run_npm_prepare_step(
+        node_runtime,
+        project_dir,
+        npm_cache_dir,
+        ["ls", "--omit=dev", "--all"],
+        &format!("validate managed {} dependency tree", tool.display_name()),
+    )
+    .await
+}
+
+async fn validate_package_smoke(
+    node_runtime: &crate::ResolvedNodeRuntime,
+    project_dir: &Path,
+    tool: ManagedAcpToolId,
+) -> Result<(), ManagedAcpToolError> {
+    let package_json_path = package_json_path(project_dir, tool.package_name());
+    let contents = fs::read_to_string(&package_json_path).map_err(ManagedAcpToolError::io)?;
+    let package_json: InstalledPackageJson = serde_json::from_str(&contents).map_err(|error| {
+        ManagedAcpToolError::invalid(format!(
+            "parse installed package manifest failed for {}: {error}",
+            package_json_path.display()
+        ))
+    })?;
+    let smoke_target = resolve_package_smoke_target(project_dir, &package_json)?;
+    let mut builder = Builder::clean_cli(node_runtime.node_path.clone());
+    builder.current_dir(project_dir);
+    match &smoke_target {
+        PackageSmokeTarget::Import(path) => {
+            builder
+                .arg("--input-type=module")
+                .arg("-e")
+                .arg("import { pathToFileURL } from 'node:url'; await import(pathToFileURL(process.argv[1]).href);")
+                .arg(path);
+        }
+        PackageSmokeTarget::SyntaxCheck(path) => {
+            builder.arg("--check").arg(path);
+        }
+    }
+    let output = tokio::time::timeout(MANAGED_ACP_SMOKE_TIMEOUT, builder.output())
+        .await
+        .map_err(|_| {
+            ManagedAcpToolError::invalid(format!(
+                "smoke test for managed {} package timed out after {}s",
+                tool.display_name(),
+                MANAGED_ACP_SMOKE_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(ManagedAcpToolError::io)?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let detail = if stderr.is_empty() {
+        stdout
+    } else if stdout.is_empty() {
+        stderr
+    } else {
+        format!("{stderr}; stdout: {stdout}")
+    };
+    Err(ManagedAcpToolError::invalid(format!(
+        "smoke test for managed {} package failed with exit code {:?}: {detail}",
+        tool.display_name(),
+        output.status.code()
+    )))
+}
+
 fn package_json_path(project_dir: &Path, package_name: &str) -> PathBuf {
+    package_root(project_dir, package_name).join("package.json")
+}
+
+fn package_root(project_dir: &Path, package_name: &str) -> PathBuf {
     let mut path = project_dir.join("node_modules");
     for segment in package_path_segments(package_name) {
         path.push(segment);
     }
-    path.join("package.json")
+    path
 }
 
 fn package_path_segments(package_name: &str) -> Vec<&str> {
@@ -604,6 +808,47 @@ fn resolve_package_bin_entry(package_name: &str, bin_field: &serde_json::Value) 
     }
 }
 
+fn resolve_package_smoke_target(
+    project_dir: &Path,
+    package_json: &InstalledPackageJson,
+) -> Result<PackageSmokeTarget, ManagedAcpToolError> {
+    if let Some(entry) = resolve_package_import_entry(&package_json.exports, package_json.main.as_deref()) {
+        return Ok(PackageSmokeTarget::Import(
+            package_root(project_dir, &package_json.name).join(entry),
+        ));
+    }
+
+    let bin_entry = resolve_package_bin_entry(package_json.name.as_str(), &package_json.bin)?;
+    Ok(PackageSmokeTarget::SyntaxCheck(
+        package_root(project_dir, &package_json.name).join(bin_entry),
+    ))
+}
+
+fn resolve_package_import_entry(exports_field: &serde_json::Value, main_field: Option<&str>) -> Option<String> {
+    let exports_entry = match exports_field {
+        serde_json::Value::String(value) if !value.is_empty() => Some(value.clone()),
+        serde_json::Value::Object(entries) => entries.get(".").and_then(|root| match root {
+            serde_json::Value::String(value) if !value.is_empty() => Some(value.clone()),
+            serde_json::Value::Object(root_entries) => root_entries
+                .get("import")
+                .and_then(|value| match value {
+                    serde_json::Value::String(value) if !value.is_empty() => Some(value.clone()),
+                    _ => None,
+                })
+                .or_else(|| {
+                    root_entries.get("default").and_then(|value| match value {
+                        serde_json::Value::String(value) if !value.is_empty() => Some(value.clone()),
+                        _ => None,
+                    })
+                }),
+            _ => None,
+        }),
+        _ => None,
+    };
+
+    exports_entry.or_else(|| main_field.and_then(|value| if value.is_empty() { None } else { Some(value.to_owned()) }))
+}
+
 fn normalize_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -622,6 +867,28 @@ fn prepare_staging_root(tool: ManagedAcpToolId, spec: PlatformSpec) -> Result<Pa
         spec.manifest_key,
         nonce
     )))
+}
+
+fn bundle_prepare_staging_root(tool: ManagedAcpToolId, spec: PlatformSpec, bundle_root: &Path) -> PathBuf {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    bundle_root.join(".staging").join(format!(
+        "{}-{}-{}-{}",
+        tool.slug(),
+        tool.version(),
+        spec.manifest_key,
+        nonce
+    ))
+}
+
+fn bundle_tool_root(bundle_root: &Path, tool: ManagedAcpToolId, spec: PlatformSpec) -> PathBuf {
+    bundle_root
+        .join("acp")
+        .join(tool.slug())
+        .join(tool.version())
+        .join(spec.manifest_key)
 }
 
 fn platform_spec() -> Result<PlatformSpec, ManagedAcpToolError> {
@@ -707,40 +974,9 @@ fn format_error_with_causes(error: &(dyn StdError + 'static)) -> String {
 }
 
 #[cfg(test)]
-fn classify_error(error: &ManagedAcpToolError) -> (ManagedAcpToolFailureKind, Option<u16>) {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("timed out") {
-        return (ManagedAcpToolFailureKind::Timeout, None);
-    }
-    if let Some(status) = parse_http_status(&message) {
-        return (ManagedAcpToolFailureKind::HttpStatus, Some(status));
-    }
-    if message.contains("unsupported") {
-        return (ManagedAcpToolFailureKind::UnsupportedPlatform, None);
-    }
-    if message.contains("checksum mismatch") {
-        return (ManagedAcpToolFailureKind::ChecksumMismatch, None);
-    }
-    if message.contains("validate") || message.contains("entrypoint missing") {
-        return (ManagedAcpToolFailureKind::ValidationFailed, None);
-    }
-    if message.contains("download") || message.contains("extract") || message.contains("connect failed") {
-        return (ManagedAcpToolFailureKind::DownloadFailed, None);
-    }
-    (ManagedAcpToolFailureKind::Unknown, None)
-}
-
-#[cfg(test)]
-fn parse_http_status(message: &str) -> Option<u16> {
-    let marker = "http ";
-    let start = message.find(marker)? + marker.len();
-    let digits: String = message[start..].chars().take_while(|ch| ch.is_ascii_digit()).collect();
-    digits.parse::<u16>().ok()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fmt;
 
     #[test]
@@ -787,6 +1023,111 @@ mod tests {
         let (kind, status_code) = classify_error(&error);
         assert_eq!(kind, ManagedAcpToolFailureKind::ChecksumMismatch);
         assert_eq!(status_code, None);
+    }
+
+    #[test]
+    fn classify_error_detects_bundled_acp_validation_failure() {
+        let error = ManagedAcpToolError::invalid(
+            "bundled managed Codex ACP artifact failed validation under /app/resources/managed-resources/acp/codex-acp/0.14.0/linux-x64: managed ACP entrypoint missing",
+        );
+        let (kind, status_code) = classify_error(&error);
+
+        assert_eq!(kind, ManagedAcpToolFailureKind::BundledResourceInvalid);
+        assert_eq!(status_code, None);
+    }
+
+    #[test]
+    fn validate_tool_root_rejects_claude_artifact_missing_platform_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let entrypoint = root
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("index.js");
+        std::fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        std::fs::write(&entrypoint, "console.log('claude bridge');\n").unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            br#"{"entrypoint":"node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js","path_entries":["node_modules/.bin"]}"#,
+        )
+        .unwrap();
+
+        let error = validate_tool_root(ManagedAcpToolId::ClaudeAgentAcp, root, None)
+            .expect_err("Claude ACP artifact without platform binary should fail validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("expected managed Claude ACP platform binary missing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validate_tool_root_rejects_codex_artifact_missing_platform_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let entrypoint = root
+            .join("node_modules")
+            .join("@zed-industries")
+            .join("codex-acp")
+            .join("bin")
+            .join("codex-acp.js");
+        std::fs::create_dir_all(entrypoint.parent().unwrap()).unwrap();
+        std::fs::write(&entrypoint, "console.log('codex bridge');\n").unwrap();
+        std::fs::write(
+            root.join("manifest.json"),
+            br#"{"entrypoint":"node_modules/@zed-industries/codex-acp/bin/codex-acp.js","path_entries":["node_modules/.bin"]}"#,
+        )
+        .unwrap();
+
+        let error = validate_tool_root(ManagedAcpToolId::CodexAcp, root, None)
+            .expect_err("Codex ACP artifact without platform binary should fail validation");
+
+        assert!(
+            error
+                .to_string()
+                .contains("expected managed Codex ACP platform binary missing"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bundled_acp_tool_missing_reports_bundled_resource_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bundled_root = tmp.path().join("bundled");
+        if !crate::test_support::run_in_env_child(
+            "acp_tool_runtime::tests::bundled_acp_tool_missing_reports_bundled_resource_missing",
+            |command| {
+                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            },
+        ) {
+            return;
+        }
+
+        crate::cache::init(tmp.path().join("data"));
+        managed_resources::set_managed_resources_mode(managed_resources::ManagedResourcesMode::Bundled);
+
+        let updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let reporter_updates = updates.clone();
+        let reporter = move |update: ManagedAcpToolProgress| {
+            reporter_updates.lock().unwrap().push(update);
+        };
+
+        let result = ensure_managed_acp_tool_with_reporter(ManagedAcpToolId::CodexAcp, Some(&reporter)).await;
+        managed_resources::set_managed_resources_mode(managed_resources::ManagedResourcesMode::Download);
+
+        let error = result.expect_err("missing bundled ACP tool should fail");
+        assert!(error.to_string().contains("bundled managed Codex ACP artifact missing"));
+        let updates = updates.lock().unwrap();
+        assert!(updates.iter().any(|update| {
+            update.phase == ManagedAcpToolProgressPhase::Failed
+                && update.failure_kind == Some(ManagedAcpToolFailureKind::BundledResourceMissing)
+        }));
     }
 
     #[test]
@@ -837,6 +1178,67 @@ mod tests {
     }
 
     #[test]
+    fn resolve_package_smoke_target_prefers_importable_entry_for_exported_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path();
+        let package_json = InstalledPackageJson {
+            name: "@agentclientprotocol/claude-agent-acp".into(),
+            bin: json!({
+                "claude-agent-acp": "dist/index.js",
+            }),
+            main: Some("dist/lib.js".into()),
+            exports: json!({
+                ".": {
+                    "types": "./dist/lib.d.ts",
+                    "import": "./dist/lib.js"
+                }
+            }),
+        };
+
+        let target = resolve_package_smoke_target(project_dir, &package_json).expect("smoke target");
+
+        assert_eq!(
+            target,
+            PackageSmokeTarget::Import(
+                project_dir
+                    .join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join("claude-agent-acp")
+                    .join("dist")
+                    .join("lib.js")
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_package_smoke_target_falls_back_to_bin_check_for_cli_only_package() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path();
+        let package_json = InstalledPackageJson {
+            name: "@zed-industries/codex-acp".into(),
+            bin: json!({
+                "codex-acp": "bin/codex-acp.js",
+            }),
+            main: None,
+            exports: serde_json::Value::Null,
+        };
+
+        let target = resolve_package_smoke_target(project_dir, &package_json).expect("smoke target");
+
+        assert_eq!(
+            target,
+            PackageSmokeTarget::SyntaxCheck(
+                project_dir
+                    .join("node_modules")
+                    .join("@zed-industries")
+                    .join("codex-acp")
+                    .join("bin")
+                    .join("codex-acp.js")
+            )
+        );
+    }
+
+    #[test]
     fn package_path_segments_preserve_scoped_package_structure() {
         assert_eq!(
             package_path_segments("@zed-industries/codex-acp"),
@@ -856,6 +1258,15 @@ mod tests {
     fn bundled_validation_failure_does_not_fallback_to_remote_download() {
         let tmp = tempfile::tempdir().unwrap();
         let bundled_root = tmp.path().join("bundled");
+        if !crate::test_support::run_in_env_child(
+            "acp_tool_runtime::tests::bundled_validation_failure_does_not_fallback_to_remote_download",
+            |command| {
+                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+            },
+        ) {
+            return;
+        }
+        let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
         let spec = platform_spec().unwrap();
         let source_root = bundled_root
             .join("acp")
@@ -872,14 +1283,8 @@ mod tests {
         let runtime_root = tmp.path().join("runtime");
         let tool_root = runtime_root.join("codex-acp").join("0.14.0").join(spec.manifest_key);
 
-        unsafe {
-            std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
-        }
         managed_resources::set_managed_resources_mode(managed_resources::ManagedResourcesMode::Bundled);
         let result = activate_local_tool_source(ManagedAcpToolId::CodexAcp, spec, &tool_root, None);
-        unsafe {
-            std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES");
-        }
         managed_resources::set_managed_resources_mode(managed_resources::ManagedResourcesMode::Download);
 
         let error = result.expect_err("bundled validation failure should abort");
@@ -887,6 +1292,27 @@ mod tests {
             error
                 .to_string()
                 .contains("bundled managed Codex ACP artifact failed validation")
+        );
+    }
+
+    #[test]
+    fn bundle_tool_root_scopes_acp_output_under_tool_directory() {
+        let bundle_root = std::path::Path::new("/tmp/bundle");
+        let spec = PlatformSpec {
+            manifest_key: "win32-x64",
+            npm_os: "win32",
+            npm_cpu: "x64",
+        };
+
+        let path = bundle_tool_root(bundle_root, ManagedAcpToolId::CodexAcp, spec);
+
+        assert_eq!(
+            path,
+            bundle_root
+                .join("acp")
+                .join("codex-acp")
+                .join("0.14.0")
+                .join("win32-x64")
         );
     }
 }

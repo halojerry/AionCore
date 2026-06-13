@@ -1,34 +1,42 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
-use aionui_ai_agent::types::{BuildTaskOptions, SendMessageData};
+use aionui_ai_agent::session_context::{AgentSessionContext, AgentSessionKind};
+use aionui_ai_agent::types::BuildTaskOptions;
 use aionui_ai_agent::{AgentError, AgentInstance, AgentSendError, IWorkerTaskManager};
 
 use crate::response_middleware::ICronService;
+use crate::runtime_completion::RuntimeCompletionPublisher;
+use crate::runtime_persistence::{RuntimePersistenceCoordinator, RuntimeWriteKind};
 use crate::runtime_state::ConversationRuntimeStateService;
 use aionui_api_types::{
-    ApprovalCheckResponse, CloneConversationRequest, ConfirmRequest, ConfirmationListResponse,
-    ConversationArtifactKind, ConversationArtifactListResponse, ConversationArtifactResponse,
-    ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus, ConversationMcpStatusKind,
-    ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest, ListConversationsQuery,
-    ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse, SearchMessagesQuery,
-    SendMessageRequest, SessionMcpServer, SessionMcpTransport, UpdateConversationArtifactRequest,
-    UpdateConversationRequest, WebSocketMessage,
+    ApprovalCheckResponse, AssistantConversationOverridesRequest, CancelConversationResponse, CloneConversationRequest,
+    ConfirmRequest, ConfirmationListResponse, ConversationArtifactKind, ConversationArtifactListResponse,
+    ConversationArtifactResponse, ConversationArtifactStatus, ConversationListResponse, ConversationMcpStatus,
+    ConversationMcpStatusKind, ConversationResponse, ConversationRuntimeSummary, CreateConversationRequest,
+    ListConversationsQuery, ListMessagesQuery, MessageListResponse, MessageResponse, MessageSearchResponse,
+    SearchMessagesQuery, SendMessageRequest, SendMessageResponse, SessionMcpServer, SessionMcpTransport,
+    TeamSessionBinding, UpdateConversationArtifactRequest, UpdateConversationRequest, WebSocketMessage,
 };
 use aionui_common::{
-    AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete, PaginatedResult,
-    WorkspacePathValidationError, generate_short_id, now_ms, validate_workspace_path_availability,
+    AgentKillReason, AgentType, ConversationSource, ConversationStatus, ErrorChain, MessageType, OnConversationDelete,
+    PaginatedResult, WorkspacePathValidationError, generate_short_id, now_ms, validate_workspace_path_availability,
 };
 use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
-    IAgentMetadataRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
+    IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
+    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
+    UpsertConversationAssistantSnapshotParams,
 };
+use aionui_extension::AssistantRuleDispatcher;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_realtime::EventBroadcaster;
 use aionui_runtime::{RuntimeCommandProbe, probe_node_runtime_supported, probe_runtime_command, resolve_command_path};
 use std::collections::{HashMap, HashSet};
-use tokio::sync::oneshot;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::convert::{
@@ -36,12 +44,122 @@ use crate::convert::{
     row_to_message_response_compact, row_to_response, row_to_response_with_extra, search_row_to_item, string_to_enum,
 };
 use crate::error::ConversationError;
+use crate::session_context::SessionContextBuilder;
 use crate::skill_resolver::SkillResolver;
 use crate::skill_snapshot::{backfill_skills_if_missing, compute_initial_skills};
-use crate::stream_relay::StreamRelay;
+use crate::turn_orchestrator::{ConversationTurnOrchestrator, ConversationTurnStatus, TurnStartInput};
 use std::sync::RwLock;
 
-const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
+pub(crate) const MAX_CRON_CONTINUATIONS_PER_TURN: usize = 4;
+const ACP_CANCEL_DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
+const LEGACY_CONVERSATION_ARCHIVED_MESSAGE: &str =
+    "This historical conversation can no longer be continued. Please start a new conversation.";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct AssistantConversationOverrides {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    permission: Option<String>,
+    #[serde(default)]
+    skill_ids: Option<Vec<String>>,
+    #[serde(default)]
+    disabled_builtin_skill_ids: Option<Vec<String>>,
+    #[serde(default)]
+    mcp_ids: Option<Vec<String>>,
+}
+
+impl From<AssistantConversationOverridesRequest> for AssistantConversationOverrides {
+    fn from(value: AssistantConversationOverridesRequest) -> Self {
+        Self {
+            model: value.model,
+            permission: value.permission,
+            skill_ids: value.skill_ids,
+            disabled_builtin_skill_ids: value.disabled_builtin_skill_ids,
+            mcp_ids: value.mcp_ids,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AssistantSnapshotResolvedDefaults {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    permission: Option<String>,
+    #[serde(default)]
+    skill_ids: Vec<String>,
+    #[serde(default)]
+    disabled_builtin_skill_ids: Vec<String>,
+    #[serde(default)]
+    mcp_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct AssistantSnapshotDefaultModes {
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    permission: String,
+    #[serde(default)]
+    skills: String,
+    #[serde(default)]
+    mcps: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AssistantSnapshotRules {
+    content: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct AssistantSnapshot {
+    assistant_definition_id: String,
+    assistant_id: String,
+    assistant_source: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    avatar_type: String,
+    #[serde(default)]
+    avatar: Option<String>,
+    agent_backend: String,
+    rules: AssistantSnapshotRules,
+    #[serde(default)]
+    default_modes: AssistantSnapshotDefaultModes,
+    resolved_defaults: AssistantSnapshotResolvedDefaults,
+    created_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssistantEffectiveDefaultModes<'a> {
+    model: &'a str,
+    permission: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AssistantRuntimePreferenceUpdate<'a> {
+    pub(crate) model: Option<&'a str>,
+    pub(crate) permission: Option<&'a str>,
+}
+
+fn assistant_snapshot_modes<'a>(
+    snapshot: &'a AssistantSnapshot,
+    definition: &'a aionui_db::AssistantDefinitionRow,
+) -> AssistantEffectiveDefaultModes<'a> {
+    AssistantEffectiveDefaultModes {
+        model: if snapshot.default_modes.model.is_empty() {
+            definition.default_model_mode.as_str()
+        } else {
+            snapshot.default_modes.model.as_str()
+        },
+        permission: if snapshot.default_modes.permission.is_empty() {
+            definition.default_permission_mode.as_str()
+        } else {
+            snapshot.default_modes.permission.as_str()
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct McpSupportPolicy {
@@ -88,6 +206,30 @@ impl McpSupportPolicy {
     }
 }
 
+fn parse_agent_type_from_row(row: &ConversationRow) -> Option<AgentType> {
+    serde_json::from_value::<AgentType>(serde_json::Value::String(row.r#type.clone())).ok()
+}
+
+fn reject_deprecated_runtime_row(row: &ConversationRow) -> Result<(), ConversationError> {
+    let Some(agent_type) = parse_agent_type_from_row(row) else {
+        return Ok(());
+    };
+
+    if agent_type.is_deprecated_runtime() {
+        debug!(
+            conversation_id = %row.id,
+            agent_type = agent_type.serde_name(),
+            "Rejected deprecated runtime conversation"
+        );
+        return Err(ConversationError::Archived {
+            id: row.id.clone(),
+            reason: LEGACY_CONVERSATION_ARCHIVED_MESSAGE.into(),
+        });
+    }
+
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ConversationService {
     workspace_root: PathBuf,
@@ -102,12 +244,49 @@ pub struct ConversationService {
     delete_hooks: Arc<RwLock<Vec<Arc<dyn OnConversationDelete>>>>,
     cron_service: Arc<RwLock<Option<Arc<dyn ICronService>>>>,
     mcp_server_repo: Arc<RwLock<Option<Arc<dyn IMcpServerRepository>>>>,
+    assistant_definition_repo: Arc<RwLock<Option<Arc<dyn IAssistantDefinitionRepository>>>>,
+    assistant_state_repo: Arc<RwLock<Option<Arc<dyn IAssistantOverlayRepository>>>>,
+    assistant_preference_repo: Arc<RwLock<Option<Arc<dyn IAssistantPreferenceRepository>>>>,
+    assistant_dispatcher: Arc<RwLock<Option<Arc<dyn AssistantRuleDispatcher>>>>,
     runtime_state: Arc<ConversationRuntimeStateService>,
 
     // Repos for conversation, acp_session and agent_metadata access.
     conversation_repo: Arc<dyn IConversationRepository>,
     agent_metadata_repo: Arc<dyn IAgentMetadataRepository>,
     acp_session_repo: Arc<dyn IAcpSessionRepository>,
+}
+
+#[derive(Clone)]
+pub struct ConversationAgentTurnRequest {
+    pub user_id: String,
+    pub conversation_id: String,
+    pub content: String,
+    pub files: Vec<String>,
+    pub inject_skills: Vec<String>,
+    pub on_started: Option<ConversationAgentTurnStartedCallback>,
+}
+
+pub type ConversationAgentTurnStartedCallback =
+    Arc<dyn Fn(ConversationAgentTurnStarted) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationAgentTurnStarted {
+    pub conversation_id: String,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationAgentTurnStatus {
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConversationAgentTurnOutcome {
+    pub conversation_id: String,
+    pub turn_id: String,
+    pub status: ConversationAgentTurnStatus,
+    pub runtime: ConversationRuntimeSummary,
 }
 
 // ── Construction & Dependency Injection ──────────────────────────────
@@ -131,6 +310,10 @@ impl ConversationService {
             delete_hooks: Arc::new(RwLock::new(Vec::new())),
             cron_service: Arc::new(RwLock::new(None)),
             mcp_server_repo: Arc::new(RwLock::new(None)),
+            assistant_definition_repo: Arc::new(RwLock::new(None)),
+            assistant_state_repo: Arc::new(RwLock::new(None)),
+            assistant_preference_repo: Arc::new(RwLock::new(None)),
+            assistant_dispatcher: Arc::new(RwLock::new(None)),
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
             conversation_repo,
@@ -153,6 +336,30 @@ impl ConversationService {
     pub fn with_mcp_server_repo(&self, repo: Arc<dyn IMcpServerRepository>) {
         if let Ok(mut guard) = self.mcp_server_repo.write() {
             *guard = Some(repo);
+        }
+    }
+
+    pub fn with_assistant_definition_repo(&self, repo: Arc<dyn IAssistantDefinitionRepository>) {
+        if let Ok(mut guard) = self.assistant_definition_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    pub fn with_assistant_state_repo(&self, repo: Arc<dyn IAssistantOverlayRepository>) {
+        if let Ok(mut guard) = self.assistant_state_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    pub fn with_assistant_preference_repo(&self, repo: Arc<dyn IAssistantPreferenceRepository>) {
+        if let Ok(mut guard) = self.assistant_preference_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    pub fn with_assistant_dispatcher(&self, dispatcher: Arc<dyn AssistantRuleDispatcher>) {
+        if let Ok(mut guard) = self.assistant_dispatcher.write() {
+            *guard = Some(dispatcher);
         }
     }
 
@@ -181,8 +388,16 @@ impl ConversationService {
         generate_short_id()
     }
 
+    pub fn mint_turn_id() -> String {
+        format!("turn_{}", generate_short_id())
+    }
+
     pub fn conversation_repo(&self) -> &Arc<dyn IConversationRepository> {
         &self.conversation_repo
+    }
+
+    pub(crate) fn broadcaster(&self) -> &Arc<dyn EventBroadcaster> {
+        &self.broadcaster
     }
 
     pub(crate) fn acp_session_repo(&self) -> &Arc<dyn IAcpSessionRepository> {
@@ -191,6 +406,46 @@ impl ConversationService {
 
     pub fn runtime_state(&self) -> Arc<ConversationRuntimeStateService> {
         self.runtime_state.clone()
+    }
+
+    fn assistant_definition_repo(&self) -> Option<Arc<dyn IAssistantDefinitionRepository>> {
+        self.assistant_definition_repo
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    fn assistant_state_repo(&self) -> Option<Arc<dyn IAssistantOverlayRepository>> {
+        self.assistant_state_repo
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    fn assistant_preference_repo(&self) -> Option<Arc<dyn IAssistantPreferenceRepository>> {
+        self.assistant_preference_repo
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    fn assistant_dispatcher(&self) -> Option<Arc<dyn AssistantRuleDispatcher>> {
+        self.assistant_dispatcher
+            .read()
+            .ok()
+            .and_then(|guard| guard.as_ref().cloned())
+    }
+
+    pub(crate) fn runtime_persistence(&self) -> RuntimePersistenceCoordinator {
+        RuntimePersistenceCoordinator::new(self.runtime_state())
+    }
+
+    pub(crate) fn completion_publisher(&self) -> RuntimeCompletionPublisher {
+        RuntimeCompletionPublisher::new(
+            self.conversation_repo.clone(),
+            self.broadcaster.clone(),
+            self.runtime_persistence(),
+        )
     }
 
     pub(crate) fn task(&self, conversation_id: &str) -> Result<AgentInstance, ConversationError> {
@@ -211,35 +466,36 @@ impl ConversationService {
             .summary_from_parts(conversation_id, task_status, has_task, pending_confirmations)
     }
 
-    pub async fn complete_turn(&self, conversation_id: &str) {
-        if self.runtime_state.is_deleting(conversation_id) {
-            debug!(
-                conversation_id,
-                "Skipping turn completion because conversation is deleting"
-            );
-            return;
+    async fn send_message_response(
+        &self,
+        conversation_id: &str,
+        msg_id: String,
+        turn_id: String,
+    ) -> SendMessageResponse {
+        SendMessageResponse {
+            msg_id,
+            turn_id,
+            runtime: self.runtime_summary_for(conversation_id).await,
         }
-
-        let runtime = self.runtime_summary_for(conversation_id).await;
-        StreamRelay::complete_conversation_with_runtime(
-            &self.conversation_repo,
-            &self.broadcaster,
-            conversation_id,
-            Some(runtime),
-        )
-        .await;
     }
 
-    async fn complete_released_turn(&self, conversation_id: &str, was_deleting: bool) {
+    pub async fn complete_turn(&self, conversation_id: &str, turn_id: &str) {
+        let runtime = self.runtime_summary_for(conversation_id).await;
+        self.completion_publisher()
+            .publish(conversation_id, turn_id, Some(runtime))
+            .await;
+    }
+
+    pub(crate) async fn complete_released_turn(&self, conversation_id: &str, turn_id: &str, was_deleting: bool) {
         if was_deleting {
             debug!(
                 conversation_id,
-                "Skipping turn completion because conversation was deleting at claim release"
+                turn_id, "Skipping turn completion because conversation was deleting at claim release"
             );
             return;
         }
 
-        self.complete_turn(conversation_id).await;
+        self.complete_turn(conversation_id, turn_id).await;
     }
 }
 
@@ -259,6 +515,17 @@ impl ConversationService {
         let id = generate_short_id();
         let now = now_ms();
         let source = req.source.unwrap_or(ConversationSource::Aionui);
+
+        if !req.r#type.supports_new_conversation() {
+            info!(
+                agent_type = req.r#type.serde_name(),
+                source = ?source,
+                "Rejected deprecated agent type for new conversation"
+            );
+            return Err(ConversationError::BadRequest {
+                reason: "This agent type is no longer supported for new conversations.".into(),
+            });
+        }
 
         // Type-aware rule: top-level `model` is aionrs-only. Other agent types
         // carry model/mode via `extra` (see spec 2026-05-12). Reject early so
@@ -327,6 +594,61 @@ impl ConversationService {
             obj.remove("custom_workspace");
         }
 
+        let assistant_id = req
+            .assistant
+            .as_ref()
+            .map(|assistant| assistant.id.clone())
+            .or_else(|| {
+                extra
+                    .as_object()
+                    .and_then(|obj| obj.get("preset_assistant_id"))
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            });
+        let assistant_locale = req.assistant.as_ref().and_then(|assistant| assistant.locale.clone());
+        let assistant_overrides = req
+            .assistant
+            .clone()
+            .and_then(|assistant| assistant.conversation_overrides)
+            .map(AssistantConversationOverrides::from)
+            .unwrap_or_default();
+        let assistant_snapshot = match assistant_id.as_deref() {
+            Some(id) => {
+                self.resolve_assistant_snapshot(id, assistant_locale.as_deref(), &assistant_overrides, &extra)
+                    .await?
+            }
+            None => None,
+        };
+        if let Some(snapshot) = assistant_snapshot.as_ref()
+            && let Some(obj) = extra.as_object_mut()
+        {
+            obj.insert(
+                "assistant_id".to_owned(),
+                serde_json::Value::String(snapshot.assistant_id.clone()),
+            );
+            obj.insert(
+                "preset_assistant_id".to_owned(),
+                serde_json::Value::String(snapshot.assistant_id.clone()),
+            );
+            if !snapshot.rules.content.is_empty() {
+                obj.insert(
+                    "preset_context".to_owned(),
+                    serde_json::Value::String(snapshot.rules.content.clone()),
+                );
+                obj.insert(
+                    "preset_rules".to_owned(),
+                    serde_json::Value::String(snapshot.rules.content.clone()),
+                );
+            }
+            if let Some(model_id) = snapshot.resolved_defaults.model.as_ref()
+                && !obj.contains_key("current_model_id")
+            {
+                obj.insert(
+                    "current_model_id".to_owned(),
+                    serde_json::Value::String(model_id.clone()),
+                );
+            }
+        }
+
         // Consume transient skill-shaping inputs and freeze the initial
         // `skills` snapshot into `extra.skills`. These request-only fields
         // must not land in the stored row. Legacy names (`enabled_skills`,
@@ -345,8 +667,16 @@ impl ConversationService {
 
         let (preset_enabled, exclude_auto_inject) = match extra.as_object_mut() {
             Some(obj) => {
-                let preset = take_string_array(obj, &["preset_enabled_skills", "enabled_skills"]);
-                let exclude = take_string_array(obj, &["exclude_auto_inject_skills", "exclude_builtin_skills"]);
+                let preset = assistant_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.resolved_defaults.skill_ids.clone())
+                    .unwrap_or_else(|| take_string_array(obj, &["preset_enabled_skills", "enabled_skills"]));
+                let exclude = assistant_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.resolved_defaults.disabled_builtin_skill_ids.clone())
+                    .unwrap_or_else(|| {
+                        take_string_array(obj, &["exclude_auto_inject_skills", "exclude_builtin_skills"])
+                    });
                 // Strip the stale cache field if a clone copied it in.
                 obj.remove("loaded_skills");
                 (preset, exclude)
@@ -394,7 +724,14 @@ impl ConversationService {
             Some(obj) => {
                 let has_selection = obj.contains_key("selected_mcp_server_ids");
                 let ids = take_string_array(obj, &["selected_mcp_server_ids"]);
-                if has_selection { Some(ids) } else { None }
+                if has_selection {
+                    Some(ids)
+                } else {
+                    assistant_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.resolved_defaults.mcp_ids.clone())
+                        .filter(|ids| !ids.is_empty())
+                }
             }
             None => None,
         };
@@ -515,11 +852,53 @@ impl ConversationService {
 
         self.conversation_repo.create(&row).await?;
 
+        if let Some(snapshot) = assistant_snapshot.as_ref() {
+            let resolved_skill_ids = serde_json::to_string(&snapshot.resolved_defaults.skill_ids).map_err(|e| {
+                ConversationError::internal(format!("Failed to serialize assistant skill snapshot: {e}"))
+            })?;
+            let resolved_disabled_builtin_skill_ids =
+                serde_json::to_string(&snapshot.resolved_defaults.disabled_builtin_skill_ids).map_err(|e| {
+                    ConversationError::internal(format!(
+                        "Failed to serialize assistant disabled builtin skill snapshot: {e}"
+                    ))
+                })?;
+            let resolved_mcp_ids = serde_json::to_string(&snapshot.resolved_defaults.mcp_ids)
+                .map_err(|e| ConversationError::internal(format!("Failed to serialize assistant MCP snapshot: {e}")))?;
+
+            self.conversation_repo
+                .upsert_assistant_snapshot(&UpsertConversationAssistantSnapshotParams {
+                    conversation_id: &row.id,
+                    assistant_definition_id: &snapshot.assistant_definition_id,
+                    assistant_key: &snapshot.assistant_id,
+                    assistant_source: &snapshot.assistant_source,
+                    assistant_name: &snapshot.name,
+                    assistant_avatar_type: &snapshot.avatar_type,
+                    assistant_avatar_value: snapshot.avatar.as_deref(),
+                    agent_backend: &snapshot.agent_backend,
+                    rules_content: &snapshot.rules.content,
+                    default_model_mode: &snapshot.default_modes.model,
+                    resolved_model_id: snapshot.resolved_defaults.model.as_deref(),
+                    default_permission_mode: &snapshot.default_modes.permission,
+                    resolved_permission_value: snapshot.resolved_defaults.permission.as_deref(),
+                    default_skills_mode: &snapshot.default_modes.skills,
+                    resolved_skill_ids: &resolved_skill_ids,
+                    resolved_disabled_builtin_skill_ids: &resolved_disabled_builtin_skill_ids,
+                    default_mcps_mode: &snapshot.default_modes.mcps,
+                    resolved_mcp_ids: &resolved_mcp_ids,
+                })
+                .await?
+                .ok_or_else(|| ConversationError::internal("assistant snapshot upsert returned no row"))?;
+        }
+
         // ACP conversations own one `acp_session` row (1:1 by
         // conversation_id). Other agent types have no session-level
         // state so we only create it for ACP.
         if req.r#type == AgentType::Acp {
             self.create_acp_session_row(&id, &extra).await?;
+        }
+
+        if let Some(snapshot) = assistant_snapshot.as_ref() {
+            self.persist_assistant_preferences_from_snapshot(snapshot).await?;
         }
 
         let response = row_to_response(row, &self.workspace_root)?;
@@ -601,6 +980,401 @@ impl ConversationService {
                 .await
                 .map_err(|e| ConversationError::internal(format!("Failed to seed acp_session runtime state: {e}")))?;
         }
+        Ok(())
+    }
+
+    async fn resolve_assistant_snapshot(
+        &self,
+        assistant_id: &str,
+        locale: Option<&str>,
+        overrides: &AssistantConversationOverrides,
+        extra: &serde_json::Value,
+    ) -> Result<Option<AssistantSnapshot>, ConversationError> {
+        let (Some(definition_repo), Some(state_repo), Some(preference_repo)) = (
+            self.assistant_definition_repo(),
+            self.assistant_state_repo(),
+            self.assistant_preference_repo(),
+        ) else {
+            return Ok(None);
+        };
+
+        let Some(definition) = definition_repo
+            .get_by_key(assistant_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant definition lookup failed: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        let state = state_repo
+            .get(&definition.definition_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant state lookup failed: {e}")))?;
+        let preference = preference_repo
+            .get(&definition.definition_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant preference lookup failed: {e}")))?;
+
+        let skill_ids = match overrides.skill_ids.as_ref() {
+            Some(value) => value.clone(),
+            None if definition.default_skills_mode == "fixed" => {
+                parse_json_string_list(Some(definition.default_skill_ids.as_str()), "default_skill_ids")?
+            }
+            None => preference
+                .as_ref()
+                .map(|row| parse_json_string_list(Some(row.last_skill_ids.as_str()), "last_skill_ids"))
+                .transpose()?
+                .unwrap_or_default(),
+        };
+        let disabled_builtin_skill_ids = match overrides.disabled_builtin_skill_ids.as_ref() {
+            Some(value) => value.clone(),
+            None if definition.default_skills_mode == "fixed" => parse_json_string_list(
+                Some(definition.default_disabled_builtin_skill_ids.as_str()),
+                "default_disabled_builtin_skill_ids",
+            )?,
+            None => preference
+                .as_ref()
+                .map(|row| {
+                    parse_json_string_list(
+                        Some(row.last_disabled_builtin_skill_ids.as_str()),
+                        "last_disabled_builtin_skill_ids",
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default(),
+        };
+        let mcp_ids = match overrides.mcp_ids.as_ref() {
+            Some(value) => value.clone(),
+            None if definition.default_mcps_mode == "fixed" => {
+                parse_json_string_list(Some(definition.default_mcp_ids.as_str()), "default_mcp_ids")?
+            }
+            None => preference
+                .as_ref()
+                .map(|row| parse_json_string_list(Some(row.last_mcp_ids.as_str()), "last_mcp_ids"))
+                .transpose()?
+                .unwrap_or_default(),
+        };
+
+        let model = overrides
+            .model
+            .clone()
+            .or_else(|| match definition.default_model_mode.as_str() {
+                "fixed" => definition.default_model_value.clone(),
+                "auto" => preference.as_ref().and_then(|row| row.last_model_id.clone()),
+                _ => None,
+            });
+        let permission = overrides
+            .permission
+            .clone()
+            .or_else(|| match definition.default_permission_mode.as_str() {
+                "fixed" => definition.default_permission_value.clone(),
+                "auto" => preference.as_ref().and_then(|row| row.last_permission_value.clone()),
+                _ => None,
+            });
+
+        let rules_content = if let Some(dispatcher) = self.assistant_dispatcher() {
+            dispatcher
+                .read_rule(assistant_id, locale)
+                .await
+                .map_err(|e| ConversationError::internal(format!("assistant rule lookup failed: {e}")))?
+        } else {
+            String::new()
+        };
+        let fallback_rules = extra
+            .get("preset_context")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| extra.get("preset_rules").and_then(serde_json::Value::as_str))
+            .unwrap_or_default();
+        let agent_backend = state
+            .as_ref()
+            .and_then(|row| row.agent_backend_override.clone())
+            .unwrap_or_else(|| definition.agent_backend.clone());
+
+        Ok(Some(AssistantSnapshot {
+            assistant_definition_id: definition.definition_id,
+            assistant_id: assistant_id.to_owned(),
+            assistant_source: definition.source,
+            name: definition.name,
+            avatar_type: definition.avatar_type,
+            avatar: definition.avatar_value,
+            agent_backend,
+            rules: AssistantSnapshotRules {
+                content: if rules_content.is_empty() {
+                    fallback_rules.to_owned()
+                } else {
+                    rules_content
+                },
+            },
+            default_modes: AssistantSnapshotDefaultModes {
+                model: definition.default_model_mode.clone(),
+                permission: definition.default_permission_mode.clone(),
+                skills: definition.default_skills_mode.clone(),
+                mcps: definition.default_mcps_mode.clone(),
+            },
+            resolved_defaults: AssistantSnapshotResolvedDefaults {
+                model,
+                permission,
+                skill_ids,
+                disabled_builtin_skill_ids,
+                mcp_ids,
+            },
+            created_at: now_ms(),
+        }))
+    }
+
+    async fn persist_assistant_preferences_from_snapshot(
+        &self,
+        snapshot: &AssistantSnapshot,
+    ) -> Result<(), ConversationError> {
+        let Some(preference_repo) = self.assistant_preference_repo() else {
+            return Ok(());
+        };
+
+        let existing_preference = preference_repo
+            .get(&snapshot.assistant_definition_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant preference lookup failed: {e}")))?;
+        let last_model_id = if snapshot.default_modes.model == "auto" {
+            snapshot.resolved_defaults.model.clone()
+        } else {
+            existing_preference.as_ref().and_then(|row| row.last_model_id.clone())
+        };
+        let last_permission_value = if snapshot.default_modes.permission == "auto" {
+            snapshot.resolved_defaults.permission.clone()
+        } else {
+            existing_preference
+                .as_ref()
+                .and_then(|row| row.last_permission_value.clone())
+        };
+        let last_skill_ids = if snapshot.default_modes.skills == "auto" {
+            serde_json::to_string(&snapshot.resolved_defaults.skill_ids)
+                .map_err(|e| ConversationError::internal(format!("encode assistant skills: {e}")))?
+        } else {
+            existing_preference
+                .as_ref()
+                .map(|row| row.last_skill_ids.clone())
+                .unwrap_or_else(|| "[]".to_string())
+        };
+        let last_disabled_builtin_skill_ids = if snapshot.default_modes.skills == "auto" {
+            serde_json::to_string(&snapshot.resolved_defaults.disabled_builtin_skill_ids)
+                .map_err(|e| ConversationError::internal(format!("encode assistant disabled builtin skills: {e}")))?
+        } else {
+            existing_preference
+                .as_ref()
+                .map(|row| row.last_disabled_builtin_skill_ids.clone())
+                .unwrap_or_else(|| "[]".to_string())
+        };
+        let last_mcp_ids = if snapshot.default_modes.mcps == "auto" {
+            serde_json::to_string(&snapshot.resolved_defaults.mcp_ids)
+                .map_err(|e| ConversationError::internal(format!("encode assistant mcps: {e}")))?
+        } else {
+            existing_preference
+                .as_ref()
+                .map(|row| row.last_mcp_ids.clone())
+                .unwrap_or_else(|| "[]".to_string())
+        };
+
+        preference_repo
+            .upsert(&aionui_db::UpsertAssistantPreferenceParams {
+                definition_id: &snapshot.assistant_definition_id,
+                last_model_id: last_model_id.as_deref(),
+                last_permission_value: last_permission_value.as_deref(),
+                last_skill_ids: &last_skill_ids,
+                last_disabled_builtin_skill_ids: &last_disabled_builtin_skill_ids,
+                last_mcp_ids: &last_mcp_ids,
+            })
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant preference upsert failed: {e}")))?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn persist_runtime_assistant_snapshot(
+        &self,
+        conversation_id: &str,
+        updates: AssistantRuntimePreferenceUpdate<'_>,
+    ) -> Result<(), ConversationError> {
+        let Some(snapshot) = self
+            .conversation_repo
+            .get_assistant_snapshot(conversation_id)
+            .await
+            .map_err(|e| {
+                ConversationError::internal(format!(
+                    "Failed to load persisted assistant snapshot for runtime sync: {e}"
+                ))
+            })?
+        else {
+            return Ok(());
+        };
+
+        self.conversation_repo
+            .upsert_assistant_snapshot(&UpsertConversationAssistantSnapshotParams {
+                conversation_id: &snapshot.conversation_id,
+                assistant_definition_id: &snapshot.assistant_definition_id,
+                assistant_key: &snapshot.assistant_key,
+                assistant_source: &snapshot.assistant_source,
+                assistant_name: &snapshot.assistant_name,
+                assistant_avatar_type: &snapshot.assistant_avatar_type,
+                assistant_avatar_value: snapshot.assistant_avatar_value.as_deref(),
+                agent_backend: &snapshot.agent_backend,
+                rules_content: &snapshot.rules_content,
+                default_model_mode: &snapshot.default_model_mode,
+                resolved_model_id: updates.model.or(snapshot.resolved_model_id.as_deref()),
+                default_permission_mode: &snapshot.default_permission_mode,
+                resolved_permission_value: updates.permission.or(snapshot.resolved_permission_value.as_deref()),
+                default_skills_mode: &snapshot.default_skills_mode,
+                resolved_skill_ids: &snapshot.resolved_skill_ids,
+                resolved_disabled_builtin_skill_ids: &snapshot.resolved_disabled_builtin_skill_ids,
+                default_mcps_mode: &snapshot.default_mcps_mode,
+                resolved_mcp_ids: &snapshot.resolved_mcp_ids,
+            })
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant snapshot upsert failed: {e}")))?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn persist_runtime_assistant_preferences(
+        &self,
+        conversation_id: &str,
+        updates: AssistantRuntimePreferenceUpdate<'_>,
+    ) -> Result<(), ConversationError> {
+        let (Some(definition_repo), Some(preference_repo)) =
+            (self.assistant_definition_repo(), self.assistant_preference_repo())
+        else {
+            return Ok(());
+        };
+
+        let persisted_snapshot = self
+            .conversation_repo
+            .get_assistant_snapshot(conversation_id)
+            .await
+            .map_err(|e| {
+                ConversationError::internal(format!(
+                    "Failed to load persisted assistant snapshot for preference sync: {e}"
+                ))
+            })?;
+
+        let fallback = if persisted_snapshot.is_none() {
+            let Some(conversation) = self.conversation_repo.get(conversation_id).await.map_err(|e| {
+                ConversationError::internal(format!(
+                    "Failed to load conversation for assistant preference sync: {e}"
+                ))
+            })?
+            else {
+                return Ok(());
+            };
+            let extra: serde_json::Value = serde_json::from_str(&conversation.extra).map_err(|e| {
+                ConversationError::internal(format!("Invalid extra JSON for assistant preference sync: {e}"))
+            })?;
+            let legacy_snapshot = extra
+                .get("assistant_snapshot")
+                .cloned()
+                .map(serde_json::from_value::<AssistantSnapshot>)
+                .transpose()
+                .map_err(|e| {
+                    ConversationError::internal(format!("Invalid assistant snapshot for preference sync: {e}"))
+                })?;
+            let assistant_id = legacy_snapshot
+                .as_ref()
+                .map(|value| value.assistant_id.clone())
+                .or_else(|| {
+                    extra
+                        .get("assistant_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .or_else(|| {
+                    extra
+                        .get("preset_assistant_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                });
+            let Some(assistant_id) = assistant_id else {
+                return Ok(());
+            };
+            let Some(definition) = definition_repo
+                .get_by_key(&assistant_id)
+                .await
+                .map_err(|e| ConversationError::internal(format!("assistant definition lookup failed: {e}")))?
+            else {
+                return Ok(());
+            };
+            Some((definition, legacy_snapshot))
+        } else {
+            None
+        };
+
+        let (definition_id, default_modes) = if let Some(snapshot) = persisted_snapshot.as_ref() {
+            (
+                snapshot.assistant_definition_id.clone(),
+                AssistantEffectiveDefaultModes {
+                    model: snapshot.default_model_mode.as_str(),
+                    permission: snapshot.default_permission_mode.as_str(),
+                },
+            )
+        } else {
+            let (definition, legacy_snapshot) = fallback
+                .as_ref()
+                .ok_or_else(|| ConversationError::internal("assistant preference sync fallback missing"))?;
+            (
+                definition.definition_id.clone(),
+                legacy_snapshot
+                    .as_ref()
+                    .map(|value| assistant_snapshot_modes(value, definition))
+                    .unwrap_or_else(|| AssistantEffectiveDefaultModes {
+                        model: definition.default_model_mode.as_str(),
+                        permission: definition.default_permission_mode.as_str(),
+                    }),
+            )
+        };
+
+        let existing_preference = preference_repo
+            .get(&definition_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant preference lookup failed: {e}")))?;
+
+        let last_model_id = if default_modes.model == "auto" {
+            updates
+                .model
+                .map(ToOwned::to_owned)
+                .or_else(|| existing_preference.as_ref().and_then(|row| row.last_model_id.clone()))
+        } else {
+            existing_preference.as_ref().and_then(|row| row.last_model_id.clone())
+        };
+        let last_permission_value = if default_modes.permission == "auto" {
+            updates.permission.map(ToOwned::to_owned).or_else(|| {
+                existing_preference
+                    .as_ref()
+                    .and_then(|row| row.last_permission_value.clone())
+            })
+        } else {
+            existing_preference
+                .as_ref()
+                .and_then(|row| row.last_permission_value.clone())
+        };
+
+        preference_repo
+            .upsert(&aionui_db::UpsertAssistantPreferenceParams {
+                definition_id: &definition_id,
+                last_model_id: last_model_id.as_deref(),
+                last_permission_value: last_permission_value.as_deref(),
+                last_skill_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_skill_ids.as_str())
+                    .unwrap_or("[]"),
+                last_disabled_builtin_skill_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_disabled_builtin_skill_ids.as_str())
+                    .unwrap_or("[]"),
+                last_mcp_ids: existing_preference
+                    .as_ref()
+                    .map(|row| row.last_mcp_ids.as_str())
+                    .unwrap_or("[]"),
+            })
+            .await
+            .map_err(|e| ConversationError::internal(format!("assistant runtime preference upsert failed: {e}")))?;
+
         Ok(())
     }
 
@@ -795,6 +1569,26 @@ impl ConversationService {
         };
 
         self.conversation_repo.update(id, &updates).await?;
+
+        if let Some(model) = req.model.as_ref() {
+            let selected_model = model.use_model.as_deref().unwrap_or(model.model.as_str());
+            self.persist_runtime_assistant_snapshot(
+                id,
+                AssistantRuntimePreferenceUpdate {
+                    model: Some(selected_model),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            self.persist_runtime_assistant_preferences(
+                id,
+                AssistantRuntimePreferenceUpdate {
+                    model: Some(selected_model),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
 
         if model_changed {
             info!(
@@ -1341,7 +2135,7 @@ impl ConversationService {
         conversation_id: &str,
         req: SendMessageRequest,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<String, ConversationError> {
+    ) -> Result<SendMessageResponse, ConversationError> {
         if req.content.trim().is_empty() {
             return Err(ConversationError::BadRequest {
                 reason: "Message content must not be empty".into(),
@@ -1359,22 +2153,23 @@ impl ConversationService {
                 id: conversation_id.to_owned(),
             })?;
 
-        // Short-circuit for legacy Gemini conversations: the dedicated Gemini
-        // runtime has been removed, so we cannot build an agent for this row.
-        // Emit CONVERSATION_ARCHIVED (HTTP 410 Gone) without touching the
-        // legacy `model` column, which may hold shapes the new parser can't
-        // deserialize. The client identifies this case by `code` and renders
-        // a dedicated archived-conversation UI rather than a generic banner.
-        if row.r#type == "gemini" {
-            return Err(ConversationError::Archived {
-                id: conversation_id.to_owned(),
-                reason: "This conversation was created with the legacy Gemini runtime, which has been \
-                         removed. Please start a new conversation with the Gemini ACP backend to continue."
-                    .into(),
+        if let Some(team_id) = team_id_from_extra(&row.extra) {
+            info!(
+                conversation_id = %conversation_id,
+                team_id = %team_id,
+                outcome = "rejected",
+                error_code = "FORBIDDEN",
+                "Ordinary send rejected for team-owned conversation"
+            );
+            return Err(ConversationError::Forbidden {
+                reason: "Team-owned conversations must be sent through Team API".into(),
             });
         }
 
-        let turn_claim = self.runtime_state.try_claim_turn(conversation_id)?;
+        reject_deprecated_runtime_row(&row)?;
+
+        let turn_id = Self::mint_turn_id();
+        let turn_claim = self.runtime_state.try_claim_turn(conversation_id, &turn_id)?;
 
         // Store user message. `msg_id` is server-generated so the WebSocket
         // stream, DB row, and client-side message index all agree on the same
@@ -1392,6 +2187,16 @@ impl ConversationService {
             hidden: req.hidden,
             created_at: now_ms(),
         };
+        if !self
+            .runtime_persistence()
+            .allows(conversation_id, RuntimeWriteKind::UserMessage)
+        {
+            let mut turn_claim = turn_claim;
+            let was_deleting = turn_claim.release();
+            self.complete_released_turn(conversation_id, &turn_id, was_deleting)
+                .await;
+            return Ok(self.send_message_response(conversation_id, user_msg_id, turn_id).await);
+        }
         if let Err(e) = self.conversation_repo.insert_message(&user_msg).await {
             warn!(msg_id = %user_msg_id, error = %ErrorChain(&e), "Failed to insert user message");
             return Err(e.into());
@@ -1413,7 +2218,7 @@ impl ConversationService {
         ));
 
         // Build task options from conversation row
-        let build_opts = match self.build_task_options(&row) {
+        let build_opts = match self.build_task_options(&row).await {
             Ok(opts) => opts,
             Err(err) => {
                 error!(
@@ -1423,221 +2228,141 @@ impl ConversationService {
                 );
                 let top_level_code = err.error_code();
                 let send_error = AgentSendError::from_agent_error(err.to_agent_error());
-                self.persist_and_broadcast_send_failure_tip(conversation_id, &send_error, Some(top_level_code))
-                    .await;
+                self.persist_and_broadcast_send_failure_tip(
+                    conversation_id,
+                    &turn_id,
+                    &send_error,
+                    Some(top_level_code),
+                )
+                .await;
                 let mut turn_claim = turn_claim;
                 let was_deleting = turn_claim.release();
-                self.complete_released_turn(conversation_id, was_deleting).await;
-                return Ok(user_msg_id);
+                self.complete_released_turn(conversation_id, &turn_id, was_deleting)
+                    .await;
+                return Ok(self.send_message_response(conversation_id, user_msg_id, turn_id).await);
             }
         };
         self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
-        let stored_workspace = build_opts.workspace.clone();
+        let stored_workspace = build_opts.context.workspace.stored_path.clone();
 
-        let conv_id = conversation_id.to_owned();
-        let repo = Arc::clone(&self.conversation_repo);
-        let broadcaster = Arc::clone(&self.broadcaster);
-        let cron_service = self.current_cron_service();
-        let runtime_state = self.runtime_state();
-        let user_id_owned = user_id.to_owned();
-        let service = self.clone();
-        let task_manager = Arc::clone(task_manager);
-
-        // Send message to the agent in a background task.
-        // prompt() blocks until the PromptResponse arrives (turn completed),
-        // but the HTTP handler should return 202 immediately.
-        //
-        // Every turn mints a fresh msg_id and passes it as the agent
-        // correlation id so DB row, WebSocket stream events, and
-        // agent-internal tracing all share one identifier per turn.
         let user_msg_id_ret = user_msg_id.clone();
-        tokio::spawn(async move {
-            let mut turn_claim = turn_claim;
-            let build_started_at = now_ms();
-            info!(conversation_id = %conv_id, "Agent task build started");
-            let agent = match task_manager.get_or_build_task(&conv_id, build_opts).await {
-                Ok(agent) => agent,
-                Err(err) => {
-                    let top_level_code = agent_error_top_level_code(&err);
-                    let send_error = AgentSendError::from_agent_error_ref(&err);
-                    error!(
-                        conversation_id = %conv_id,
-                        error_code = ?send_error.code(),
-                        error = %ErrorChain(&err),
-                        "Agent task build failed"
-                    );
-                    if service.runtime_state.is_deleting(&conv_id) {
-                        debug!(
-                            conversation_id = %conv_id,
-                            "Skipping send failure persistence because conversation is deleting"
-                        );
-                    } else {
-                        service
-                            .persist_and_broadcast_send_failure_tip(&conv_id, &send_error, Some(top_level_code))
-                            .await;
-                    }
-                    let was_deleting = turn_claim.release();
-                    service.complete_released_turn(&conv_id, was_deleting).await;
-                    return;
-                }
-            };
-
-            // If the factory resolved a different workspace (e.g. auto-created temp
-            // dir for a legacy conversation with empty workspace), persist it back.
-            if let Err(err) = service
-                .maybe_persist_workspace(&conv_id, &stored_workspace, agent.workspace())
-                .await
-            {
-                let top_level_code = err.error_code();
-                let send_error = AgentSendError::from_agent_error(err.to_agent_error());
-                error!(
-                    conversation_id = %conv_id,
-                    error_code = err.error_code(),
-                    error = %ErrorChain(&err),
-                    "Failed to persist resolved workspace"
-                );
-                if service.runtime_state.is_deleting(&conv_id) {
-                    debug!(
-                        conversation_id = %conv_id,
-                        "Skipping workspace failure persistence because conversation is deleting"
-                    );
-                } else {
-                    service
-                        .persist_and_broadcast_send_failure_tip(&conv_id, &send_error, Some(top_level_code))
-                        .await;
-                }
-                let was_deleting = turn_claim.release();
-                service.complete_released_turn(&conv_id, was_deleting).await;
-                return;
-            }
-
-            info!(
-                conversation_id = %conv_id,
-                agent_type = ?agent.agent_type(),
-                elapsed_ms = now_ms().saturating_sub(build_started_at),
-                "Agent task ready"
-            );
-
-            let first_turn_msg_id = Self::mint_msg_id();
-            let mut pending_send = Some((
-                SendMessageData {
-                    content: req.content,
-                    msg_id: first_turn_msg_id.clone(),
-                    files: req.files,
-                    inject_skills: req.inject_skills,
-                },
-                first_turn_msg_id,
-            ));
-            let mut continuation_count = 0usize;
-
-            while let Some((current_send, msg_id)) = pending_send.take() {
-                if continuation_count >= MAX_CRON_CONTINUATIONS_PER_TURN {
-                    warn!(
-                        conversation_id = %conv_id,
-                        max = MAX_CRON_CONTINUATIONS_PER_TURN,
-                        "Reached cron continuation limit; ending turn early"
-                    );
-                    break;
-                }
-
-                let relay = StreamRelay::new(
-                    conv_id.clone(),
-                    msg_id,
-                    user_id_owned.clone(),
-                    Arc::clone(&repo),
-                    Arc::clone(&broadcaster),
-                    cron_service.clone(),
-                )
-                .with_runtime_state(Arc::clone(&runtime_state))
-                .with_turn_completion(false);
-
-                let rx = agent.subscribe();
-                let send_agent = agent.clone();
-                let conv_id_send = conv_id.clone();
-                let (send_error_tx, send_error_rx) = oneshot::channel();
-                // 1. Send the message to the agent and concurrently run the relay to stream events.
-                tokio::spawn(async move {
-                    if let Err(e) = send_agent.send_message(current_send).await {
-                        let task_status = send_agent.status();
-                        let agent_type = send_agent.agent_type();
-                        error!(
-                            conversation_id = %conv_id_send,
-                            ?agent_type,
-                            ?task_status,
-                            error = %ErrorChain(&e),
-                            "Agent send_message failed"
-                        );
-                        if task_status == Some(ConversationStatus::Finished) {
-                            debug!(
-                                conversation_id = %conv_id_send,
-                                ?agent_type,
-                                "Agent send_message failure already published runtime terminal; skipping fallback stream error"
-                            );
-                        } else {
-                            warn!(
-                                conversation_id = %conv_id_send,
-                                ?agent_type,
-                                code = ?e.code(),
-                                ownership = ?e.ownership(),
-                                "Agent send_message returned error without runtime terminal; injecting fallback stream error"
-                            );
-                            let _ = send_error_tx.send(e);
-                        }
-                    }
-                });
-                // 2. Wait for the agent to process the message and complete the turn, while the relay streams events in real time.
-                let outcome = relay.consume_with_send_error(rx, send_error_rx).await;
-
-                if runtime_state.is_deleting(&conv_id) {
-                    debug!(
-                        conversation_id = %conv_id,
-                        "Skipping post-terminal persistence because conversation is deleting"
-                    );
-                    break;
-                }
-
-                if let Some(session_key) = agent.get_session_key() {
-                    persist_session_key(&repo, &conv_id, &session_key).await;
-                }
-
-                if service
-                    .evict_acp_task_after_terminal_error(&conv_id, agent.agent_type(), &outcome, &task_manager)
-                    .await
-                {
-                    break;
-                }
-
-                if outcome.system_responses.is_empty() {
-                    break;
-                }
-                continuation_count += 1;
-                let next_turn_msg_id = Self::mint_msg_id();
-                pending_send = Some((
-                    SendMessageData {
-                        content: outcome.system_responses.join("\n"),
-                        msg_id: next_turn_msg_id.clone(),
-                        files: vec![],
-                        inject_skills: vec![],
-                    },
-                    next_turn_msg_id,
-                ));
-            }
-
-            let was_deleting = turn_claim.release();
-            service.complete_released_turn(&conv_id, was_deleting).await;
+        ConversationTurnOrchestrator::new(self.clone(), Arc::clone(task_manager)).spawn_user_turn(TurnStartInput {
+            user_id: user_id.to_owned(),
+            conversation: row,
+            request: req,
+            build_options: build_opts,
+            stored_workspace,
+            turn_id: turn_id.clone(),
+            turn_claim,
         });
 
         info!(
+            conversation_id = %conversation_id,
             msg_id = %user_msg_id_ret,
+            turn_id = %turn_id,
             elapsed_ms = now_ms().saturating_sub(send_started_at),
             "Message accepted, agent work scheduled"
         );
-        Ok(user_msg_id_ret)
+        Ok(self
+            .send_message_response(conversation_id, user_msg_id_ret, turn_id)
+            .await)
     }
 
-    async fn persist_and_broadcast_send_failure_tip(
+    /// Run a conversation-backed agent turn without expressing it as the
+    /// ordinary user-message API. This is used by upper-level domains that own
+    /// their own message projection and scheduling semantics.
+    #[tracing::instrument(skip_all, fields(user_id = %request.user_id, conversation_id = %request.conversation_id))]
+    pub async fn run_agent_turn(
+        &self,
+        request: ConversationAgentTurnRequest,
+    ) -> Result<ConversationAgentTurnOutcome, ConversationError> {
+        if request.content.trim().is_empty() {
+            return Err(ConversationError::BadRequest {
+                reason: "Agent turn content must not be empty".into(),
+            });
+        }
+
+        let row = self
+            .conversation_repo
+            .get(&request.conversation_id)
+            .await?
+            .filter(|r| r.user_id == request.user_id)
+            .ok_or_else(|| ConversationError::NotFound {
+                id: request.conversation_id.clone(),
+            })?;
+
+        reject_deprecated_runtime_row(&row)?;
+
+        let turn_id = Self::mint_turn_id();
+        let turn_claim = self.runtime_state.try_claim_turn(&request.conversation_id, &turn_id)?;
+        if let Some(on_started) = request.on_started.as_ref() {
+            on_started(ConversationAgentTurnStarted {
+                conversation_id: request.conversation_id.clone(),
+                turn_id: turn_id.clone(),
+            })
+            .await;
+        }
+
+        let build_opts = match self.build_task_options(&row).await {
+            Ok(opts) => opts,
+            Err(err) => {
+                let top_level_code = err.error_code();
+                let send_error = AgentSendError::from_agent_error(err.to_agent_error());
+                self.persist_and_broadcast_send_failure_tip(
+                    &request.conversation_id,
+                    &turn_id,
+                    &send_error,
+                    Some(top_level_code),
+                )
+                .await;
+                let mut turn_claim = turn_claim;
+                let was_deleting = turn_claim.release();
+                self.complete_released_turn(&request.conversation_id, &turn_id, was_deleting)
+                    .await;
+                return Ok(ConversationAgentTurnOutcome {
+                    conversation_id: request.conversation_id.clone(),
+                    turn_id,
+                    status: ConversationAgentTurnStatus::Failed,
+                    runtime: self.runtime_summary_for(&request.conversation_id).await,
+                });
+            }
+        };
+
+        self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
+        let stored_workspace = build_opts.context.workspace.stored_path.clone();
+        let conversation_id = request.conversation_id.clone();
+        let result = ConversationTurnOrchestrator::new(self.clone(), self.task_manager.clone())
+            .run_user_turn(TurnStartInput {
+                user_id: request.user_id,
+                conversation: row,
+                request: SendMessageRequest {
+                    content: request.content,
+                    files: request.files,
+                    inject_skills: request.inject_skills,
+                    hidden: false,
+                },
+                build_options: build_opts,
+                stored_workspace,
+                turn_id: turn_id.clone(),
+                turn_claim,
+            })
+            .await;
+
+        Ok(ConversationAgentTurnOutcome {
+            runtime: self.runtime_summary_for(&conversation_id).await,
+            conversation_id,
+            turn_id,
+            status: match result.status {
+                ConversationTurnStatus::Completed => ConversationAgentTurnStatus::Completed,
+                ConversationTurnStatus::Failed => ConversationAgentTurnStatus::Failed,
+            },
+        })
+    }
+
+    pub(crate) async fn persist_and_broadcast_send_failure_tip(
         &self,
         conversation_id: &str,
+        turn_id: &str,
         err: &AgentSendError,
         top_level_code: Option<&'static str>,
     ) {
@@ -1656,6 +2381,7 @@ impl ConversationService {
             serde_json::json!({
                 "conversation_id": row.conversation_id,
                 "msg_id": msg_id,
+                "turn_id": turn_id,
                 "type": row.r#type,
                 "data": content_value,
                 "position": row.position,
@@ -1700,8 +2426,9 @@ impl ConversationService {
         &self,
         user_id: &str,
         conversation_id: &str,
+        turn_id: &str,
         task_manager: &Arc<dyn IWorkerTaskManager>,
-    ) -> Result<(), ConversationError> {
+    ) -> Result<CancelConversationResponse, ConversationError> {
         // Verify conversation exists and belongs to user
         self.conversation_repo
             .get(conversation_id)
@@ -1711,18 +2438,64 @@ impl ConversationService {
                 id: conversation_id.to_owned(),
             })?;
 
+        let active_turn_id = self.runtime_state.active_turn_id_for(conversation_id);
+        if active_turn_id.as_deref() != Some(turn_id) {
+            info!(
+                conversation_id,
+                requested_turn_id = %turn_id,
+                active_turn_id = active_turn_id.as_deref(),
+                "cancel ignored because turn id mismatched"
+            );
+            return Ok(CancelConversationResponse {
+                runtime: self.runtime_summary_for(conversation_id).await,
+            });
+        }
+
         let Some(agent) = task_manager.get_task(conversation_id) else {
-            info!("No active agent to cancel; treating as idempotent success");
-            return Ok(());
+            info!(
+                conversation_id,
+                turn_id, "No active agent to cancel; returning runtime summary"
+            );
+            return Ok(CancelConversationResponse {
+                runtime: self.runtime_summary_for(conversation_id).await,
+            });
         };
 
+        self.runtime_state.mark_cancelling(conversation_id);
         if let Err(e) = agent.cancel().await {
-            warn!(error = %ErrorChain(&e), "Failed to cancel agent");
+            self.runtime_state.clear_cancelling(conversation_id);
+            warn!(conversation_id, turn_id, error = %ErrorChain(&e), "Failed to cancel agent");
             return Err(e.into());
         }
 
-        info!("Stream canceled");
-        Ok(())
+        if agent.agent_type() == AgentType::Acp {
+            let runtime_state = self.runtime_state();
+            let task_manager = Arc::clone(task_manager);
+            let conv_id = conversation_id.to_owned();
+            let active_turn = turn_id.to_owned();
+
+            tokio::spawn(async move {
+                tokio::time::sleep(ACP_CANCEL_DRAIN_TIMEOUT).await;
+                if runtime_state.active_turn_id_for(&conv_id).as_deref() == Some(active_turn.as_str())
+                    && runtime_state.is_cancelling(&conv_id)
+                {
+                    warn!(
+                        conversation_id = %conv_id,
+                        turn_id = %active_turn,
+                        timeout_ms = ACP_CANCEL_DRAIN_TIMEOUT.as_millis() as u64,
+                        "ACP cancel did not drain before timeout; killing task"
+                    );
+                    task_manager
+                        .kill_and_wait(&conv_id, Some(AgentKillReason::UserCancelTimeout))
+                        .await;
+                }
+            });
+        }
+
+        info!(conversation_id, turn_id, "Stream cancel acknowledged");
+        Ok(CancelConversationResponse {
+            runtime: self.runtime_summary_for(conversation_id).await,
+        })
     }
 
     /// Pre-initialize an agent task for a conversation (warmup).
@@ -1745,9 +2518,11 @@ impl ConversationService {
                 id: conversation_id.to_owned(),
             })?;
 
-        let build_opts = self.build_task_options(&row)?;
+        reject_deprecated_runtime_row(&row)?;
+
+        let build_opts = self.build_task_options(&row).await?;
         self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
-        let stored_workspace = build_opts.workspace.clone();
+        let stored_workspace = build_opts.context.workspace.stored_path.clone();
         let agent = task_manager.get_or_build_task(conversation_id, build_opts).await?;
 
         // Persist auto-resolved workspace if factory picked a different path.
@@ -1761,7 +2536,7 @@ impl ConversationService {
 
 // ── Internal Helpers ────────────────────────────────────────────────
 
-fn agent_error_top_level_code(error: &AgentError) -> &'static str {
+pub(crate) fn agent_error_top_level_code(error: &AgentError) -> &'static str {
     match error {
         AgentError::BadRequest(_) => "BAD_REQUEST",
         AgentError::Unauthorized(_) => "UNAUTHORIZED",
@@ -1779,95 +2554,59 @@ fn agent_error_top_level_code(error: &AgentError) -> &'static str {
 }
 
 impl ConversationService {
-    /// Build [`BuildTaskOptions`] from a conversation database row.
+    /// Build typed agent runtime context from a conversation database row.
     ///
-    /// Provider/model resolution lives in [`crate::task_options::provider_model_from_conversation_row`]
-    /// so the cron executor can derive identical values for the same row.
-    /// Diverging the lookup here historically produced
-    /// `Provider '<vendor>' not found` failures under cron when the
-    /// interactive path worked fine (Sentry ELECTRON-1HM).
-    fn build_task_options(
+    /// Raw `conversation.extra` parsing lives in [`SessionContextBuilder`]
+    /// so the task manager and concrete agent factories consume typed
+    /// session context instead of the DB envelope.
+    pub(crate) async fn build_task_options(
         &self,
         row: &aionui_db::models::ConversationRow,
     ) -> Result<BuildTaskOptions, ConversationError> {
-        let agent_type = string_to_enum(&row.r#type)?;
-
-        let model = crate::task_options::provider_model_from_conversation_row(row);
-
-        let mut extra: serde_json::Value = serde_json::from_str(&row.extra)
-            .map_err(|e| ConversationError::internal(format!("Invalid extra JSON: {e}")))?;
-
-        // Inject user_id into extra so the Guide MCP bridge can pass it to
-        // aion_create_team without a separate lookup. Harmless for non-ACP types.
-        if let Some(obj) = extra.as_object_mut() {
-            obj.entry("user_id")
-                .or_insert_with(|| serde_json::Value::String(row.user_id.clone()));
-        }
-
-        // Extract workspace from extra (common across agent types)
-        let workspace = match extra.get("workspace").and_then(|v| v.as_str()) {
-            Some(workspace) if !workspace.is_empty() => {
-                let expected_auto_workspace =
-                    expected_auto_workspace_path(&self.workspace_root, &row.id, &agent_type, extra.get("backend"));
-                let normalized = match validate_workspace_path_availability(workspace) {
-                    Ok(normalized) => normalized,
-                    Err(WorkspacePathValidationError::DoesNotExist(path))
-                        if expected_auto_workspace.as_path() == std::path::Path::new(workspace) =>
-                    {
-                        path
-                    }
-                    Err(error) => return Err(map_runtime_workspace_validation_error(error)),
-                };
-                if normalized != workspace {
-                    extra["workspace"] = serde_json::Value::String(normalized.clone());
-                }
-                normalized
-            }
-            _ => String::new(),
-        };
-
-        Ok(BuildTaskOptions {
-            agent_type,
-            workspace,
-            model,
-            conversation_id: row.id.clone(),
-            extra,
-        })
+        reject_deprecated_runtime_row(row)?;
+        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+            .build_options(row)
+            .await
     }
 
-    async fn ensure_auto_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {
+    pub async fn build_task_options_for_runtime(
+        &self,
+        row: &aionui_db::models::ConversationRow,
+        workspace_override: Option<&str>,
+    ) -> Result<BuildTaskOptions, ConversationError> {
+        reject_deprecated_runtime_row(row)?;
+        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
+            .build_options_with_workspace_override(row, workspace_override)
+            .await
+    }
+
+    pub(crate) async fn ensure_auto_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {
+        let context = &build_opts.context;
+        if context.workspace.is_custom {
+            return;
+        }
+        let backend = context_backend_value(context);
         let expected_workspace = expected_auto_workspace_path(
             &self.workspace_root,
             &row.id,
-            &build_opts.agent_type,
-            build_opts.extra.get("backend"),
+            &context.conversation.agent_type,
+            backend.as_ref(),
         );
 
-        let stored_workspace = build_opts.workspace.trim();
-        let workspace = if stored_workspace.is_empty() {
-            expected_workspace
-        } else {
-            let workspace = PathBuf::from(stored_workspace);
-            if workspace != expected_workspace {
-                return;
-            }
-            workspace
-        };
+        let workspace = PathBuf::from(context.workspace.path.trim());
+        if workspace != expected_workspace {
+            return;
+        }
 
-        let skill_names = build_opts
-            .extra
-            .get("skills")
-            .cloned()
-            .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
-            .unwrap_or_default();
+        let skill_names = context_skill_names(context);
         if skill_names.is_empty() {
             return;
         }
 
         let Some(rel_dirs) = native_skills_dirs(
             &self.agent_metadata_repo,
-            &build_opts.agent_type,
-            build_opts.extra.get("backend"),
+            &context.conversation.agent_type,
+            backend.as_ref(),
         )
         .await
         else {
@@ -1901,13 +2640,19 @@ impl ConversationService {
     /// This handles legacy conversations whose `extra.workspace` was empty:
     /// the factory creates a temp dir at task-build time, and we persist that
     /// path here so the frontend can display the workspace panel correctly.
-    async fn maybe_persist_workspace(
+    pub(crate) async fn maybe_persist_workspace(
         &self,
         conversation_id: &str,
         stored_workspace: &str,
         resolved_workspace: &str,
     ) -> Result<(), ConversationError> {
         if resolved_workspace.is_empty() || resolved_workspace == stored_workspace {
+            return Ok(());
+        }
+        if !self
+            .runtime_persistence()
+            .allows(conversation_id, RuntimeWriteKind::ResolvedWorkspace)
+        {
             return Ok(());
         }
 
@@ -1955,7 +2700,7 @@ impl ConversationService {
         self.broadcaster.broadcast(event);
     }
 
-    fn current_cron_service(&self) -> Option<Arc<dyn ICronService>> {
+    pub(crate) fn current_cron_service(&self) -> Option<Arc<dyn ICronService>> {
         match self.cron_service.read() {
             Ok(guard) => guard.as_ref().map(Arc::clone),
             Err(_) => None,
@@ -2048,6 +2793,10 @@ fn normalize_workspace_extra(extra: &mut serde_json::Value) -> Result<(), Conver
     Ok(())
 }
 
+fn team_id_from_extra(extra: &str) -> Option<String> {
+    TeamSessionBinding::team_id_marker_from_extra_str(extra)
+}
+
 fn normalize_workspace_path(workspace: &str) -> Result<String, ConversationError> {
     validate_workspace_path_availability(workspace).map_err(map_create_workspace_validation_error)
 }
@@ -2061,19 +2810,6 @@ fn map_create_workspace_validation_error(error: WorkspacePathValidationError) ->
         | WorkspacePathValidationError::NotDirectory(path)
         | WorkspacePathValidationError::NotAccessible { path, .. } => {
             ConversationError::WorkspacePathUnavailable { path }
-        }
-    }
-}
-
-fn map_runtime_workspace_validation_error(error: WorkspacePathValidationError) -> ConversationError {
-    match error {
-        WorkspacePathValidationError::Empty => ConversationError::BadRequest {
-            reason: "Workspace directory is empty".into(),
-        },
-        WorkspacePathValidationError::DoesNotExist(path)
-        | WorkspacePathValidationError::NotDirectory(path)
-        | WorkspacePathValidationError::NotAccessible { path, .. } => {
-            ConversationError::WorkspacePathRuntimeUnavailable { path }
         }
     }
 }
@@ -2106,6 +2842,22 @@ fn expected_auto_workspace_path(
         "{}-temp-{conversation_id}",
         conversation_label(agent_type, backend)
     ))
+}
+
+fn context_backend_value(context: &AgentSessionContext) -> Option<serde_json::Value> {
+    match &context.kind {
+        AgentSessionKind::Acp(acp) => acp
+            .config
+            .backend
+            .as_ref()
+            .filter(|value| !value.is_empty())
+            .map(|value| serde_json::Value::String(value.clone())),
+        _ => None,
+    }
+}
+
+fn context_skill_names(context: &AgentSessionContext) -> Vec<String> {
+    context.skills.clone()
 }
 
 /// Resolve the native skills directory list for an agent by looking it
@@ -2344,7 +3096,16 @@ fn enum_to_db<T: serde::Serialize>(val: &T) -> Result<String, ConversationError>
 ///
 /// Called after send_message completes so the session can be resumed
 /// when the user re-enters this conversation later.
-async fn persist_session_key(repo: &Arc<dyn IConversationRepository>, conversation_id: &str, session_key: &str) {
+pub(crate) async fn persist_session_key(
+    repo: &Arc<dyn IConversationRepository>,
+    persistence: &RuntimePersistenceCoordinator,
+    conversation_id: &str,
+    session_key: &str,
+) {
+    if !persistence.allows(conversation_id, RuntimeWriteKind::SessionKey) {
+        return;
+    }
+
     let row = match repo.get(conversation_id).await {
         Ok(Some(r)) => r,
         _ => return,
@@ -2405,6 +3166,14 @@ fn merge_json(base: &mut serde_json::Value, patch: &serde_json::Value) {
         for (key, value) in patch_obj {
             base_obj.insert(key.clone(), value.clone());
         }
+    }
+}
+
+fn parse_json_string_list(raw: Option<&str>, field: &str) -> Result<Vec<String>, ConversationError> {
+    match raw {
+        Some(value) if !value.trim().is_empty() => serde_json::from_str(value)
+            .map_err(|e| ConversationError::internal(format!("failed to parse assistant field {field}: {e}"))),
+        _ => Ok(Vec::new()),
     }
 }
 

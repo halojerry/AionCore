@@ -131,13 +131,36 @@ pub fn resolve_browse_path(raw: &str, allowed_roots: &[PathBuf]) -> Result<PathB
     });
 
     if !allowed {
-        return Err(FileError::Forbidden(format!(
-            "path '{}' is outside the allowed sandbox",
-            raw
-        )));
+        return Err(FileError::PathOutsideSandbox {
+            message: format!("path '{}' is outside the allowed sandbox", raw),
+            field: Some("directory"),
+            operation: Some("browse"),
+        });
     }
 
     Ok(canonical)
+}
+
+/// Convert a path into the string form returned to the frontend.
+///
+/// `fs::canonicalize` yields extended-length (verbatim) paths on Windows
+/// (`\\?\C:\DEV`, `\\?\UNC\server\share`). Returning those verbatim breaks
+/// downstream consumers — cmd.exe-based CLI shims refuse `\\?\` working
+/// directories and the UI treats `C:\DEV` and `\\?\C:\DEV` as two different
+/// projects (iOfficeAI/AionUi#3191) — so strip the prefix before serializing.
+/// Internal sandbox comparisons keep using the canonical (verbatim) form.
+fn to_response_path(path: &Path) -> String {
+    strip_verbatim_prefix(&path.to_string_lossy())
+}
+
+fn strip_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = path.strip_prefix(r"\\?\") {
+        rest.to_owned()
+    } else {
+        path.to_owned()
+    }
 }
 
 fn expand_tilde(input: &str) -> PathBuf {
@@ -189,7 +212,7 @@ pub fn list_directory(
         }
         items.push(BrowseEntry {
             name,
-            path: entry_path.to_string_lossy().into_owned(),
+            path: to_response_path(&entry_path),
             is_directory: is_dir,
             is_file,
             size: Some(stat.len()),
@@ -211,7 +234,7 @@ pub fn list_directory(
     let (parent_path, can_go_up) = navigation_hints(dir, allowed_roots);
 
     Ok(BrowseDirectoryResponse {
-        current_path: dir.to_string_lossy().into_owned(),
+        current_path: to_response_path(dir),
         parent_path,
         items,
         can_go_up,
@@ -253,7 +276,7 @@ fn navigation_hints(dir: &Path, allowed_roots: &[PathBuf]) -> (Option<String>, b
         Err(_) => false,
     });
 
-    (Some(parent.to_string_lossy().into_owned()), parent_allowed)
+    (Some(to_response_path(parent)), parent_allowed)
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +373,17 @@ mod tests {
         let roots = roots_from(&[sandbox.path()]);
 
         let err = browse(Some(outside.path().to_str().unwrap()), false, &roots).unwrap_err();
-        assert!(matches!(err, FileError::Forbidden(_)), "expected forbidden, got {err}");
+        assert!(
+            matches!(
+                err,
+                FileError::PathOutsideSandbox {
+                    field: Some("directory"),
+                    operation: Some("browse"),
+                    ..
+                }
+            ),
+            "expected outside-sandbox, got {err}"
+        );
     }
 
     #[test]
@@ -447,7 +480,68 @@ mod tests {
         let roots = roots_from(&[sandbox.path()]);
 
         let err = browse(Some(link.to_str().unwrap()), false, &roots).unwrap_err();
-        assert!(matches!(err, FileError::Forbidden(_)), "expected forbidden, got {err}");
+        assert!(
+            matches!(
+                err,
+                FileError::PathOutsideSandbox {
+                    field: Some("directory"),
+                    operation: Some("browse"),
+                    ..
+                }
+            ),
+            "expected outside-sandbox, got {err}"
+        );
+    }
+
+    // Regression tests for iOfficeAI/AionUi#3191: responses must never carry
+    // Windows extended-length (verbatim) prefixes.
+
+    #[test]
+    fn strips_verbatim_disk_prefix() {
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\DEV\project"), r"C:\DEV\project");
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\"), r"C:\");
+    }
+
+    #[test]
+    fn strips_verbatim_unc_prefix() {
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+    }
+
+    #[test]
+    fn leaves_non_verbatim_paths_untouched() {
+        assert_eq!(strip_verbatim_prefix(r"C:\DEV\project"), r"C:\DEV\project");
+        assert_eq!(strip_verbatim_prefix(r"\\server\share"), r"\\server\share");
+        assert_eq!(strip_verbatim_prefix("/home/user/project"), "/home/user/project");
+        assert_eq!(strip_verbatim_prefix(""), "");
+    }
+
+    /// End-to-end assertion on Windows: `fs::canonicalize` produces verbatim
+    /// paths there, and every path in the response must come out clean.
+    #[cfg(windows)]
+    #[test]
+    fn browse_response_paths_use_no_verbatim_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("sub")).unwrap();
+        let sub = tmp.path().join("sub");
+        fs::create_dir(sub.join("nested")).unwrap();
+        let roots = roots_from(&[tmp.path()]);
+
+        let resp = browse(Some(sub.to_str().unwrap()), false, &roots).unwrap();
+
+        assert!(
+            !resp.current_path.starts_with(r"\\?\"),
+            "current_path is verbatim: {}",
+            resp.current_path
+        );
+        if let Some(parent) = &resp.parent_path {
+            assert!(!parent.starts_with(r"\\?\"), "parent_path is verbatim: {parent}");
+        }
+        for item in &resp.items {
+            assert!(!item.path.starts_with(r"\\?\"), "item path is verbatim: {}", item.path);
+        }
     }
 
     #[test]

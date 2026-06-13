@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use aionui_common::{AgentType, ProviderWithModel};
+use crate::session_context::AgentSessionContext;
 
 /// Data payload for sending a user message to an Agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +12,9 @@ pub struct SendMessageData {
     pub content: String,
     /// Client-generated message ID for correlation.
     pub msg_id: String,
+    /// Runtime turn ID for backend logs and tests. Not part of the ACP wire protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     /// File paths attached to the message.
     #[serde(default)]
     pub files: Vec<String>,
@@ -21,19 +24,19 @@ pub struct SendMessageData {
 }
 
 /// Options for building (creating or resuming) an Agent task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct BuildTaskOptions {
-    /// Type of agent to create.
-    pub agent_type: AgentType,
-    /// Working directory for the agent.
-    pub workspace: String,
-    /// Model selection config.
-    pub model: ProviderWithModel,
-    /// Conversation ID this task belongs to.
-    pub conversation_id: String,
-    /// Type-specific extra parameters (JSON object).
-    #[serde(default)]
-    pub extra: serde_json::Value,
+    pub context: AgentSessionContext,
+}
+
+impl BuildTaskOptions {
+    pub fn new(context: AgentSessionContext) -> Self {
+        Self { context }
+    }
+
+    pub fn conversation_id(&self) -> &str {
+        self.context.conversation_id()
+    }
 }
 
 /// Provider-specific compat overrides resolved in the factory.
@@ -75,7 +78,7 @@ pub struct AionrsResolvedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aionui_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, OpenClawGatewayConfig, SlashCommandItem};
+    use aionui_api_types::{AcpBuildExtra, AcpModelInfo, AionrsBuildExtra, SlashCommandItem};
     use serde_json::json;
 
     #[test]
@@ -124,45 +127,30 @@ mod tests {
         let data = SendMessageData {
             content: "Hello".into(),
             msg_id: "msg-001".into(),
+            turn_id: Some("turn-001".into()),
             files: vec!["/tmp/a.txt".into()],
             inject_skills: vec!["review".into()],
         };
         let json = serde_json::to_value(&data).unwrap();
         assert_eq!(json["content"], "Hello");
         assert_eq!(json["msg_id"], "msg-001");
+        assert_eq!(json["turn_id"], "turn-001");
         assert_eq!(json["files"], json!(["/tmp/a.txt"]));
         assert_eq!(json["inject_skills"], json!(["review"]));
 
         let parsed: SendMessageData = serde_json::from_value(json).unwrap();
         assert_eq!(parsed.content, "Hello");
         assert_eq!(parsed.msg_id, "msg-001");
+        assert_eq!(parsed.turn_id.as_deref(), Some("turn-001"));
     }
 
     #[test]
     fn send_message_data_defaults_optional_fields() {
         let json = json!({ "content": "Hi", "msg_id": "m1" });
         let data: SendMessageData = serde_json::from_value(json).unwrap();
+        assert!(data.turn_id.is_none());
         assert!(data.files.is_empty());
         assert!(data.inject_skills.is_empty());
-    }
-
-    #[test]
-    fn build_task_options_serde() {
-        let opts = BuildTaskOptions {
-            agent_type: AgentType::Acp,
-            workspace: "/project".into(),
-            model: ProviderWithModel {
-                provider_id: "p1".into(),
-                model: "claude-sonnet".into(),
-                use_model: None,
-            },
-            conversation_id: "conv-1".into(),
-            extra: json!({ "backend": "claude" }),
-        };
-        let json = serde_json::to_value(&opts).unwrap();
-        assert_eq!(json["agent_type"], "acp");
-        assert_eq!(json["workspace"], "/project");
-        assert_eq!(json["conversation_id"], "conv-1");
     }
 
     #[test]
@@ -182,18 +170,12 @@ mod tests {
         let cmd = SlashCommandItem {
             command: "/review".into(),
             description: "Code review".into(),
+            completion_behavior: None,
+            empty_turn_tip_code: None,
+            empty_turn_tip_params: None,
         };
         let json = serde_json::to_value(&cmd).unwrap();
         assert_eq!(json["command"], "/review");
-    }
-
-    #[test]
-    fn openclaw_gateway_config_defaults() {
-        let json = json!({});
-        let config: OpenClawGatewayConfig = serde_json::from_value(json).unwrap();
-        assert!(!config.use_external_gateway);
-        assert!(config.host.is_none());
-        assert!(config.port.is_none());
     }
 
     #[test]

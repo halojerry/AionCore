@@ -145,7 +145,13 @@ impl AionrsAgentManager {
         let slash_commands = engine
             .slash_command_list()
             .into_iter()
-            .map(|(command, description)| SlashCommandItem { command, description })
+            .map(|(command, description)| SlashCommandItem {
+                command,
+                description,
+                completion_behavior: None,
+                empty_turn_tip_code: None,
+                empty_turn_tip_params: None,
+            })
             .collect();
 
         runtime.transition_to(ConversationStatus::Pending);
@@ -216,6 +222,7 @@ impl crate::agent_task::IAgentTask for AionrsAgentManager {
         info!(
             conversation_id = %self.runtime.conversation_id(),
             msg_id = %data.msg_id,
+            turn_id = data.turn_id.as_deref().unwrap_or("none"),
             "Aionrs send_message started"
         );
         self.runtime.bump_activity();

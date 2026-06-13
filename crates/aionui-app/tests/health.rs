@@ -21,7 +21,7 @@ async fn response_json(body: Body) -> serde_json::Value {
 async fn build_app() -> axum::Router {
     let db = aionui_db::init_database_memory().await.unwrap();
     let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
-    aionui_app::create_router(&services).await
+    aionui_app::create_router(&services).await.expect("build router")
 }
 
 #[tokio::test]
@@ -62,6 +62,35 @@ async fn unknown_route_returns_not_found() {
         .expect("request failed");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let json = response_json(response.into_body()).await;
+    assert_eq!(json["success"], false);
+    assert_eq!(json["code"], "NOT_FOUND");
+    assert!(json["error"].is_string());
+}
+
+#[tokio::test]
+async fn default_body_limit_returns_error_response() {
+    let app = build_app().await;
+
+    let body = format!(
+        r#"{{"username":"admin","password":"{}"}}"#,
+        "x".repeat(11 * 1024 * 1024)
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .expect("failed to build request");
+
+    let response = app.oneshot(request).await.expect("request failed");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let json = response_json(response.into_body()).await;
+    assert_eq!(json["success"], false);
+    assert_eq!(json["code"], "PAYLOAD_TOO_LARGE");
+    assert!(json["error"].is_string());
 }
 
 #[tokio::test]
@@ -80,4 +109,31 @@ async fn health_check_has_security_headers() {
         response.headers().get("referrer-policy").unwrap(),
         "strict-origin-when-cross-origin"
     );
+}
+
+#[tokio::test]
+async fn office_proxy_routes_allow_same_origin_framing() {
+    // Regression for iOfficeAI/AionUi#3177: the global security headers
+    // middleware must not overwrite the office preview proxies' framing
+    // policy with DENY, or the preview iframe is blanked in browsers.
+    let app = build_app().await;
+
+    for uri in ["/api/ppt-proxy/59999", "/api/office-watch-proxy/59999"] {
+        let response = app
+            .clone()
+            .oneshot(build_request("GET", uri))
+            .await
+            .expect("request failed");
+
+        assert_eq!(
+            response.headers().get("x-frame-options").unwrap(),
+            "SAMEORIGIN",
+            "{uri} must stay frameable by the same-origin web UI"
+        );
+        assert_eq!(
+            response.headers().get("content-security-policy").unwrap(),
+            "frame-ancestors 'self'",
+            "{uri} should carry the modern frame-ancestors policy"
+        );
+    }
 }

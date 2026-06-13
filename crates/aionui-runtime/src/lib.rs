@@ -8,6 +8,7 @@
 //! to prepend the runtime directory to child-process `PATH`.
 
 pub mod acp_tool_runtime;
+mod agent_env;
 mod cache;
 mod embed;
 mod extract;
@@ -21,8 +22,9 @@ pub use acp_tool_runtime::{
     ManagedAcpToolError, ManagedAcpToolFailureKind, ManagedAcpToolId, ManagedAcpToolProgress,
     ManagedAcpToolProgressPhase, ManagedAcpToolProgressReporter, ManagedAcpToolSupport, ResolvedManagedAcpTool,
     SharedManagedAcpToolProgressReporter, doctor_snapshot as acp_tool_doctor_snapshot, ensure_managed_acp_tool,
-    ensure_managed_acp_tool_with_reporter, probe_managed_acp_tool_supported,
+    ensure_managed_acp_tool_with_reporter, prepare_managed_acp_tool_to_root, probe_managed_acp_tool_supported,
 };
+pub use agent_env::agent_process_env;
 pub use cache::init;
 pub use managed_resources::{ManagedResourcesMode, managed_resources_mode, set_managed_resources_mode};
 pub use node_runtime::{
@@ -40,3 +42,6 @@ pub use spawn::{Builder, kill_process_tree};
 #[cfg(test)]
 #[path = "../build_support.rs"]
 mod build_support_tests;
+
+#[cfg(test)]
+mod test_support;

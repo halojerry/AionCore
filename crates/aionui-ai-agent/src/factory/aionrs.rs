@@ -6,6 +6,7 @@ use aion_config::config::{McpServerConfig, TransportType};
 use aionui_api_types::{
     AionrsBuildExtra, GuideMcpConfig, SessionMcpServer, SessionMcpTransport, TEAM_MCP_SERVER_NAME, TeamMcpStdioConfig,
 };
+use aionui_common::ProviderWithModel;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
 use aionui_realtime::EventBroadcaster;
@@ -19,7 +20,8 @@ use crate::factory::AgentFactoryDeps;
 use crate::factory::context::FactoryContext;
 use crate::manager::aionrs::{AionrsAgentManager, sanitize_session_messages};
 use crate::runtime_status::conversation_runtime_reporter;
-use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig, BuildTaskOptions};
+use crate::session_context::AionrsSessionBuildContext;
+use crate::types::{AionrsCompatOverrides, AionrsResolvedConfig};
 
 const TEAM_CAPABLE_BACKENDS: &[&str] = &["claude", "codex", "gemini", "aionrs", "codebuddy"];
 const POUNDING_IDENTITY_PROMPT: &str =
@@ -27,16 +29,12 @@ const POUNDING_IDENTITY_PROMPT: &str =
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
-    options: BuildTaskOptions,
+    build_context: AionrsSessionBuildContext,
+    model: ProviderWithModel,
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
-    let belongs_to_team = options
-        .extra
-        .get("teamId")
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|s| !s.is_empty());
-
-    let mut overrides: AionrsBuildExtra = serde_json::from_value(options.extra).unwrap_or_default();
+    let belongs_to_team = build_context.team.is_some();
+    let mut overrides = build_context.config;
 
     // Merge preset assistant rules into system_prompt (used as custom_prompt
     // in aionrs's build_system_prompt). Mirrors the old architecture's
@@ -54,7 +52,7 @@ pub(super) async fn build(
     });
 
     // Inject Guide MCP config for solo (non-team) sessions, mirroring acp.rs.
-    // Skip if the conversation already belongs to a team (extra.teamId set).
+    // Skip if the conversation already belongs to a team.
     if overrides.team_mcp_stdio_config.is_none()
         && overrides.guide_mcp_config.is_none()
         && deps.guide_mcp_config.is_some()
@@ -107,7 +105,7 @@ pub(super) async fn build(
         );
     }
 
-    let provider_id = &options.model.provider_id;
+    let provider_id = &model.provider_id;
     let row = deps
         .provider_repo
         .find_by_id(provider_id)
@@ -118,12 +116,11 @@ pub(super) async fn build(
     let api_key = aionui_common::decrypt_string(&row.api_key_encrypted, &deps.encryption_key)
         .map_err(|e| AgentError::internal(e.to_string()))?;
 
-    let model_id = options
-        .model
+    let model_id = model
         .use_model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .unwrap_or(&options.model.model)
+        .unwrap_or(&model.model)
         .to_owned();
 
     let provider = map_aionrs_provider(&row.platform, &model_id, row.model_protocols.as_deref());
@@ -383,6 +380,7 @@ async fn row_to_mcp_server_config(
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         "http" | "streamable_http" => {
@@ -408,6 +406,7 @@ async fn row_to_mcp_server_config(
                 url: Some(url.to_owned()),
                 headers: Some(headers),
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         "sse" => {
@@ -433,6 +432,7 @@ async fn row_to_mcp_server_config(
                 url: Some(url.to_owned()),
                 headers: Some(headers),
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         other => Err(format!("unsupported transport_type: {other}")),
@@ -460,6 +460,7 @@ async fn session_server_to_mcp_server_config(
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         SessionMcpTransport::Http { url, headers } => {
@@ -474,6 +475,7 @@ async fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         SessionMcpTransport::Sse { url, headers } => {
@@ -488,6 +490,7 @@ async fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
         SessionMcpTransport::StreamableHttp { url, headers } => {
@@ -502,6 +505,7 @@ async fn session_server_to_mcp_server_config(
                 url: Some(url.clone()),
                 headers: Some(headers.clone()),
                 deferred: Some(false),
+                startup_timeout_ms: None,
             })
         }
     }
@@ -596,6 +600,7 @@ fn team_mcp_to_config(cfg: &TeamMcpStdioConfig) -> HashMap<String, McpServerConf
         url: None,
         headers: None,
         deferred: Some(false),
+        startup_timeout_ms: None,
     };
 
     HashMap::from([(TEAM_MCP_SERVER_NAME.to_owned(), server)])
@@ -621,6 +626,7 @@ fn guide_mcp_to_config(
         url: None,
         headers: None,
         deferred: Some(false),
+        startup_timeout_ms: None,
     };
 
     HashMap::from([("aionui-team-guide".into(), server)])
@@ -631,12 +637,12 @@ mod tests {
     use super::*;
     use aionui_realtime::BroadcastEventBus;
     use aionui_runtime::init as init_runtime;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::OnceLock;
     use std::{mem, path::PathBuf};
 
-    fn path_test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn path_test_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
     }
 
     #[cfg(unix)]
@@ -703,7 +709,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn row_to_mcp_server_config_flattens_resolved_npx_command() {
-        let _lock = path_test_lock().lock().expect("lock");
+        let _lock = path_test_lock().lock().await;
         let runtime = install_fake_bundled_runtime();
         let _runtime_data_dir = test_runtime_data_dir();
         unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
@@ -1002,6 +1008,7 @@ mod tests {
                 url: None,
                 headers: None,
                 deferred: Some(false),
+                startup_timeout_ms: None,
             },
         )]);
 

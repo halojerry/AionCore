@@ -1,9 +1,8 @@
 //! Agent-session operations on ConversationService.
 //!
 //! These forward to the active AgentInstance (via `self.task(id)`) for
-//! mode/model/usage/slash-commands/side-question/openclaw-runtime queries,
-//! plus workspace browsing that needs the conversations.extra.workspace
-//! field.
+//! mode/model/usage/slash-commands/side-question queries, plus workspace
+//! browsing that needs the conversations.extra.workspace field.
 //!
 //! Kept in a separate file from service.rs to avoid pushing that file
 //! over 2000 lines.
@@ -42,6 +41,22 @@ impl ConversationService {
         }
         let task = self.task(conversation_id)?;
         task.set_mode(&req.mode).await.map_err(ConversationError::from)?;
+        self.persist_runtime_assistant_snapshot(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                permission: Some(&req.mode),
+                ..Default::default()
+            },
+        )
+        .await?;
+        self.persist_runtime_assistant_preferences(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                permission: Some(&req.mode),
+                ..Default::default()
+            },
+        )
+        .await?;
         task.get_mode().await.map_err(ConversationError::from)
     }
 
@@ -76,8 +91,27 @@ impl ConversationService {
                 return Err(err);
             }
         };
-        task.set_model(&req.model_id).await.map_err(ConversationError::from)?;
-        task.get_model().await.map_err(ConversationError::from)
+        let response = task
+            .set_model_confirmed(&req.model_id)
+            .await
+            .map_err(ConversationError::from)?;
+        self.persist_runtime_assistant_snapshot(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                model: Some(&req.model_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        self.persist_runtime_assistant_preferences(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                model: Some(&req.model_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(response)
     }
 
     // ── Usage / Slash commands ──────────────────────────────────────
@@ -107,15 +141,6 @@ impl ConversationService {
         // question is non-empty; no need to duplicate the check here.
         self.task(conversation_id)?
             .handle_side_question(req)
-            .await
-            .map_err(ConversationError::from)
-    }
-
-    // ── OpenClaw runtime diagnostics ────────────────────────────────
-
-    pub async fn get_openclaw_runtime(&self, conversation_id: &str) -> Result<serde_json::Value, ConversationError> {
-        self.task(conversation_id)?
-            .get_openclaw_runtime()
             .await
             .map_err(ConversationError::from)
     }
