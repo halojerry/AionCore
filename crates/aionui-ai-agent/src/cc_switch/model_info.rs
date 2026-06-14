@@ -9,23 +9,22 @@ use tracing::warn;
 use super::CcSwitchPaths;
 
 fn sanitize_model_value(value: &str) -> Option<String> {
+    use std::sync::LazyLock;
+    static ANSI_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
+    static PREFIX_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"(?i)^set model to\s+").unwrap());
+    static SUFFIX_RE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\[(?:\d{1,3}(?:;\d{1,3})*)m\]?$").unwrap());
+
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return None;
     }
 
-    let without_ansi = regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]")
-        .ok()?
-        .replace_all(trimmed, "")
-        .to_string();
-    let without_prefix = regex::Regex::new(r"(?i)^set model to\s+")
-        .ok()?
-        .replace(&without_ansi, "")
-        .to_string();
-    let without_suffix = regex::Regex::new(r"\[(?:\d{1,3}(?:;\d{1,3})*)m\]?$")
-        .ok()?
-        .replace(&without_prefix, "")
-        .to_string();
+    let without_ansi = ANSI_RE.replace_all(trimmed, "").to_string();
+    let without_prefix = PREFIX_RE.replace(&without_ansi, "").to_string();
+    let without_suffix = SUFFIX_RE.replace(&without_prefix, "").to_string();
 
     let normalized = without_suffix.trim();
     (!normalized.is_empty()).then(|| normalized.to_owned())
