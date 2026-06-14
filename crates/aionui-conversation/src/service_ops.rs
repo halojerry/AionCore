@@ -1,7 +1,7 @@
 //! Agent-session operations on ConversationService.
 //!
 //! These forward to the active AgentInstance (via `self.task(id)`) for
-//! config-options/usage/slash-commands/side-question queries, plus workspace
+//! mode/model/usage/slash-commands/side-question queries, plus workspace
 //! browsing that needs the conversations.extra.workspace field.
 //!
 //! Kept in a separate file from service.rs to avoid pushing that file
@@ -10,7 +10,7 @@
 use std::path::Component;
 
 use aionui_api_types::{
-    GetConfigOptionsResponse, SetConfigOptionRequest, SetConfigOptionResponse, SideQuestionRequest,
+    AgentModeResponse, GetModelInfoResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
     SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
 };
 
@@ -20,38 +20,98 @@ use crate::service::ConversationService;
 const MAX_DIR_DEPTH: usize = 10;
 
 impl ConversationService {
-    // ── Config Options ──────────────────────────────────────────────
+    // ── Mode ────────────────────────────────────────────────────────
 
-    pub async fn get_config_options(
-        &self,
-        conversation_id: &str,
-    ) -> Result<GetConfigOptionsResponse, ConversationError> {
+    pub async fn get_mode(&self, conversation_id: &str) -> Result<AgentModeResponse, ConversationError> {
         self.task(conversation_id)?
-            .get_config_options()
+            .get_mode()
             .await
             .map_err(ConversationError::from)
     }
 
-    pub async fn set_config_option(
+    pub async fn set_mode(
         &self,
         conversation_id: &str,
-        option_id: &str,
-        req: SetConfigOptionRequest,
-    ) -> Result<SetConfigOptionResponse, ConversationError> {
-        if option_id.trim().is_empty() {
+        req: SetModeRequest,
+    ) -> Result<AgentModeResponse, ConversationError> {
+        if req.mode.trim().is_empty() {
             return Err(ConversationError::BadRequest {
-                reason: "option_id must not be empty".into(),
+                reason: "mode must not be empty".into(),
             });
         }
-        if req.value.trim().is_empty() {
-            return Err(ConversationError::BadRequest {
-                reason: "value must not be empty".into(),
-            });
-        }
+        let task = self.task(conversation_id)?;
+        task.set_mode(&req.mode).await.map_err(ConversationError::from)?;
+        self.persist_runtime_assistant_snapshot(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                permission: Some(&req.mode),
+                ..Default::default()
+            },
+        )
+        .await?;
+        self.persist_runtime_assistant_preferences(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                permission: Some(&req.mode),
+                ..Default::default()
+            },
+        )
+        .await?;
+        task.get_mode().await.map_err(ConversationError::from)
+    }
+
+    // ── Model ───────────────────────────────────────────────────────
+
+    pub async fn get_model(&self, conversation_id: &str) -> Result<GetModelInfoResponse, ConversationError> {
         self.task(conversation_id)?
-            .set_config_option(option_id, &req.value)
+            .get_model()
             .await
             .map_err(ConversationError::from)
+    }
+
+    pub async fn set_model(
+        &self,
+        conversation_id: &str,
+        req: SetModelRequest,
+    ) -> Result<GetModelInfoResponse, ConversationError> {
+        if req.model_id.trim().is_empty() {
+            return Err(ConversationError::BadRequest {
+                reason: "model_id must not be empty".into(),
+            });
+        }
+        let task = match self.task(conversation_id) {
+            Ok(task) => task,
+            Err(err) => {
+                tracing::warn!(
+                    conversation_id,
+                    model_id = %req.model_id,
+                    error = %err,
+                    "Set model skipped because active agent task is unavailable"
+                );
+                return Err(err);
+            }
+        };
+        let response = task
+            .set_model_confirmed(&req.model_id)
+            .await
+            .map_err(ConversationError::from)?;
+        self.persist_runtime_assistant_snapshot(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                model: Some(&req.model_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        self.persist_runtime_assistant_preferences(
+            conversation_id,
+            crate::service::AssistantRuntimePreferenceUpdate {
+                model: Some(&req.model_id),
+                ..Default::default()
+            },
+        )
+        .await?;
+        Ok(response)
     }
 
     // ── Usage / Slash commands ──────────────────────────────────────

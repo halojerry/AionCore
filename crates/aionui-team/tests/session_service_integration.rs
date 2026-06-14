@@ -696,7 +696,7 @@ impl CountingTaskManager {
     }
 
     async fn reset(&self) {
-        self.inner.clear().await;
+        self.inner.clear();
         *self.calls.lock().unwrap() = TaskManagerCalls::default();
     }
 
@@ -734,8 +734,8 @@ impl IWorkerTaskManager for CountingTaskManager {
         let _ = self.kill(conversation_id, reason);
         Box::pin(std::future::ready(()))
     }
-    async fn clear(&self) {
-        self.inner.clear().await
+    fn clear(&self) {
+        self.inner.clear()
     }
     fn active_count(&self) -> usize {
         self.inner.active_count()

@@ -1174,7 +1174,7 @@ mod tests {
             let _ = self.kill(conversation_id, reason);
             Box::pin(std::future::ready(()))
         }
-        async fn clear(&self) {}
+        fn clear(&self) {}
         fn active_count(&self) -> usize {
             self.tasks.lock().unwrap().len()
         }

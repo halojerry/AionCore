@@ -220,7 +220,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: Some(TeamMcpStdioConfig {
                 team_id: "team-1".into(),
@@ -259,7 +258,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: None,
             guide_mcp_config: Some(GuideMcpConfig {
@@ -292,7 +290,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: None,
             guide_mcp_config: Some(GuideMcpConfig {
@@ -326,7 +323,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: None,
             guide_mcp_config: None,
@@ -362,7 +358,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: Some(TeamMcpStdioConfig {
                 team_id: "team-1".into(),
@@ -403,7 +398,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: None,
             guide_mcp_config: Some(GuideMcpConfig {
@@ -444,7 +438,6 @@ mod tests {
             preset_assistant_id: None,
             session_mode: None,
             current_model_id: None,
-            thought_level: None,
             cron_job_id: None,
             team_mcp_stdio_config: None,
             guide_mcp_config: None,

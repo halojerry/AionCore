@@ -62,8 +62,6 @@ pub struct AcpBuildExtra {
     #[serde(default)]
     pub current_model_id: Option<String>,
     #[serde(default)]
-    pub thought_level: Option<String>,
-    #[serde(default)]
     pub cron_job_id: Option<String>,
     #[serde(default)]
     pub team_mcp_stdio_config: Option<TeamMcpStdioConfig>,
@@ -137,19 +135,3 @@ pub struct SlashCommandItem {
     pub empty_turn_tip_params: Option<serde_json::Value>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn acp_build_extra_defaults_thought_level_to_none() {
-        let parsed: AcpBuildExtra = serde_json::from_str(r#"{"backend":"codex"}"#).unwrap();
-        assert!(parsed.thought_level.is_none());
-    }
-
-    #[test]
-    fn acp_build_extra_parses_thought_level_seed() {
-        let parsed: AcpBuildExtra = serde_json::from_str(r#"{"backend":"codex","thought_level":"high"}"#).unwrap();
-        assert_eq!(parsed.thought_level.as_deref(), Some("high"));
-    }
-}
