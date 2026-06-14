@@ -2009,6 +2009,7 @@ mod tests {
                         "id": b.id,
                         "name": b.name,
                         "preset_agent_type": b.preset_agent_type,
+                        "enabled_skills": b.enabled_skills,
                         "rule_file": b.rule_file,
                     })
                 })
