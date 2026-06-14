@@ -87,7 +87,7 @@ impl VersionCheckService {
                 .http_client
                 .get(&url)
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "aioncore")
+                .header("User-Agent", "poundingcore")
                 .send()
                 .await
                 .map_err(|e| SystemError::BadGateway(format!("GitHub API request failed: {e}")))?;
