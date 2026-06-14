@@ -555,15 +555,15 @@ impl AcpAgentManager {
     async fn apply_confirmed_model_selection(&self, model_id: &str) -> Result<SessionModelState, AgentError> {
         let session_id = {
             let session = self.session.read().await;
-            if !session.can_select_model(&normalized_model_id) {
+            if !session.can_select_model(model_id) {
                 warn!(
                     conversation_id = %self.params.conversation_id,
                     agent_backend = ?self.params.metadata.backend,
-                    requested_model_id = %normalized_model_id,
+                    requested_model_id = %model_id,
                     "acp_set_model_rejected_unavailable"
                 );
                 return Err(AgentError::bad_request(format!(
-                    "Model '{normalized_model_id}' is not available for this ACP session"
+                    "Model '{model_id}' is not available for this ACP session"
                 )));
             }
             session.session_id().map(ToOwned::to_owned)
@@ -572,7 +572,7 @@ impl AcpAgentManager {
             warn!(
                 conversation_id = %self.params.conversation_id,
                 agent_backend = ?self.params.metadata.backend,
-                requested_model_id = %normalized_model_id,
+                requested_model_id = %model_id,
                 "acp_set_command_missing_session"
             );
             AgentError::bad_request("No active session")
@@ -581,21 +581,21 @@ impl AcpAgentManager {
         info!(
             conversation_id = %self.params.conversation_id,
             agent_backend = ?self.params.metadata.backend,
-            requested_model_id = %normalized_model_id,
+            requested_model_id = %model_id,
             "acp_set_model_requested"
         );
         if let Err(e) = self
             .protocol
             .set_model(SetSessionModelRequest::new(
                 SessionId::new(session_id.clone()),
-                normalized_model_id.to_owned(),
+                model_id.to_owned(),
             ))
             .await
         {
             warn!(
                 conversation_id = %self.params.conversation_id,
                 agent_backend = ?self.params.metadata.backend,
-                requested_model_id = %normalized_model_id,
+                requested_model_id = %model_id,
                 error = %e,
                 "acp_set_model_failed"
             );
@@ -607,14 +607,14 @@ impl AcpAgentManager {
             warn!(
                 conversation_id = %self.params.conversation_id,
                 agent_backend = ?self.params.metadata.backend,
-                requested_model_id = %normalized_model_id,
+                requested_model_id = %model_id,
                 confirmed_session_id = %session_id,
                 active_session_id = ?session.session_id(),
                 "acp_set_model_session_changed"
             );
             return Err(AgentError::conflict("Active ACP session changed while applying model"));
         }
-        let model = ModelId::new(&normalized_model_id);
+        let model = ModelId::new(model_id);
         session.confirm_model(model.clone());
         if self.params.metadata.behavior_policy.self_identity_sticky {
             session.set_pending_model_notice(model);
@@ -627,7 +627,7 @@ impl AcpAgentManager {
         info!(
             conversation_id = %self.params.conversation_id,
             agent_backend = ?self.params.metadata.backend,
-            confirmed_model_id = %normalized_model_id,
+            confirmed_model_id = %model_id,
             "acp_set_model_confirmed"
         );
         Ok(confirmed_model)
