@@ -41,22 +41,34 @@ impl ConversationService {
         }
         let task = self.task(conversation_id)?;
         task.set_mode(&req.mode).await.map_err(ConversationError::from)?;
-        self.persist_runtime_assistant_snapshot(
-            conversation_id,
-            crate::service::AssistantRuntimePreferenceUpdate {
-                permission: Some(&req.mode),
-                ..Default::default()
-            },
-        )
-        .await?;
-        self.persist_runtime_assistant_preferences(
-            conversation_id,
-            crate::service::AssistantRuntimePreferenceUpdate {
-                permission: Some(&req.mode),
-                ..Default::default()
-            },
-        )
-        .await?;
+        // Persist the mode change for recovery on restart. These are
+        // independent writes; a partial failure is non-fatal — the
+        // agent is already in the new mode and will re-sync on next
+        // reconcile.
+        if let Err(e) = self
+            .persist_runtime_assistant_snapshot(
+                conversation_id,
+                crate::service::AssistantRuntimePreferenceUpdate {
+                    permission: Some(&req.mode),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            tracing::warn!(conversation_id, mode = %req.mode, error = %e, "Failed to persist mode to snapshot");
+        }
+        if let Err(e) = self
+            .persist_runtime_assistant_preferences(
+                conversation_id,
+                crate::service::AssistantRuntimePreferenceUpdate {
+                    permission: Some(&req.mode),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            tracing::warn!(conversation_id, mode = %req.mode, error = %e, "Failed to persist mode to preferences");
+        }
         task.get_mode().await.map_err(ConversationError::from)
     }
 
@@ -95,22 +107,34 @@ impl ConversationService {
             .set_model_confirmed(&req.model_id)
             .await
             .map_err(ConversationError::from)?;
-        self.persist_runtime_assistant_snapshot(
-            conversation_id,
-            crate::service::AssistantRuntimePreferenceUpdate {
-                model: Some(&req.model_id),
-                ..Default::default()
-            },
-        )
-        .await?;
-        self.persist_runtime_assistant_preferences(
-            conversation_id,
-            crate::service::AssistantRuntimePreferenceUpdate {
-                model: Some(&req.model_id),
-                ..Default::default()
-            },
-        )
-        .await?;
+        // Persist the model change for recovery on restart. These are
+        // independent writes; a partial failure is non-fatal — the
+        // agent is already confirmed in the new model (set_model_confirmed
+        // is atomic).
+        if let Err(e) = self
+            .persist_runtime_assistant_snapshot(
+                conversation_id,
+                crate::service::AssistantRuntimePreferenceUpdate {
+                    model: Some(&req.model_id),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            tracing::warn!(conversation_id, model_id = %req.model_id, error = %e, "Failed to persist model to snapshot");
+        }
+        if let Err(e) = self
+            .persist_runtime_assistant_preferences(
+                conversation_id,
+                crate::service::AssistantRuntimePreferenceUpdate {
+                    model: Some(&req.model_id),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            tracing::warn!(conversation_id, model_id = %req.model_id, error = %e, "Failed to persist model to preferences");
+        }
         Ok(response)
     }
 

@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{future::Future, pin::Pin};
 
 use tokio::net::TcpListener;
@@ -294,6 +294,12 @@ pub(crate) async fn run_server(
                         active_turn_count, "conversation runtime shutdown prepared"
                     );
                     worker_task_manager.clear();
+                    // Give spawned kill tasks a brief window to terminate
+                    // child CLI processes (ACP_KILL_GRACE_MS + margin).
+                    // The timeout is intentionally short — we don't block
+                    // shutdown, but we let the runtime drain the kill tasks
+                    // spawned by agent.kill(None).
+                    tokio::time::sleep(Duration::from_millis(600)).await;
                 }
             }
             let _ = shutdown_tx.send(true);
