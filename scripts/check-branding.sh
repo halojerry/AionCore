@@ -71,14 +71,13 @@ check_exists "cc_switch paths" "$ROOT/crates/aionui-ai-agent/src/cc_switch/paths
 check_exists "cc_switch provider_env" "$ROOT/crates/aionui-ai-agent/src/cc_switch/provider_env.rs"
 
 # ---- Builtin Skills ----
-check_exists "pounding-ozon-assistant skill" "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant/SKILL.md"
+check_exists "pounding-ozon skill bundle" "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/SKILL.md"
 
 # ---- Brand Logo Asset ----
 check_exists "pounding heart logo" "$ROOT/crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png"
 
 # ---- POUNDING CLI Migrations ----
-check "pounding CLI migration exists" 'pounding' "$ROOT/crates/aionui-db/migrations/010_add_pounding_cli.sql"
-check "pounding CLI migration 2 exists" 'pounding' "$ROOT/crates/aionui-db/migrations/011_add_pounding_cli.sql"
+check "pounding CLI migration exists" 'pounding' "$ROOT/crates/aionui-db/migrations/013_add_pounding_cli.sql"
 
 # ---- Legacy DB Name Preserved ----
 check "database.rs: aionui.db preserved" 'aionui\.db' "$ROOT/crates/aionui-db/src/database.rs"
