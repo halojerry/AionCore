@@ -71,7 +71,7 @@ check_exists "cc_switch paths" "$ROOT/crates/aionui-ai-agent/src/cc_switch/paths
 check_exists "cc_switch provider_env" "$ROOT/crates/aionui-ai-agent/src/cc_switch/provider_env.rs"
 
 # ---- Builtin Skills ----
-check_exists "pounding-ozon skill bundle" "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite/SKILL.md"
+check_exists "pounding-ozon skill bundle" "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant/SKILL.md"
 
 # ---- Brand Logo Asset ----
 check_exists "pounding heart logo" "$ROOT/crates/aionui-assets/assets/logos/brand/pounding-heart-solid.png"

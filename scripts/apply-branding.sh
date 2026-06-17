@@ -127,7 +127,7 @@ check_feature_files() {
   file_exists "$ROOT/crates/aionui-db/migrations/014_native_cli_managed_tools.sql" "014_native_cli_managed_tools.sql"
 
   # POUNDING builtin skill
-  file_exists "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-v0.1.0-lite" "ozon skill bundle"
+  file_exists "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant" "ozon skill bundle"
   file_exists "$ROOT/crates/aionui-app/assets/builtin-skills/pounding-ozon-assistant"   "ozon assistant skill"
 
   # Brand assets
