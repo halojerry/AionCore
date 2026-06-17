@@ -392,14 +392,26 @@ async fn resolve_builtin_native_cli_command_spec(
             });
             // Read gateway token from openclaw.json for ACP bridge authentication
             let config_path = openclaw_home.join("openclaw.json");
-            if let Ok(config_bytes) = std::fs::read_to_string(&config_path) {
-                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_bytes) {
-                    if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
-                        env.push(aionui_common::EnvVar {
-                            name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
-                            value: token.to_owned(),
-                        });
+            match std::fs::read_to_string(&config_path) {
+                Ok(config_bytes) => {
+                    match serde_json::from_str::<serde_json::Value>(&config_bytes) {
+                        Ok(config) => {
+                            if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
+                                env.push(aionui_common::EnvVar {
+                                    name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
+                                    value: token.to_owned(),
+                                });
+                            } else {
+                                warn!("OpenClaw config missing gateway.auth.token — ACP bridge auth will fail");
+                            }
+                        }
+                        Err(e) => {
+                            warn!(%e, "Failed to parse openclaw.json — ACP bridge auth will fail");
+                        }
                     }
+                }
+                Err(e) => {
+                    warn!(%e, "Failed to read openclaw.json — ACP bridge auth will fail");
                 }
             }
         }
