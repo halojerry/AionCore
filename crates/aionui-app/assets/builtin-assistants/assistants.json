@@ -1047,13 +1047,13 @@
       "models": []
     },
     {
-      "id": "ozon-assistants",
-      "name": "Ozon Assistants",
+      "id": "pounding-ozon-assistant",
+      "name": "POUNDING Ozon Assistant",
       "name_i18n": {
-        "en-US": "Ozon Assistants",
-        "zh-CN": "Ozon 铺货助手",
-        "ru-RU": "Ozon Assistants",
-        "uk-UA": "Ozon Assistants"
+        "en-US": "POUNDING Ozon Assistant",
+        "zh-CN": "POUNDING Ozon 助手",
+        "ru-RU": "POUNDING Ozon Assistant",
+        "uk-UA": "POUNDING Ozon Assistant"
       },
       "description": "Business assistant for 1688 sourcing, Ozon listing, refresh workflows, and status tracking.",
       "description_i18n": {
@@ -1062,14 +1062,14 @@
         "ru-RU": "Бизнес-помощник для поиска товаров на 1688, публикации в Ozon, обновления карточек и отслеживания статуса.",
         "uk-UA": "Бізнес-помічник для пошуку товарів на 1688, публікації в Ozon, оновлення карток і відстеження статусу."
       },
-      "avatar": "🛍️",
+      "avatar": "avatars/pounding-ozon-assistant.png",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
-        "pounding-ozon"
+        "pounding-ozon-assistant"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
-      "rule_file": "rules/ozon-assistants.zh-CN.md",
+      "rule_file": "rules/pounding-ozon-assistant.{locale}.md",
       "prompts": [
         "从 1688 找一款适合在 Ozon 上架的家居用品并直接跑完整铺货链路",
         "把这个 1688 链接商品发布到 Ozon，并汇报成本、利润率和任务状态",
@@ -1148,6 +1148,108 @@
           "Зроби .docx-форму прийому нового співробітника з полями ПІБ, дата початку, відділ, керівник, чек-листом навчання за посадою та прапорцями запиту обладнання; редагуються лише поля.",
           "Створи шаблон контракту SOW .docx з MERGEFIELD-плейсхолдерами для імені клієнта, дати набрання чинності, обсягу робіт, загальної суми та блоку підписів; захисти все, крім області підпису.",
           "Зроби .docx-анкету медичного прийому з випадаючим списком причини візиту, текстовими полями для алергій / прийнятих ліків, сіткою прапорців за минулими станами та рядком підпису внизу."
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "pounding-expert",
+      "name": "POUNDING Expert",
+      "name_i18n": {
+        "en-US": "POUNDING Expert",
+        "zh-CN": "POUNDING 使用专家",
+        "ru-RU": "Эксперт POUNDING",
+        "uk-UA": "Експерт POUNDING"
+      },
+      "description": "Expert guide for installing, configuring, and troubleshooting POUNDING's CLI agents: Claude Code, Codex, OpenClaw, OpenCode, and Hermes Agent.",
+      "description_i18n": {
+        "en-US": "Expert guide for installing, configuring, and troubleshooting POUNDING's CLI agents: Claude Code, Codex, OpenClaw, OpenCode, and Hermes Agent.",
+        "zh-CN": "帮助安装、配置和排查 POUNDING 支持的 CLI 代理：Claude Code、Codex、OpenClaw、OpenCode、Hermes Agent。",
+        "ru-RU": "Эксперт по установке, настройке и устранению неполадок CLI-агентов POUNDING: Claude Code, Codex, OpenClaw, OpenCode и Hermes Agent.",
+        "uk-UA": "Експерт зі встановлення, налаштування та усунення несправностей CLI-агентів POUNDING: Claude Code, Codex, OpenClaw, OpenCode та Hermes Agent."
+      },
+      "avatar": "avatars/pounding-expert.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/pounding-expert.{locale}.md",
+      "prompts": [
+        "Help me install all POUNDING CLI agents",
+        "Diagnose why my Claude Code isn't working",
+        "Configure POUNDING for my development environment"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Help me install all POUNDING CLI agents",
+          "Diagnose why my Claude Code isn't working",
+          "Configure POUNDING for my development environment"
+        ],
+        "zh-CN": [
+          "帮我安装所有 POUNDING CLI 代理",
+          "诊断为什么我的 Claude Code 不工作",
+          "为我的开发环境配置 POUNDING"
+        ],
+        "ru-RU": [
+          "Помоги установить все CLI-агенты POUNDING",
+          "Диагностируй, почему мой Claude Code не работает",
+          "Настрой POUNDING для моей среды разработки"
+        ],
+        "uk-UA": [
+          "Допоможи встановити всі CLI-агенти POUNDING",
+          "Діагностуй, чому мій Claude Code не працює",
+          "Налаштуй POUNDING для мого середовища розробки"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "social-cover-design",
+      "name": "Social Cover Designer",
+      "name_i18n": {
+        "en-US": "Social Cover Designer",
+        "zh-CN": "社交封面设计师",
+        "ru-RU": "Дизайнер обложек",
+        "uk-UA": "Дизайнер обкладинок"
+      },
+      "description": "Professional social media cover designer for WeChat Official Accounts, Xiaohongshu, TikTok, and more. Offers 10 design styles with step-by-step guidance and image generation.",
+      "description_i18n": {
+        "en-US": "Professional social media cover designer for WeChat Official Accounts, Xiaohongshu, TikTok, and more. Offers 10 design styles with step-by-step guidance and image generation.",
+        "zh-CN": "专业社交媒体封面设计助手，支持微信公众号、小红书、抖音等。提供 10 种设计风格，逐步引导并生成封面图片。",
+        "ru-RU": "Профессиональный дизайнер обложек для соцсетей: WeChat, Xiaohongshu, TikTok и других. 10 стилей дизайна с пошаговым ведением и генерацией изображений.",
+        "uk-UA": "Професійний дизайнер обкладинок для соцмереж: WeChat, Xiaohongshu, TikTok та інших. 10 стилів дизайну з покроковим веденням та генерацією зображень."
+      },
+      "avatar": "avatars/social-cover-design.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/social-cover-design.{locale}.md",
+      "prompts": [
+        "Design a WeChat Official Account cover for my tech blog",
+        "Create a Xiaohongshu cover for a product launch",
+        "Design a minimalist social media cover with dark gradient style"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Design a WeChat Official Account cover for my tech blog",
+          "Create a Xiaohongshu cover for a product launch",
+          "Design a minimalist social media cover with dark gradient style"
+        ],
+        "zh-CN": [
+          "为我的科技博客设计微信公众号封面",
+          "为产品发布创建小红书封面",
+          "用深色渐变风格设计简约社交媒体封面"
+        ],
+        "ru-RU": [
+          "Создай обложку для WeChat Official Account для моего техноблога",
+          "Создай обложку Xiaohongshu для запуска продукта",
+          "Создай минималистичную обложку для соцсетей в стиле тёмного градиента"
+        ],
+        "uk-UA": [
+          "Створи обкладинку для WeChat Official Account для мого техноблогу",
+          "Створи обкладинку Xiaohongshu для запуску продукту",
+          "Створи мінімалістичну обкладинку для соцмереж у стилі темного градієнта"
         ]
       },
       "models": []
