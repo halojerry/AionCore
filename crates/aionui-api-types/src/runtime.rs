@@ -6,6 +6,7 @@ pub enum RuntimeStatusScopeKind {
     Conversation,
     Mcp,
     CustomAgent,
+    Onboarding,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub struct RuntimeStatusScope {
 pub enum RuntimeResourceKind {
     Node,
     AcpTool,
+    NativeCli,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

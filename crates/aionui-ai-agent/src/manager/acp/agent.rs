@@ -463,6 +463,7 @@ impl AcpAgentManager {
     }
 
     /// Backward-compat alias — CC-Switch model info applies to all managed ACP backends.
+    #[allow(dead_code)]
     pub(crate) fn is_claude_backend(&self) -> bool {
         self.is_managed_backend()
     }

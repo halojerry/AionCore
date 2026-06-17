@@ -10,10 +10,8 @@ use super::CcSwitchPaths;
 
 fn sanitize_model_value(value: &str) -> Option<String> {
     use std::sync::LazyLock;
-    static ANSI_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
-    static PREFIX_RE: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"(?i)^set model to\s+").unwrap());
+    static ANSI_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").unwrap());
+    static PREFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)^set model to\s+").unwrap());
     static SUFFIX_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\[(?:\d{1,3}(?:;\d{1,3})*)m\]?$").unwrap());
 

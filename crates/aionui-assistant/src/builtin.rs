@@ -6,14 +6,14 @@
 //! assumption, which was fragile in two ways:
 //!
 //! 1. Dev: Electron launches the backend through a symlink
-//!    (`~/.cargo/bin/aioncore` → `target/debug/aioncore`) and
+//!    (`~/.cargo/bin/poundingcore` → `target/debug/poundingcore`) and
 //!    `std::env::current_exe().parent()` would resolve to the symlink's
 //!    directory, not the real binary's, missing the `assets/` sibling.
 //! 2. Prod: `AionUi/scripts/prepareAionuiBackend.js` only copies the
 //!    binary from GitHub releases — the `assets/` directory never shipped.
 //!
 //! Embedding avoids both. E2E tests that want to inject a custom fixture
-//! still can, via the `AIONUI_BUILTIN_ASSISTANTS_PATH` env var → disk
+//! still can, via the `POUNDING_BUILTIN_ASSISTANTS_PATH` env var → disk
 //! fallback path.
 
 use std::collections::HashMap;
@@ -101,13 +101,13 @@ impl BuiltinAssistantRegistry {
     /// directory, read from disk (test-only override). Otherwise use the
     /// assets embedded at compile time.
     pub fn load() -> Self {
-        if let Ok(env) = std::env::var("AIONUI_BUILTIN_ASSISTANTS_PATH") {
+        if let Ok(env) = std::env::var("POUNDING_BUILTIN_ASSISTANTS_PATH") {
             let p = PathBuf::from(env);
             if p.exists() {
                 return Self::load_from_dir(p);
             }
             warn!(
-                "AIONUI_BUILTIN_ASSISTANTS_PATH points to missing directory; \
+                "POUNDING_BUILTIN_ASSISTANTS_PATH points to missing directory; \
                  falling back to embedded assets"
             );
         }
@@ -421,7 +421,7 @@ mod tests {
         // SAFETY: cargo test runs tests in parallel by default, so guard
         // against interference from other tests by using a unique env-var
         // value and checking via a dedicated loader call.
-        let key = "AIONUI_BUILTIN_ASSISTANTS_PATH";
+        let key = "POUNDING_BUILTIN_ASSISTANTS_PATH";
         let prev = std::env::var(key).ok();
         // SAFETY: set_var is sound when no other thread is concurrently
         // reading env. Tests within this module do not share mutation, and

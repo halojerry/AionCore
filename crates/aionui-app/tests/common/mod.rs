@@ -166,8 +166,7 @@ impl IAgentTask for NoopMockAgent {
 }
 
 #[async_trait::async_trait]
-impl IMockAgent for NoopMockAgent {
-}
+impl IMockAgent for NoopMockAgent {}
 
 pub async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();

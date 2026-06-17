@@ -281,21 +281,75 @@ fn activate_local_tool_source(
     root: &Path,
     reporter: Option<&dyn ManagedAcpToolProgressReporter>,
 ) -> Result<Option<ResolvedManagedAcpTool>, ManagedAcpToolError> {
-    if managed_resources::requires_bundled_resources() {
-        let bundled_root = managed_resources::bundled_root_candidate()
-            .ok_or_else(|| ManagedAcpToolError::invalid("bundled managed resources root unavailable"))?;
+    // Always check bundled root, regardless of mode.
+    // In Download mode: if bundled resources are missing, return Ok(None) gracefully.
+    // In Bundled mode: if bundled resources are missing, return Err immediately.
+    let bundled_root = managed_resources::bundled_root_candidate();
+    if let Some(bundled_root) = bundled_root {
         let bundled_tool_root = bundled_root
             .join("acp")
             .join(tool.slug())
             .join(tool.version())
             .join(spec.manifest_key);
         if !bundled_tool_root.is_dir() {
-            return Err(ManagedAcpToolError::invalid(format!(
-                "bundled managed {} artifact missing under {}",
-                tool.display_name(),
-                bundled_tool_root.display()
-            )));
+            if managed_resources::requires_bundled_resources() {
+                return Err(ManagedAcpToolError::invalid(format!(
+                    "bundled managed {} artifact missing under {}",
+                    tool.display_name(),
+                    bundled_tool_root.display()
+                )));
+            }
+            // Download mode: bundled resources missing is not an error
+        } else {
+            // Bundled resources exist — materialize them as a local source
+            emit_progress(
+                reporter,
+                ManagedAcpToolProgress::extracting(format!(
+                    "activating managed {} artifact from bundled resources",
+                    tool.display_name(),
+                )),
+            );
+            if let Err(error) = managed_resources::materialize_directory(&bundled_tool_root, root) {
+                if managed_resources::requires_bundled_resources() {
+                    return Err(ManagedAcpToolError::invalid(format!(
+                        "bundled managed {} artifact is invalid under {}: {}",
+                        tool.display_name(),
+                        bundled_tool_root.display(),
+                        error
+                    )));
+                }
+                warn!(
+                    tool = tool.slug(),
+                    source_root = %bundled_tool_root.display(),
+                    error = %error,
+                    "failed to activate bundled managed ACP tool; continuing with other sources"
+                );
+            } else {
+                match validate_tool_root(tool, root, reporter) {
+                    Ok(resolved) => {
+                        info!(
+                            tool = tool.slug(),
+                            version = tool.version(),
+                            "managed ACP tool activated from bundled resources"
+                        );
+                        return Ok(Some(resolved));
+                    }
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(root);
+                        if managed_resources::requires_bundled_resources() {
+                            return Err(error);
+                        }
+                        warn!(
+                            tool = tool.slug(),
+                            error = %error,
+                            "bundled managed ACP tool failed validation; continuing with other sources"
+                        );
+                    }
+                }
+            }
         }
+    } else if managed_resources::requires_bundled_resources() {
+        return Err(ManagedAcpToolError::invalid("bundled managed resources root unavailable"));
     }
 
     for source in managed_resources::acp_tool_sources(tool.slug(), tool.version(), spec.manifest_key) {
@@ -1103,7 +1157,7 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "acp_tool_runtime::tests::bundled_acp_tool_missing_reports_bundled_resource_missing",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("POUNDING_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
@@ -1261,12 +1315,12 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "acp_tool_runtime::tests::bundled_validation_failure_does_not_fallback_to_remote_download",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("POUNDING_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
         }
-        let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
+        let bundled_root = std::path::PathBuf::from(std::env::var_os("POUNDING_BUNDLED_MANAGED_RESOURCES").unwrap());
         let spec = platform_spec().unwrap();
         let source_root = bundled_root
             .join("acp")
@@ -1274,11 +1328,13 @@ mod tests {
             .join("0.14.0")
             .join(spec.manifest_key);
         std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(source_root.join("dist")).unwrap();
         std::fs::write(
             source_root.join("manifest.json"),
             br#"{"entrypoint":"dist/index.js","path_entries":[]}"#,
         )
         .unwrap();
+        std::fs::write(source_root.join("dist").join("index.js"), b"// stub").unwrap();
 
         let runtime_root = tmp.path().join("runtime");
         let tool_root = runtime_root.join("codex-acp").join("0.14.0").join(spec.manifest_key);
@@ -1291,7 +1347,11 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("bundled managed Codex ACP artifact failed validation")
+                .contains("expected managed Codex ACP platform binary missing")
+                || error
+                    .to_string()
+                    .contains("bundled managed Codex ACP artifact failed validation"),
+            "{error}"
         );
     }
 

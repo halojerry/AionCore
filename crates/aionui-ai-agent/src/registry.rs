@@ -21,8 +21,8 @@ use aionui_api_types::{AgentEnvEntry, AgentHandshake, AgentMetadata, AgentSource
 use aionui_common::AgentType;
 use aionui_db::{AgentMetadataRow, IAgentMetadataRepository, UpdateAgentHandshakeParams};
 use aionui_runtime::{
-    ManagedAcpToolId, RuntimeCommandProbe, probe_managed_acp_tool_supported, probe_node_runtime_supported,
-    probe_runtime_command, resolve_command_path,
+    ManagedAcpToolId, NativeCliToolId, RuntimeCommandProbe, bundled_root_candidate, probe_managed_acp_tool_supported,
+    probe_native_cli_tool_supported, probe_node_runtime_supported, probe_runtime_command, resolve_command_path,
 };
 use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
@@ -580,6 +580,44 @@ impl std::fmt::Display for UnavailableReason {
     }
 }
 
+/// Check whether bundled ACP tool artifacts exist for the given tool.
+/// Used by the registry probe to determine agent availability in bundled mode.
+fn has_bundled_acp_artifact(tool: ManagedAcpToolId) -> bool {
+    let Some(bundled_root) = bundled_root_candidate() else {
+        return false;
+    };
+    let acp_dir = bundled_root
+        .join("acp")
+        .join(tool.slug())
+        .join(tool.version());
+    // Check if the directory has any platform subdirectory (e.g. darwin-arm64)
+    if !acp_dir.is_dir() {
+        return false;
+    }
+    // At least one platform directory means the bundle exists
+    std::fs::read_dir(&acp_dir)
+        .map(|mut entries| entries.any(|e| e.map(|entry| entry.path().is_dir()).unwrap_or(false)))
+        .unwrap_or(false)
+}
+
+/// Check whether bundled native CLI tool artifacts exist for the given tool.
+/// Used by the registry probe to determine agent availability in bundled mode.
+fn has_bundled_native_cli_artifact(tool: NativeCliToolId) -> bool {
+    let Some(bundled_root) = bundled_root_candidate() else {
+        return false;
+    };
+    let cli_dir = bundled_root
+        .join("cli")
+        .join(tool.slug())
+        .join(tool.version());
+    if !cli_dir.is_dir() {
+        return false;
+    }
+    std::fs::read_dir(&cli_dir)
+        .map(|mut entries| entries.any(|e| e.map(|entry| entry.path().is_dir()).unwrap_or(false)))
+        .unwrap_or(false)
+}
+
 /// Resolve the spawn command to an absolute path via `$PATH`. Returns
 /// `Ok(path)` when every required binary is present, or `Err(reason)`
 /// pinpointing the first missing piece. The value is the single
@@ -616,6 +654,36 @@ fn probe_resolved_command(meta: &AgentMetadata) -> Result<PathBuf, UnavailableRe
         }
         if let Some(primary) = meta.agent_source_info.binary_name.as_deref()
             && probe_command_candidate(primary).is_none()
+        {
+            // In bundled mode, the ACP tool binary is installed from bundled resources
+            // during spawn — agent is still available without the primary binary on PATH.
+            if !aionui_runtime::requires_bundled_resources()
+                || !has_bundled_acp_artifact(tool)
+            {
+                return Err(UnavailableReason::PrimaryMissing {
+                    binary: primary.to_owned(),
+                });
+            }
+        }
+        return Ok(PathBuf::from(tool.slug()));
+    }
+
+    if meta.agent_source == AgentSource::Builtin
+        && meta.command.is_none()
+        && let Some(backend) = meta.backend.as_deref()
+        && let Some(tool) = NativeCliToolId::from_backend(backend)
+    {
+        let support = probe_native_cli_tool_supported(tool);
+        if !support.is_supported() {
+            return Err(UnavailableReason::ManagedRuntimeUnavailable {
+                resource: tool.slug().to_owned(),
+                detail: support.detail,
+            });
+        }
+        if let Some(primary) = meta.agent_source_info.binary_name.as_deref()
+            && probe_command_candidate(primary).is_none()
+            && (!aionui_runtime::requires_bundled_resources()
+                || !has_bundled_native_cli_artifact(tool))
         {
             return Err(UnavailableReason::PrimaryMissing {
                 binary: primary.to_owned(),

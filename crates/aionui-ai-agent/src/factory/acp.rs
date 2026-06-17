@@ -748,7 +748,7 @@ mod tests {
         let _lock = path_test_lock().lock().await;
         let runtime = install_fake_bundled_runtime();
         let _runtime_data_dir = test_runtime_data_dir();
-        unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
+        unsafe { std::env::set_var("POUNDING_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
 
         let row = make_row(
             "ctx7",
@@ -759,7 +759,7 @@ mod tests {
         );
 
         let server = row_to_sdk_mcp_server(&row).await.expect("convert");
-        unsafe { std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES") };
+        unsafe { std::env::remove_var("POUNDING_BUNDLED_MANAGED_RESOURCES") };
         match server {
             McpServer::Stdio(s) => {
                 let command = s.command.to_string_lossy();
@@ -777,7 +777,7 @@ mod tests {
         let _lock = path_test_lock().lock().await;
         let runtime = install_fake_bundled_runtime();
         let _runtime_data_dir = test_runtime_data_dir();
-        unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
+        unsafe { std::env::set_var("POUNDING_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
 
         let meta = aionui_api_types::AgentMetadata {
             id: "agent-1".into(),
@@ -818,7 +818,7 @@ mod tests {
         .await
         .expect("resolved command spec");
 
-        unsafe { std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES") };
+        unsafe { std::env::remove_var("POUNDING_BUNDLED_MANAGED_RESOURCES") };
         let command = spec.command.to_string_lossy();
         assert_ne!(command, "npx");
         assert!(command.ends_with("/npx"), "unexpected stdio command path: {command}");

@@ -228,30 +228,66 @@ pub(crate) async fn run_server(
     info!(elapsed_ms = boot.elapsed().as_millis(), "Server listening on {addr}");
 
     let runtime_prepare_service = RuntimePrepareService::new(services.event_bus.clone());
+    let agent_registry = services.agent_registry.clone();
     tokio::spawn(async move {
         let scope = RuntimeStatusScope {
-            kind: RuntimeStatusScopeKind::CustomAgent,
+            kind: RuntimeStatusScopeKind::Onboarding,
             id: "startup".into(),
         };
         let prepare_started = Instant::now();
         info!("startup: managed runtime background preparation started");
         let result = async {
-            runtime_prepare_service.ensure_node_runtime(scope.clone()).await?;
-            runtime_prepare_service
+            let mut errors: Vec<String> = Vec::new();
+            if let Err(e) = runtime_prepare_service.ensure_node_runtime(scope.clone()).await {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
                 .ensure_managed_acp_tool(scope.clone(), "codex-acp")
-                .await?;
-            runtime_prepare_service
-                .ensure_managed_acp_tool(scope, "claude-agent-acp")
-                .await?;
-            Ok::<(), aionui_system::SystemError>(())
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_managed_acp_tool(scope.clone(), "claude-agent-acp")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope.clone(), "hermes")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope.clone(), "opencode")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope, "openclaw")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
         }
         .await;
 
         match result {
-            Ok(()) => info!(
-                prepare_elapsed_ms = prepare_started.elapsed().as_millis(),
-                "startup: managed runtime background preparation completed"
-            ),
+            Ok(()) => {
+                info!(
+                    prepare_elapsed_ms = prepare_started.elapsed().as_millis(),
+                    "startup: managed runtime background preparation completed"
+                );
+                agent_registry.refresh_availability().await;
+                info!("startup: agent registry availability refreshed after managed runtime preparation");
+            }
             Err(error) => warn!(
                 code = "BOOTSTRAP_DEGRADED_MANAGED_RUNTIME_PREPARE",
                 stage = "runtime.prepare",

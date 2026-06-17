@@ -731,7 +731,7 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "native_cli_runtime::tests::bundled_resource_missing_reports_bundled_resource_missing",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("POUNDING_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;

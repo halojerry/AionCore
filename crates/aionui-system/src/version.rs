@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use crate::error::SystemError;
 
-const DEFAULT_REPO: &str = "iOfficeAI/AionUi";
+const DEFAULT_REPO: &str = "halojerry/AionCore";
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// Service that checks GitHub Releases for available updates.
@@ -129,7 +129,7 @@ fn resolve_repo(from_request: Option<&str>) -> String {
     {
         return r.to_owned();
     }
-    if let Ok(v) = std::env::var("AIONUI_GITHUB_REPO")
+    if let Ok(v) = std::env::var("POUNDING_GITHUB_REPO")
         && !v.is_empty()
     {
         return v;
