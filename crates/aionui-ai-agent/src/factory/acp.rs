@@ -14,12 +14,15 @@ use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_runtime::{
-    ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
-    ensure_runtime_command_with_reporter, resolve_command_path,
+    ManagedAcpToolId, NativeCliToolId, ensure_managed_acp_tool_with_reporter, ensure_native_cli_tool_with_reporter,
+    ensure_node_runtime_with_reporter, ensure_runtime_command, ensure_runtime_command_with_reporter,
+    resolve_command_path,
 };
 use tracing::{debug, info, warn};
 
-use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation_runtime_reporter};
+use crate::runtime_status::{
+    conversation_acp_tool_runtime_reporter, conversation_native_cli_reporter, conversation_runtime_reporter,
+};
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -77,7 +80,7 @@ pub(super) async fn build(
     }
 
     let mut command_spec =
-        resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone()).await?;
+        resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone(), &deps.data_dir).await?;
     if meta.backend.as_deref() == Some("claude") || meta.backend.as_deref() == Some("hermes") {
         let cc_switch_env = crate::cc_switch::read_claude_provider_env();
         if !cc_switch_env.is_empty() {
@@ -201,12 +204,21 @@ async fn resolve_agent_command_spec(
     workspace: &str,
     conversation_id: &str,
     broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
+    data_dir: &std::path::Path,
 ) -> Result<CommandSpec, AgentError> {
     if meta.agent_source == aionui_api_types::AgentSource::Builtin
         && let Some(backend) = meta.backend.as_deref()
         && let Some(tool) = ManagedAcpToolId::from_backend(backend)
     {
         return resolve_builtin_managed_acp_command_spec(meta, workspace, conversation_id, broadcaster, tool).await;
+    }
+
+    if meta.agent_source == aionui_api_types::AgentSource::Builtin
+        && meta.command.is_none()
+        && let Some(backend) = meta.backend.as_deref()
+        && let Some(tool) = NativeCliToolId::from_backend(backend)
+    {
+        return resolve_builtin_native_cli_command_spec(meta, workspace, conversation_id, broadcaster, tool, data_dir).await;
     }
 
     let command = meta
@@ -254,7 +266,18 @@ async fn resolve_builtin_managed_acp_command_spec(
     broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
     tool: ManagedAcpToolId,
 ) -> Result<CommandSpec, AgentError> {
-    if let Some(primary) = meta.agent_source_info.binary_name.as_deref()
+    // In bundled mode, the primary binary is installed from bundled resources
+    // during tool activation; skip the PATH check when bundled artifacts exist.
+    let skip_path_check = aionui_runtime::requires_bundled_resources()
+        && aionui_runtime::bundled_root_candidate().is_some_and(|root| {
+            let acp_dir = root.join("acp").join(tool.slug()).join(tool.version());
+            acp_dir.is_dir()
+                && std::fs::read_dir(&acp_dir)
+                    .map(|mut entries| entries.any(|e| e.map(|entry| entry.path().is_dir()).unwrap_or(false)))
+                    .unwrap_or(false)
+        });
+    if !skip_path_check
+        && let Some(primary) = meta.agent_source_info.binary_name.as_deref()
         && resolve_command_path(primary).is_none()
     {
         return Err(AgentError::bad_request(format!(
@@ -293,6 +316,99 @@ async fn resolve_builtin_managed_acp_command_spec(
         name: name.to_string_lossy().into_owned(),
         value: value.to_string_lossy().into_owned(),
     }));
+
+    Ok(CommandSpec {
+        command: resolved.program,
+        args,
+        env,
+        cwd: Some(workspace.to_owned()),
+    })
+}
+
+async fn resolve_builtin_native_cli_command_spec(
+    meta: &aionui_api_types::AgentMetadata,
+    workspace: &str,
+    conversation_id: &str,
+    broadcaster: Arc<dyn aionui_realtime::EventBroadcaster>,
+    tool: NativeCliToolId,
+    data_dir: &std::path::Path,
+) -> Result<CommandSpec, AgentError> {
+    let node_runtime = if tool.runtime_kind() == aionui_runtime::NativeCliRuntimeKind::Node {
+        let node_reporter = conversation_runtime_reporter(broadcaster.clone(), conversation_id.to_owned());
+        let nr = ensure_node_runtime_with_reporter(Some(node_reporter.as_ref()))
+            .await
+            .map_err(|error| AgentError::bad_request(format!("Agent '{}' CLI unavailable: {error}", meta.name)))?;
+        Some(nr)
+    } else {
+        None
+    };
+
+    let tool_reporter = conversation_native_cli_reporter(broadcaster, conversation_id.to_owned(), tool);
+    let managed_tool = ensure_native_cli_tool_with_reporter(tool, Some(tool_reporter.as_ref()))
+        .await
+        .map_err(|error| AgentError::bad_request(format!("Agent '{}' CLI unavailable: {error}", meta.name)))?;
+
+    let resolved = managed_tool.command(node_runtime.as_ref());
+
+    let mut args: Vec<String> = resolved
+        .args_prefix
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    args.extend(meta.args.iter().cloned());
+
+    let mut env: Vec<aionui_common::EnvVar> = meta
+        .env
+        .iter()
+        .map(|entry| aionui_common::EnvVar {
+            name: entry.name.clone(),
+            value: entry.value.clone(),
+        })
+        .collect();
+    env.extend(resolved.env.iter().map(|(name, value)| aionui_common::EnvVar {
+        name: name.to_string_lossy().into_owned(),
+        value: value.to_string_lossy().into_owned(),
+    }));
+
+    if tool == NativeCliToolId::OpenCode {
+        let opencode_config_path = data_dir.join("managed-opencode").join("opencode.json");
+        env.push(aionui_common::EnvVar {
+            name: "OPENCODE_CONFIG".to_owned(),
+            value: opencode_config_path.to_string_lossy().into_owned(),
+        });
+        let xdg_config_home = data_dir.join("xdg-config");
+        env.push(aionui_common::EnvVar {
+            name: "XDG_CONFIG_HOME".to_owned(),
+            value: xdg_config_home.to_string_lossy().into_owned(),
+        });
+    }
+
+    if tool == NativeCliToolId::OpenClaw {
+        if let Ok(home) = std::env::var("HOME") {
+            let openclaw_home = std::path::PathBuf::from(&home).join(".openclaw");
+            env.push(aionui_common::EnvVar {
+                name: "OPENCLAW_HOME".to_owned(),
+                value: openclaw_home.to_string_lossy().into_owned(),
+            });
+            // Read gateway token from openclaw.json for ACP bridge authentication
+            let config_path = openclaw_home.join("openclaw.json");
+            if let Ok(config_bytes) = std::fs::read_to_string(&config_path) {
+                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_bytes) {
+                    if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
+                        env.push(aionui_common::EnvVar {
+                            name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
+                            value: token.to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        // Point ACP subprocess at the existing gateway
+        env.push(aionui_common::EnvVar {
+            name: "OPENCLAW_GATEWAY_URL".to_owned(),
+            value: "ws://127.0.0.1:18789".to_owned(),
+        });
+    }
 
     Ok(CommandSpec {
         command: resolved.program,
@@ -685,6 +801,7 @@ mod tests {
             "/tmp/workspace",
             "conv-acp",
             Arc::new(BroadcastEventBus::new(16)),
+            &test_runtime_data_dir(),
         )
         .await
         .expect("resolved command spec");
