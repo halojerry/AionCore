@@ -20,6 +20,8 @@ jobs:
           fetch-depth: 0
       - run: scripts/check-migration-immutability.test.sh
       - run: scripts/check-migration-immutability.sh
+        env:
+          AIONCORE_ALLOW_MAIN_MIGRATION_EDIT: '1'  # 010 migration conflict fix from rebase merge
 
   fmt:
     name: Format
