@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Response for `GET /api/settings`.
@@ -243,7 +243,11 @@ pub struct ManagedRuntimeAccount {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedRuntimeUser {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_string_or_number"
+    )]
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
@@ -257,4 +261,17 @@ pub struct ManagedRuntimeUser {
     pub used_quota: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar_letter: Option<String>,
+}
+
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(other) => Ok(Some(other.to_string())),
+    }
 }
