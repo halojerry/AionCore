@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, 'feature/pounding-*']
+    branches: [main, 'feature/pounding-*', 'feature/lark-*']
   pull_request:
-    branches: [main, 'feature/pounding-*']
+    branches: [main, 'feature/pounding-*', 'feature/lark-*']
 
 env:
   CARGO_TERM_COLOR: always
