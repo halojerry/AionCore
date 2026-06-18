@@ -1047,15 +1047,6 @@
       "models": []
     },
     {
-<<<<<<< HEAD
-      "id": "ozon-assistants",
-      "name": "Ozon Assistants",
-      "name_i18n": {
-        "en-US": "Ozon Assistants",
-        "zh-CN": "Ozon 铺货助手",
-        "ru-RU": "Ozon Assistants",
-        "uk-UA": "Ozon Assistants"
-=======
       "id": "pounding-ozon-assistant",
       "name": "POUNDING Ozon Assistant",
       "name_i18n": {
@@ -1063,7 +1054,6 @@
         "zh-CN": "POUNDING Ozon 助手",
         "ru-RU": "POUNDING Ozon Assistant",
         "uk-UA": "POUNDING Ozon Assistant"
->>>>>>> feature/pounding-rebase-june-2026
       },
       "description": "Business assistant for 1688 sourcing, Ozon listing, refresh workflows, and status tracking.",
       "description_i18n": {
@@ -1072,16 +1062,6 @@
         "ru-RU": "Бизнес-помощник для поиска товаров на 1688, публикации в Ozon, обновления карточек и отслеживания статуса.",
         "uk-UA": "Бізнес-помічник для пошуку товарів на 1688, публікації в Ozon, оновлення карток і відстеження статусу."
       },
-<<<<<<< HEAD
-      "avatar": "🛍️",
-      "preset_agent_type": "aionrs",
-      "enabled_skills": [
-        "pounding-ozon"
-      ],
-      "custom_skill_names": [],
-      "disabled_builtin_skills": [],
-      "rule_file": "rules/ozon-assistants.zh-CN.md",
-=======
       "avatar": "avatars/pounding-ozon-assistant.png",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
@@ -1090,7 +1070,6 @@
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
       "rule_file": "rules/pounding-ozon-assistant.{locale}.md",
->>>>>>> feature/pounding-rebase-june-2026
       "prompts": [
         "从 1688 找一款适合在 Ozon 上架的家居用品并直接跑完整铺货链路",
         "把这个 1688 链接商品发布到 Ozon，并汇报成本、利润率和任务状态",
@@ -1271,6 +1250,80 @@
           "Створи обкладинку для WeChat Official Account для мого техноблогу",
           "Створи обкладинку Xiaohongshu для запуску продукту",
           "Створи мінімалістичну обкладинку для соцмереж у стилі темного градієнта"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "lark-assistant",
+      "name": "Lark Assistant",
+      "name_i18n": {
+        "en-US": "Lark Assistant",
+        "zh-CN": "飞书助手",
+        "ru-RU": "Помощник Lark",
+        "uk-UA": "Помічник Lark"
+      },
+      "description": "Your all-in-one Feishu/Lark workspace assistant. Manage docs, sheets, calendar, IM, email, approvals, OKRs, tasks, meetings, wikis, contacts, and more — all 18+ business domains via the lark-cli tool.",
+      "description_i18n": {
+        "en-US": "Your all-in-one Feishu/Lark workspace assistant. Manage docs, sheets, calendar, IM, email, approvals, OKRs, tasks, meetings, wikis, contacts, and more.",
+        "zh-CN": "飞书全能工作助手。管理文档、表格、日历、即时通讯、邮箱、审批、OKR、任务、会议、知识库、通讯录等 18+ 业务领域。",
+        "ru-RU": "Ваш универсальный помощник для Feishu/Lark. Управляйте документами, таблицами, календарём, сообщениями, почтой, согласованиями, OKR, задачами, встречами, вики, контактами и многим другим.",
+        "uk-UA": "Ваш універсальний помічник для Feishu/Lark. Керуйте документами, таблицями, календарем, повідомленнями, поштою, погодженнями, OKR, завданнями, зустрічами, вікі, контактами та багато іншим."
+      },
+      "avatar": "avatars/lark-assistant.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "lark-shared", "lark-calendar", "lark-im", "lark-doc", "lark-drive",
+        "lark-markdown", "lark-sheets", "lark-slides", "lark-base", "lark-task",
+        "lark-mail", "lark-contact", "lark-wiki", "lark-event", "lark-vc",
+        "lark-vc-agent", "lark-whiteboard", "lark-minutes", "lark-note",
+        "lark-openapi-explorer", "lark-skill-maker", "lark-attendance",
+        "lark-approval", "lark-okr", "lark-workflow-meeting-summary",
+        "lark-workflow-standup-report", "lark-apps"
+      ],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/lark-assistant.{locale}.md",
+      "prompts": [
+        "Check my Feishu calendar for today's schedule and summarize upcoming meetings",
+        "Create a Feishu document summarizing our Q2 project milestones and share it with the team",
+        "Send a message to the product team group saying the release has been delayed to next Monday",
+        "Search my Feishu email for the latest conversation about budget approval",
+        "Create a Base table to track our hiring pipeline with columns for name, role, stage, and notes",
+        "Find all my pending approval tasks and show their details"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Check my Feishu calendar for today's schedule and summarize upcoming meetings",
+          "Create a Feishu document summarizing our Q2 project milestones and share it with the team",
+          "Send a message to the product team group saying the release has been delayed to next Monday",
+          "Search my Feishu email for the latest conversation about budget approval",
+          "Create a Base table to track our hiring pipeline with columns for name, role, stage, and notes",
+          "Find all my pending approval tasks and show their details"
+        ],
+        "zh-CN": [
+          "查看我今天的飞书日程，总结接下来的会议",
+          "创建飞书文档总结 Q2 项目里程碑并分享给团队",
+          "给产品团队群发消息，通知发布延期到下周一",
+          "搜索飞书邮箱中关于预算审批的最新对话",
+          "创建多维表格追踪招聘管道，含姓名、职位、阶段、备注列",
+          "查看我所有待处理的审批任务并展示详情"
+        ],
+        "ru-RU": [
+          "Проверь мой календарь Feishu на сегодня и покажи предстоящие встречи",
+          "Создай документ Feishu с итогами проекта за Q2 и поделись с командой",
+          "Отправь сообщение в группу продукта о переносе релиза на понедельник",
+          "Найди последнюю переписку об утверждении бюджета в почте Feishu",
+          "Создай таблицу Base для отслеживания найма с колонками: имя, роль, этап, заметки",
+          "Найди все мои ожидающие задачи согласования и покажи детали"
+        ],
+        "uk-UA": [
+          "Перевір мій календар Feishu на сьогодні та підсумуй майбутні зустрічі",
+          "Створи документ Feishu з підсумками проєкту за Q2 і поділися з командою",
+          "Надішли повідомлення в групу продукту про перенесення релізу на понеділок",
+          "Знайди останнє листування щодо затвердження бюджету в пошті Feishu",
+          "Створи таблицю Base для відстеження найму з колонками: ім'я, роль, етап, нотатки",
+          "Знайди всі мої очікувані завдання погодження та покажи деталі"
         ]
       },
       "models": []

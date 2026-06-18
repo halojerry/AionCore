@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-//! CLI argument definitions for the `aionui-backend` binary.
-=======
 //! CLI argument definitions for the `poundingcore` binary.
->>>>>>> feature/pounding-rebase-june-2026
 //!
 //! Kept separate from `main.rs` to isolate the clap surface (struct + enum +
 //! attribute soup) from the runtime entry point. Visibility is `pub(crate)`
