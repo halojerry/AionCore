@@ -211,3 +211,50 @@ mod tests {
         assert_eq!(req["pet.size"], 360);
     }
 }
+
+/// POUNDING: Managed runtime state persisted by the desktop app.
+///
+/// Stored under a reserved client-preferences key (`_managed_runtime`).
+/// The desktop app reads this on startup to restore account state and
+/// CLI model preferences without hitting the network.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManagedRuntimeState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<ManagedRuntimeAccount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_model_prefs: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedRuntimeAccount {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logged_in: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<ManagedRuntimeUser>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedRuntimeUser {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_quota: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_letter: Option<String>,
+}

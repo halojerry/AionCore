@@ -6,12 +6,14 @@ use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 
+use std::collections::HashMap;
+
 use aionui_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureManagedAcpToolRequest,
     EnsureManagedAcpToolResponse, EnsureNodeRuntimeRequest, EnsureNodeRuntimeResponse, FetchModelsAnonymousRequest,
-    FetchModelsRequest, FetchModelsResponse, ProtocolDetectionResponse, ProviderResponse, SystemInfoResponse,
-    SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
-    UpdateProviderRequest, UpdateSettingsRequest,
+    FetchModelsRequest, FetchModelsResponse, ManagedRuntimeState, ProtocolDetectionResponse, ProviderResponse,
+    SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult,
+    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
 };
 use aionui_common::ApiError;
 
@@ -89,6 +91,7 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/ensure-node-runtime", post(ensure_node_runtime))
         .route("/api/system/ensure-managed-acp-tool", post(ensure_managed_acp_tool))
+        .route("/api/settings/managed-runtime", get(get_managed_runtime).put(update_managed_runtime))
         .with_state(state)
 }
 
@@ -159,6 +162,49 @@ async fn update_client_preferences(
     state
         .client_pref_service
         .update_preferences(req)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(Json(ApiResponse::success()))
+}
+
+// ===========================================================================
+// Managed runtime handlers
+// ===========================================================================
+
+const MANAGED_RUNTIME_PREF_KEY: &str = "_managed_runtime";
+
+async fn get_managed_runtime(
+    State(state): State<SystemRouterState>,
+) -> Result<Json<ApiResponse<ManagedRuntimeState>>, ApiError> {
+    let prefs = state
+        .client_pref_service
+        .get_preferences(Some(&[MANAGED_RUNTIME_PREF_KEY]))
+        .await
+        .map_err(ApiError::from)?;
+    let state = prefs
+        .get(MANAGED_RUNTIME_PREF_KEY)
+        .and_then(|v| {
+            if v.is_null() {
+                None
+            } else {
+                serde_json::from_value::<ManagedRuntimeState>(v.clone()).ok()
+            }
+        })
+        .unwrap_or_default();
+    Ok(Json(ApiResponse::ok(state)))
+}
+
+async fn update_managed_runtime(
+    State(state): State<SystemRouterState>,
+    body: Result<Json<ManagedRuntimeState>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let value = serde_json::to_value(&req).map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let mut prefs = HashMap::new();
+    prefs.insert(MANAGED_RUNTIME_PREF_KEY.to_owned(), value);
+    state
+        .client_pref_service
+        .update_preferences(prefs)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::success()))
