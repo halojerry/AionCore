@@ -265,10 +265,7 @@ pub(crate) async fn run_server(
             {
                 errors.push(e.to_string());
             }
-            if let Err(e) = runtime_prepare_service
-                .ensure_native_cli_tool(scope, "openclaw")
-                .await
-            {
+            if let Err(e) = runtime_prepare_service.ensure_native_cli_tool(scope, "openclaw").await {
                 errors.push(e.to_string());
             }
             if errors.is_empty() {

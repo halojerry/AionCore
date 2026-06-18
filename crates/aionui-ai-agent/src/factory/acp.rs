@@ -79,8 +79,14 @@ pub(super) async fn build(
         );
     }
 
-    let mut command_spec =
-        resolve_agent_command_spec(&meta, &ctx.workspace, &ctx.conversation_id, deps.broadcaster.clone(), &deps.data_dir).await?;
+    let mut command_spec = resolve_agent_command_spec(
+        &meta,
+        &ctx.workspace,
+        &ctx.conversation_id,
+        deps.broadcaster.clone(),
+        &deps.data_dir,
+    )
+    .await?;
     if meta.backend.as_deref() == Some("claude") || meta.backend.as_deref() == Some("hermes") {
         let cc_switch_env = crate::cc_switch::read_claude_provider_env();
         if !cc_switch_env.is_empty() {
@@ -218,7 +224,8 @@ async fn resolve_agent_command_spec(
         && let Some(backend) = meta.backend.as_deref()
         && let Some(tool) = NativeCliToolId::from_backend(backend)
     {
-        return resolve_builtin_native_cli_command_spec(meta, workspace, conversation_id, broadcaster, tool, data_dir).await;
+        return resolve_builtin_native_cli_command_spec(meta, workspace, conversation_id, broadcaster, tool, data_dir)
+            .await;
     }
 
     let command = meta
@@ -393,23 +400,21 @@ async fn resolve_builtin_native_cli_command_spec(
             // Read gateway token from openclaw.json for ACP bridge authentication
             let config_path = openclaw_home.join("openclaw.json");
             match std::fs::read_to_string(&config_path) {
-                Ok(config_bytes) => {
-                    match serde_json::from_str::<serde_json::Value>(&config_bytes) {
-                        Ok(config) => {
-                            if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
-                                env.push(aionui_common::EnvVar {
-                                    name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
-                                    value: token.to_owned(),
-                                });
-                            } else {
-                                warn!("OpenClaw config missing gateway.auth.token — ACP bridge auth will fail");
-                            }
-                        }
-                        Err(e) => {
-                            warn!(%e, "Failed to parse openclaw.json — ACP bridge auth will fail");
+                Ok(config_bytes) => match serde_json::from_str::<serde_json::Value>(&config_bytes) {
+                    Ok(config) => {
+                        if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
+                            env.push(aionui_common::EnvVar {
+                                name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
+                                value: token.to_owned(),
+                            });
+                        } else {
+                            warn!("OpenClaw config missing gateway.auth.token — ACP bridge auth will fail");
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!(%e, "Failed to parse openclaw.json — ACP bridge auth will fail");
+                    }
+                },
                 Err(e) => {
                     warn!(%e, "Failed to read openclaw.json — ACP bridge auth will fail");
                 }

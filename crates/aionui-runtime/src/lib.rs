@@ -27,7 +27,10 @@ pub use acp_tool_runtime::{
 };
 pub use agent_env::agent_process_env;
 pub use cache::init;
-pub use managed_resources::{ManagedResourcesMode, bundled_root_candidate, managed_resources_mode, requires_bundled_resources, set_managed_resources_mode};
+pub use managed_resources::{
+    ManagedResourcesMode, bundled_root_candidate, managed_resources_mode, requires_bundled_resources,
+    set_managed_resources_mode,
+};
 pub use native_cli_runtime::{
     NativeCliFailureKind, NativeCliProgress, NativeCliProgressPhase, NativeCliProgressReporter, NativeCliRuntimeKind,
     NativeCliToolError, NativeCliToolId, NativeCliToolSupport, ResolvedNativeCliTool, SharedNativeCliProgressReporter,

@@ -12,8 +12,8 @@ use aionui_api_types::{
     ApiResponse, ClientPreferencesResponse, CreateProviderRequest, DetectProtocolRequest, EnsureManagedAcpToolRequest,
     EnsureManagedAcpToolResponse, EnsureNodeRuntimeRequest, EnsureNodeRuntimeResponse, FetchModelsAnonymousRequest,
     FetchModelsRequest, FetchModelsResponse, ManagedRuntimeState, ProtocolDetectionResponse, ProviderResponse,
-    SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult,
-    UpdateClientPreferencesRequest, UpdateProviderRequest, UpdateSettingsRequest,
+    SystemInfoResponse, SystemSettingsResponse, UpdateCheckRequest, UpdateCheckResult, UpdateClientPreferencesRequest,
+    UpdateProviderRequest, UpdateSettingsRequest,
 };
 use aionui_common::ApiError;
 
@@ -91,7 +91,10 @@ pub fn system_routes(state: SystemRouterState) -> Router {
         .route("/api/system/check-update", post(check_update))
         .route("/api/system/ensure-node-runtime", post(ensure_node_runtime))
         .route("/api/system/ensure-managed-acp-tool", post(ensure_managed_acp_tool))
-        .route("/api/settings/managed-runtime", get(get_managed_runtime).put(update_managed_runtime))
+        .route(
+            "/api/settings/managed-runtime",
+            get(get_managed_runtime).put(update_managed_runtime),
+        )
         .with_state(state)
 }
 

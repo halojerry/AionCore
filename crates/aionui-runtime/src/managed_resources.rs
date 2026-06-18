@@ -266,7 +266,10 @@ mod tests {
         set_managed_resources_mode(ManagedResourcesMode::Download);
 
         let sources = node_sources("node-v24.11.0-darwin-arm64");
-        assert!(!sources.is_empty(), "download mode should include bundled root for offline-first behavior");
+        assert!(
+            !sources.is_empty(),
+            "download mode should include bundled root for offline-first behavior"
+        );
         assert!(!requires_bundled_resources());
 
         set_managed_resources_mode(ManagedResourcesMode::Download);

@@ -349,7 +349,9 @@ fn activate_local_tool_source(
             }
         }
     } else if managed_resources::requires_bundled_resources() {
-        return Err(ManagedAcpToolError::invalid("bundled managed resources root unavailable"));
+        return Err(ManagedAcpToolError::invalid(
+            "bundled managed resources root unavailable",
+        ));
     }
 
     for source in managed_resources::acp_tool_sources(tool.slug(), tool.version(), spec.manifest_key) {

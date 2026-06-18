@@ -210,10 +210,7 @@ mod tests {
         let unix_mirror = unix_text.find("d.officecli.ai/install.sh");
         let unix_github = unix_text.find("halojerry/OfficeCLI/main/install.sh");
         assert!(unix_cos.is_some(), "unix installer must include COS URL");
-        assert!(
-            unix_cos < unix_mirror,
-            "unix installer must try COS before mirror"
-        );
+        assert!(unix_cos < unix_mirror, "unix installer must try COS before mirror");
         assert!(
             unix_mirror < unix_github,
             "unix installer must try mirror before GitHub"

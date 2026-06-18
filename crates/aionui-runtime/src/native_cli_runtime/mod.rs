@@ -103,7 +103,11 @@ pub async fn ensure_native_cli_tool_with_reporter(
         );
         emit_progress(
             reporter,
-            NativeCliProgress::ready(format!("native CLI {} found at {}", tool.display_name(), system_path.display())),
+            NativeCliProgress::ready(format!(
+                "native CLI {} found at {}",
+                tool.display_name(),
+                system_path.display()
+            )),
         );
         return Ok(ResolvedNativeCliTool {
             id: tool,
