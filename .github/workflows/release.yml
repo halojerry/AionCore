@@ -152,6 +152,17 @@ jobs:
           Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -DestinationPath "dist/${archive}" -Force
           "ARCHIVE=${archive}" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Bundle managed CLI resources (host macOS only)
+        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          ./target/${{ matrix.target }}/release/poundingcore \
+            --data-dir /tmp/pound-prepare \
+            prepare-managed-resources \
+            --bundle-out ./managed-resources
+          tar -czf dist/poundingcore-managed-resources.tar.gz -C managed-resources .
+          echo "Managed resources bundle created"
+
       - name: Upload release artifact
         uses: actions/upload-artifact@v7
         with:
