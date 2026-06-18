@@ -15,7 +15,7 @@ use aionui_system::RuntimePrepareService;
 
 use crate::bootstrap::{BootstrapError, BootstrapErrorCode, ParentExitSignal, ServerEnvironment};
 
-const LISTENING_EVENT_PREFIX: &str = "AIONCORE_LISTENING";
+const LISTENING_EVENT_PREFIX: &str = "POUNDINGCORE_LISTENING";
 const DYNAMIC_BACKEND_BIND_MAX_ATTEMPTS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,7 +449,7 @@ mod tests {
         let line = format_listening_event(addr);
 
         let payload = line
-            .strip_prefix("AIONCORE_LISTENING ")
+            .strip_prefix("POUNDINGCORE_LISTENING ")
             .expect("line should start with the listening event prefix");
         let parsed: serde_json::Value = serde_json::from_str(payload).expect("payload should be valid JSON");
         assert_eq!(parsed["host"], "127.0.0.1");
