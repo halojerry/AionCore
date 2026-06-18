@@ -340,7 +340,7 @@ printf '%s\n' \
 
     #[test]
     fn agent_spawn_env_adds_bun_paths() {
-        let dir = tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let env = CliAgentProcess::agent_spawn_env(dir.path());
 
         assert!(env.iter().any(|(name, value)| {
