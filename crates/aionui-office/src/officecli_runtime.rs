@@ -5,11 +5,20 @@ use std::path::PathBuf;
 
 use aionui_runtime::resolve_command_path;
 
+// POUNDING: install order is COS (China CDN) → d.officecli.ai (official mirror) → GitHub (upstream).
+// The install scripts themselves download binaries; COS distributes both the scripts and
+// the pre-built OfficeCLI binaries for out-of-box experience in mainland China.
+pub(crate) const OFFICECLI_INSTALL_SH_MIRROR_URL: &str =
+    "https://yss-1256275613.cos.ap-guangzhou.myqcloud.com/pounding/officecli/install.sh";
+pub(crate) const OFFICECLI_INSTALL_PS1_MIRROR_URL: &str =
+    "https://yss-1256275613.cos.ap-guangzhou.myqcloud.com/pounding/officecli/install.ps1";
+pub(crate) const OFFICECLI_INSTALL_SH_FALLBACK_URL: &str = "https://d.officecli.ai/install.sh";
+pub(crate) const OFFICECLI_INSTALL_PS1_FALLBACK_URL: &str = "https://d.officecli.ai/install.ps1";
 pub(crate) const OFFICECLI_INSTALL_SH_URL: &str =
-    "https://raw.githubusercontent.com/iOfficeAI/OfficeCli/main/install.sh";
+    "https://raw.githubusercontent.com/halojerry/OfficeCLI/main/install.sh";
 pub(crate) const OFFICECLI_INSTALL_PS1_URL: &str =
-    "https://raw.githubusercontent.com/iOfficeAI/OfficeCli/main/install.ps1";
-pub(crate) const OFFICECLI_LATEST_RELEASE_URL: &str = "https://github.com/iOfficeAI/OfficeCli/releases/latest";
+    "https://raw.githubusercontent.com/halojerry/OfficeCLI/main/install.ps1";
+pub(crate) const OFFICECLI_LATEST_RELEASE_URL: &str = "https://github.com/halojerry/OfficeCLI/releases/latest";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OfficecliInstallPlatform {
@@ -24,7 +33,24 @@ pub(crate) struct OfficecliInstallCommand {
 }
 
 pub(crate) fn resolve_officecli_path() -> Option<PathBuf> {
-    resolve_command_path("officecli").or_else(resolve_known_officecli_install_path)
+    // 1. Check bundled path (next to poundingcore binary — out-of-box experience)
+    if let Some(bundled) = resolve_bundled_officecli() {
+        return Some(bundled);
+    }
+    // 2. Check PATH
+    resolve_command_path("officecli")
+        // 3. Check known install locations
+        .or_else(resolve_known_officecli_install_path)
+}
+
+/// Resolve officecli from the same directory as the poundingcore binary
+/// (bundled for out-of-box experience in Electron app).
+fn resolve_bundled_officecli() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let name = if cfg!(windows) { "officecli.exe" } else { "officecli" };
+    let candidate = dir.join(name);
+    if candidate.is_file() { Some(candidate) } else { None }
 }
 
 pub(crate) fn install_command() -> OfficecliInstallCommand {
@@ -44,14 +70,19 @@ pub(crate) fn install_command_for_platform(platform: OfficecliInstallPlatform) -
                 OsString::from("-ExecutionPolicy"),
                 OsString::from("Bypass"),
                 OsString::from("-Command"),
-                OsString::from(format!("irm {OFFICECLI_INSTALL_PS1_URL} | iex")),
+                OsString::from(format!(
+                    "$ErrorActionPreference='Stop'; try {{ $s = irm {OFFICECLI_INSTALL_PS1_MIRROR_URL} }} catch {{ try {{ $s = irm {OFFICECLI_INSTALL_PS1_FALLBACK_URL} }} catch {{ $s = irm {OFFICECLI_INSTALL_PS1_URL} }} }}; iex $s"
+                )),
             ],
         },
         OfficecliInstallPlatform::Unix => OfficecliInstallCommand {
             program: OsString::from("bash"),
             args: vec![
                 OsString::from("-lc"),
-                OsString::from(format!("curl -fsSL {OFFICECLI_INSTALL_SH_URL} | bash")),
+                // Three-tier fallback: POUNDING COS → official mirror → upstream GitHub
+                OsString::from(format!(
+                    "f=$(mktemp) || exit 1; (curl -fsSL {OFFICECLI_INSTALL_SH_MIRROR_URL} -o \"$f\" || curl -fsSL {OFFICECLI_INSTALL_SH_FALLBACK_URL} -o \"$f\" || curl -fsSL {OFFICECLI_INSTALL_SH_URL} -o \"$f\") && bash \"$f\"; s=$?; rm -f \"$f\"; exit $s"
+                )),
             ],
         },
     }
@@ -156,13 +187,49 @@ mod tests {
     }
 
     #[test]
-    fn official_installer_commands_use_official_officecli_channel() {
+    fn official_installer_commands_use_officecli_channel() {
         let unix = install_command_for_test(OfficecliInstallPlatform::Unix);
         let windows = install_command_for_test(OfficecliInstallPlatform::Windows);
         let unix_text = format!("{:?} {:?}", unix.program, unix.args);
         let windows_text = format!("{:?} {:?}", windows.program, windows.args);
 
-        assert!(unix_text.contains("iOfficeAI/OfficeCli/main/install.sh"));
-        assert!(windows_text.contains("iOfficeAI/OfficeCli/main/install.ps1"));
+        // Should include the upstream GitHub fallback URL as the last resort
+        assert!(unix_text.contains("halojerry/OfficeCLI/main/install.sh"));
+        assert!(windows_text.contains("halojerry/OfficeCLI/main/install.ps1"));
+    }
+
+    // Three-tier fallback: POUNDING COS → d.officecli.ai mirror → upstream GitHub.
+    #[test]
+    fn installer_commands_use_cos_then_mirror_then_github() {
+        let unix = install_command_for_test(OfficecliInstallPlatform::Unix);
+        let windows = install_command_for_test(OfficecliInstallPlatform::Windows);
+        let unix_text = format!("{:?} {:?}", unix.program, unix.args);
+        let windows_text = format!("{:?} {:?}", windows.program, windows.args);
+
+        let unix_cos = unix_text.find("pounding/officecli/install.sh");
+        let unix_mirror = unix_text.find("d.officecli.ai/install.sh");
+        let unix_github = unix_text.find("halojerry/OfficeCLI/main/install.sh");
+        assert!(unix_cos.is_some(), "unix installer must include COS URL");
+        assert!(
+            unix_cos < unix_mirror,
+            "unix installer must try COS before mirror"
+        );
+        assert!(
+            unix_mirror < unix_github,
+            "unix installer must try mirror before GitHub"
+        );
+
+        let windows_cos = windows_text.find("pounding/officecli/install.ps1");
+        let windows_mirror = windows_text.find("d.officecli.ai/install.ps1");
+        let windows_github = windows_text.find("halojerry/OfficeCLI/main/install.ps1");
+        assert!(windows_cos.is_some(), "windows installer must include COS URL");
+        assert!(
+            windows_cos < windows_mirror,
+            "windows installer must try COS before mirror"
+        );
+        assert!(
+            windows_mirror < windows_github,
+            "windows installer must try mirror before GitHub"
+        );
     }
 }

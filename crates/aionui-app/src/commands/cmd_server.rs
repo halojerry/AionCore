@@ -3,7 +3,7 @@
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{future::Future, pin::Pin};
 
 use tokio::net::TcpListener;
@@ -15,7 +15,7 @@ use aionui_system::RuntimePrepareService;
 
 use crate::bootstrap::{BootstrapError, BootstrapErrorCode, ParentExitSignal, ServerEnvironment};
 
-const LISTENING_EVENT_PREFIX: &str = "AIONCORE_LISTENING";
+const LISTENING_EVENT_PREFIX: &str = "POUNDINGCORE_LISTENING";
 const DYNAMIC_BACKEND_BIND_MAX_ATTEMPTS: usize = 50;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,30 +228,66 @@ pub(crate) async fn run_server(
     info!(elapsed_ms = boot.elapsed().as_millis(), "Server listening on {addr}");
 
     let runtime_prepare_service = RuntimePrepareService::new(services.event_bus.clone());
+    let agent_registry = services.agent_registry.clone();
     tokio::spawn(async move {
         let scope = RuntimeStatusScope {
-            kind: RuntimeStatusScopeKind::CustomAgent,
+            kind: RuntimeStatusScopeKind::Onboarding,
             id: "startup".into(),
         };
         let prepare_started = Instant::now();
         info!("startup: managed runtime background preparation started");
         let result = async {
-            runtime_prepare_service.ensure_node_runtime(scope.clone()).await?;
-            runtime_prepare_service
+            let mut errors: Vec<String> = Vec::new();
+            if let Err(e) = runtime_prepare_service.ensure_node_runtime(scope.clone()).await {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
                 .ensure_managed_acp_tool(scope.clone(), "codex-acp")
-                .await?;
-            runtime_prepare_service
-                .ensure_managed_acp_tool(scope, "claude-agent-acp")
-                .await?;
-            Ok::<(), aionui_system::SystemError>(())
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_managed_acp_tool(scope.clone(), "claude-agent-acp")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope.clone(), "hermes")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope.clone(), "opencode")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if let Err(e) = runtime_prepare_service
+                .ensure_native_cli_tool(scope, "openclaw")
+                .await
+            {
+                errors.push(e.to_string());
+            }
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors.join("; "))
+            }
         }
         .await;
 
         match result {
-            Ok(()) => info!(
-                prepare_elapsed_ms = prepare_started.elapsed().as_millis(),
-                "startup: managed runtime background preparation completed"
-            ),
+            Ok(()) => {
+                info!(
+                    prepare_elapsed_ms = prepare_started.elapsed().as_millis(),
+                    "startup: managed runtime background preparation completed"
+                );
+                agent_registry.refresh_availability().await;
+                info!("startup: agent registry availability refreshed after managed runtime preparation");
+            }
             Err(error) => warn!(
                 code = "BOOTSTRAP_DEGRADED_MANAGED_RUNTIME_PREPARE",
                 stage = "runtime.prepare",
@@ -294,6 +330,12 @@ pub(crate) async fn run_server(
                         active_turn_count, "conversation runtime shutdown prepared"
                     );
                     worker_task_manager.clear();
+                    // Give spawned kill tasks a brief window to terminate
+                    // child CLI processes (ACP_KILL_GRACE_MS + margin).
+                    // The timeout is intentionally short — we don't block
+                    // shutdown, but we let the runtime drain the kill tasks
+                    // spawned by agent.kill(None).
+                    tokio::time::sleep(Duration::from_millis(600)).await;
                 }
             }
             let _ = shutdown_tx.send(true);
@@ -407,7 +449,7 @@ mod tests {
         let line = format_listening_event(addr);
 
         let payload = line
-            .strip_prefix("AIONCORE_LISTENING ")
+            .strip_prefix("POUNDINGCORE_LISTENING ")
             .expect("line should start with the listening event prefix");
         let parsed: serde_json::Value = serde_json::from_str(payload).expect("payload should be valid JSON");
         assert_eq!(parsed["host"], "127.0.0.1");

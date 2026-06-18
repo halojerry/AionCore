@@ -457,8 +457,15 @@ impl AcpAgentManager {
         })
     }
 
+    pub(crate) fn is_managed_backend(&self) -> bool {
+        let backend = self.params.metadata.backend.as_deref();
+        backend == Some("claude") || backend == Some("hermes")
+    }
+
+    /// Backward-compat alias — CC-Switch model info applies to all managed ACP backends.
+    #[allow(dead_code)]
     pub(crate) fn is_claude_backend(&self) -> bool {
-        self.params.metadata.backend.as_deref() == Some("claude")
+        self.is_managed_backend()
     }
 
     /// Cached model info from the ACP backend, if any has been received.

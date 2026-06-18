@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn classify_error_detects_bundled_node_runtime_missing() {
         let err = NodeRuntimeError::managed_invalid(
-            "bundled Node runtime missing under C:\\Program Files\\AionUi\\resources\\bundled-aioncore\\win32-x64\\managed-resources\\node\\node-v24.11.0-win-x64",
+            "bundled Node runtime missing under C:\\Program Files\\AionUi\\resources\\bundled-poundingcore\\win32-x64\\managed-resources\\node\\node-v24.11.0-win-x64",
         );
         let (kind, status) = classify_error(&err);
 
@@ -913,7 +913,7 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "node_runtime::managed::tests::bundled_runtime_missing_reports_bundled_resource_missing",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("POUNDING_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
@@ -1038,12 +1038,12 @@ mod tests {
         if !crate::test_support::run_in_env_child(
             "node_runtime::managed::tests::bundled_runtime_validation_failure_does_not_fallback_to_remote_download",
             |command| {
-                command.env("AIONUI_BUNDLED_MANAGED_RESOURCES", &bundled_root);
+                command.env("POUNDING_BUNDLED_MANAGED_RESOURCES", &bundled_root);
             },
         ) {
             return;
         }
-        let bundled_root = std::path::PathBuf::from(std::env::var_os("AIONUI_BUNDLED_MANAGED_RESOURCES").unwrap());
+        let bundled_root = std::path::PathBuf::from(std::env::var_os("POUNDING_BUNDLED_MANAGED_RESOURCES").unwrap());
         let runtime_root = bundled_root.join("node").join("node-v24.11.0-darwin-arm64");
         let bin = runtime_root.join("bin");
         std::fs::create_dir_all(&bin).unwrap();

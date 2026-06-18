@@ -712,7 +712,7 @@ mod tests {
         let _lock = path_test_lock().lock().await;
         let runtime = install_fake_bundled_runtime();
         let _runtime_data_dir = test_runtime_data_dir();
-        unsafe { std::env::set_var("AIONUI_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
+        unsafe { std::env::set_var("POUNDING_BUNDLED_MANAGED_RESOURCES", runtime.path()) };
 
         let row = make_row(
             "ctx7",
@@ -725,7 +725,7 @@ mod tests {
         let config = row_to_mcp_server_config(&row, "conv-row", test_broadcaster())
             .await
             .expect("convert");
-        unsafe { std::env::remove_var("AIONUI_BUNDLED_MANAGED_RESOURCES") };
+        unsafe { std::env::remove_var("POUNDING_BUNDLED_MANAGED_RESOURCES") };
         let command = config.command.as_deref().expect("resolved command");
         assert_ne!(command, "npx");
         assert!(command.ends_with("/npx"), "unexpected stdio command path: {command}");

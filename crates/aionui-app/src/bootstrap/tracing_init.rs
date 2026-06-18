@@ -97,7 +97,7 @@ pub fn init_tracing(log_dir: &Path, log_level: Option<&str>) -> Result<LogGuards
     // Backend file layer — excludes aion_* targets
     let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_suffix("aioncore.log")
+        .filename_suffix("poundingcore.log")
         .build(log_dir)
         .map_err(|e| {
             BootstrapError::new(

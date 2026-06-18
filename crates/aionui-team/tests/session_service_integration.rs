@@ -695,7 +695,7 @@ impl CountingTaskManager {
         }
     }
 
-    fn reset(&self) {
+    async fn reset(&self) {
         self.inner.clear();
         *self.calls.lock().unwrap() = TaskManagerCalls::default();
     }
@@ -1060,7 +1060,7 @@ fn two_agent_input() -> Vec<TeamAgentInput> {
 
 async fn reset_auto_started_session(svc: &Arc<TeamSessionService>, tm: &Arc<CountingTaskManager>, team_id: &str) {
     svc.stop_session("user1", team_id).await.unwrap();
-    tm.reset();
+    tm.reset().await;
 }
 
 // ===========================================================================

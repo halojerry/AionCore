@@ -218,7 +218,11 @@ pub async fn build_module_states(
         std::env::current_exe()
             .ok()
             .and_then(|p| p.canonicalize().ok())
+<<<<<<< HEAD
             .unwrap_or_else(|| std::path::PathBuf::from("aionui-backend")),
+=======
+            .unwrap_or_else(|| std::path::PathBuf::from("poundingcore")),
+>>>>>>> feature/pounding-rebase-june-2026
     );
     tracing::info!(
         elapsed_ms = boot.elapsed().as_millis(),

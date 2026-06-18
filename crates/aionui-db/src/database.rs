@@ -764,10 +764,10 @@ mod tests {
 
     #[test]
     fn migrate_lock_path_sits_next_to_db() {
-        let db = Path::new("/var/lib/aionui/aionui-backend.db");
+        let db = Path::new("/var/lib/aionui/pounding-backend.db");
         let lock = migrate_lock_path(db);
         assert_eq!(lock.parent(), db.parent());
-        assert_eq!(lock.file_name().unwrap(), "aionui-backend.db.migrate.lock");
+        assert_eq!(lock.file_name().unwrap(), "pounding-backend.db.migrate.lock");
     }
 
     #[test]

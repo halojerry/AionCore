@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 /// Response for `GET /api/settings`.
@@ -209,5 +209,69 @@ mod tests {
         let req: UpdateClientPreferencesRequest = serde_json::from_value(raw).unwrap();
         assert!(req["theme"].is_null());
         assert_eq!(req["pet.size"], 360);
+    }
+}
+
+/// POUNDING: Managed runtime state persisted by the desktop app.
+///
+/// Stored under a reserved client-preferences key (`_managed_runtime`).
+/// The desktop app reads this on startup to restore account state and
+/// CLI model preferences without hitting the network.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManagedRuntimeState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<ManagedRuntimeAccount>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_model_prefs: Option<std::collections::HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedRuntimeAccount {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logged_in: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<ManagedRuntimeUser>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub managed_provider_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedRuntimeUser {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_string_or_number"
+    )]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub used_quota: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_letter: Option<String>,
+}
+
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(Value::Number(n)) => Ok(Some(n.to_string())),
+        Some(other) => Ok(Some(other.to_string())),
     }
 }

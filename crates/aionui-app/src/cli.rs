@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 //! CLI argument definitions for the `aionui-backend` binary.
+=======
+//! CLI argument definitions for the `poundingcore` binary.
+>>>>>>> feature/pounding-rebase-june-2026
 //!
 //! Kept separate from `main.rs` to isolate the clap surface (struct + enum +
 //! attribute soup) from the runtime entry point. Visibility is `pub(crate)`
@@ -9,7 +13,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "aioncore", about = "AionUi Backend Server", version)]
+#[command(name = "poundingcore", about = "POUNDING Backend Server", version)]
 pub(crate) struct Cli {
     /// Host address to listen on.
     #[arg(long, default_value_t = String::from(aionui_common::constants::DEFAULT_HOST))]
@@ -128,7 +132,7 @@ mod tests {
 
     #[test]
     fn long_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "--version"]);
+        let result = Cli::try_parse_from(["poundingcore", "--version"]);
         let err = match result {
             Ok(_) => panic!("expected --version to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -137,7 +141,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -149,7 +153,7 @@ mod tests {
 
     #[test]
     fn short_version_flag_uses_workspace_package_version() {
-        let result = Cli::try_parse_from(["aioncore", "-V"]);
+        let result = Cli::try_parse_from(["poundingcore", "-V"]);
         let err = match result {
             Ok(_) => panic!("expected -V to exit through clap DisplayVersion"),
             Err(err) => err,
@@ -158,7 +162,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayVersion);
         let rendered = err.to_string();
         assert!(
-            rendered.contains("aioncore"),
+            rendered.contains("poundingcore"),
             "version output should contain binary name, got: {rendered:?}"
         );
         assert!(
@@ -171,7 +175,7 @@ mod tests {
     #[test]
     fn prepare_managed_resources_accepts_bundle_out() {
         let cli = Cli::parse_from([
-            "aioncore",
+            "poundingcore",
             "prepare-managed-resources",
             "--bundle-out",
             "/tmp/aioncore-bundle",
@@ -187,19 +191,19 @@ mod tests {
 
     #[test]
     fn managed_resources_mode_defaults_to_download() {
-        let cli = Cli::parse_from(["aioncore"]);
+        let cli = Cli::parse_from(["poundingcore"]);
         assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
     }
 
     #[test]
     fn managed_resources_mode_accepts_download() {
-        let cli = Cli::parse_from(["aioncore", "--managed-resources-mode", "download"]);
+        let cli = Cli::parse_from(["poundingcore", "--managed-resources-mode", "download"]);
         assert_eq!(cli.managed_resources_mode, ManagedResourcesModeArg::Download);
     }
 
     #[test]
     fn parent_pid_accepts_positive_integer() {
-        let cli = Cli::parse_from(["aioncore", "--parent-pid", "4242"]);
+        let cli = Cli::parse_from(["poundingcore", "--parent-pid", "4242"]);
         assert_eq!(cli.parent_pid, Some(4242));
     }
 
@@ -227,7 +231,7 @@ mod tests {
 
     #[test]
     fn prepare_managed_resources_requires_bundle_out() {
-        let err = match Cli::try_parse_from(["aioncore", "prepare-managed-resources"]) {
+        let err = match Cli::try_parse_from(["poundingcore", "prepare-managed-resources"]) {
             Ok(_) => panic!("prepare-managed-resources should require --bundle-out"),
             Err(err) => err,
         };

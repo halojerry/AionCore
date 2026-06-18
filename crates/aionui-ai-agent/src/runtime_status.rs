@@ -6,8 +6,9 @@ use aionui_api_types::{
 };
 use aionui_realtime::EventBroadcaster;
 use aionui_runtime::{
-    ManagedAcpToolFailureKind, ManagedAcpToolId, ManagedAcpToolProgress, NodeRuntimeFailureKind, NodeRuntimeProgress,
-    SharedManagedAcpToolProgressReporter, SharedNodeRuntimeProgressReporter,
+    ManagedAcpToolFailureKind, ManagedAcpToolId, ManagedAcpToolProgress, NativeCliFailureKind, NativeCliProgress,
+    NativeCliToolId, NodeRuntimeFailureKind, NodeRuntimeProgress, SharedManagedAcpToolProgressReporter,
+    SharedNativeCliProgressReporter, SharedNodeRuntimeProgressReporter,
 };
 
 pub(crate) fn conversation_runtime_reporter(
@@ -42,6 +43,21 @@ pub(crate) fn conversation_acp_tool_runtime_reporter(
     tool: ManagedAcpToolId,
 ) -> SharedManagedAcpToolProgressReporter {
     acp_tool_runtime_reporter(
+        broadcaster,
+        RuntimeStatusScope {
+            kind: RuntimeStatusScopeKind::Conversation,
+            id: conversation_id.into(),
+        },
+        tool,
+    )
+}
+
+pub(crate) fn conversation_native_cli_reporter(
+    broadcaster: Arc<dyn EventBroadcaster>,
+    conversation_id: impl Into<String>,
+    tool: NativeCliToolId,
+) -> SharedNativeCliProgressReporter {
+    native_cli_reporter(
         broadcaster,
         RuntimeStatusScope {
             kind: RuntimeStatusScopeKind::Conversation,
@@ -137,5 +153,54 @@ fn map_acp_failure_kind(kind: ManagedAcpToolFailureKind) -> RuntimeFailureKind {
         ManagedAcpToolFailureKind::BundledResourceMissing => RuntimeFailureKind::BundledResourceMissing,
         ManagedAcpToolFailureKind::BundledResourceInvalid => RuntimeFailureKind::BundledResourceInvalid,
         ManagedAcpToolFailureKind::Unknown => RuntimeFailureKind::Unknown,
+    }
+}
+
+fn native_cli_reporter(
+    broadcaster: Arc<dyn EventBroadcaster>,
+    scope: RuntimeStatusScope,
+    tool: NativeCliToolId,
+) -> SharedNativeCliProgressReporter {
+    Arc::new(move |update: NativeCliProgress| {
+        let payload = RuntimeStatusPayload {
+            resource: RuntimeResourceKind::NativeCli,
+            resource_id: Some(tool.slug().to_owned()),
+            scope: scope.clone(),
+            phase: map_native_cli_phase(update.phase),
+            failure_kind: update.failure_kind.map(map_native_cli_failure_kind),
+            message: update.message,
+            status_code: update.status_code,
+        };
+        let payload = serde_json::to_value(payload).expect("runtime status payload should serialize");
+        broadcaster.broadcast(WebSocketMessage::new("runtime.statusChanged", payload));
+    })
+}
+
+// NOTE: These two mapping functions are intentionally duplicated with
+// `aionui-system::runtime_prepare`. The source types live in `aionui-runtime`
+// and the target types in `aionui-api-types` — neither crate can import from
+// the other without a cycle. Keep both copies in sync when adding variants.
+fn map_native_cli_phase(phase: aionui_runtime::NativeCliProgressPhase) -> RuntimeStatusPhase {
+    match phase {
+        aionui_runtime::NativeCliProgressPhase::WaitingForLock => RuntimeStatusPhase::WaitingForLock,
+        aionui_runtime::NativeCliProgressPhase::Downloading => RuntimeStatusPhase::Downloading,
+        aionui_runtime::NativeCliProgressPhase::Extracting => RuntimeStatusPhase::Extracting,
+        aionui_runtime::NativeCliProgressPhase::Validating => RuntimeStatusPhase::Validating,
+        aionui_runtime::NativeCliProgressPhase::Ready => RuntimeStatusPhase::Ready,
+        aionui_runtime::NativeCliProgressPhase::Failed => RuntimeStatusPhase::Failed,
+    }
+}
+
+fn map_native_cli_failure_kind(kind: NativeCliFailureKind) -> RuntimeFailureKind {
+    match kind {
+        NativeCliFailureKind::Timeout => RuntimeFailureKind::Timeout,
+        NativeCliFailureKind::DownloadFailed => RuntimeFailureKind::DownloadFailed,
+        NativeCliFailureKind::HttpStatus => RuntimeFailureKind::HttpStatus,
+        NativeCliFailureKind::ChecksumMismatch => RuntimeFailureKind::ChecksumMismatch,
+        NativeCliFailureKind::ValidationFailed => RuntimeFailureKind::ValidationFailed,
+        NativeCliFailureKind::UnsupportedPlatform => RuntimeFailureKind::UnsupportedPlatform,
+        NativeCliFailureKind::BundledResourceMissing => RuntimeFailureKind::BundledResourceMissing,
+        NativeCliFailureKind::BundledResourceInvalid => RuntimeFailureKind::BundledResourceInvalid,
+        NativeCliFailureKind::Unknown => RuntimeFailureKind::Unknown,
     }
 }

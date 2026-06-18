@@ -4441,7 +4441,7 @@ async fn warmup_restores_skill_links_for_recreated_auto_workspace() {
     .unwrap();
     let resp = svc.create("user-1", req).await.unwrap();
     let workspace = PathBuf::from(resp.extra["workspace"].as_str().unwrap());
-    assert!(workspace.join(".aionrs/skills/cron").is_dir());
+    assert!(workspace.join(".pounding/skills/cron").is_dir());
 
     std::fs::remove_dir_all(&workspace).unwrap();
     assert!(!workspace.exists());
@@ -4451,11 +4451,11 @@ async fn warmup_restores_skill_links_for_recreated_auto_workspace() {
         Arc::new(MockTaskManagerWithWorkspace::new(workspace.to_str().unwrap()));
     svc.warmup("user-1", &resp.id, &task_mgr).await.unwrap();
 
-    assert!(workspace.join(".aionrs/skills/cron").is_dir());
+    assert!(workspace.join(".pounding/skills/cron").is_dir());
     let calls = links.lock().unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].workspace, workspace);
-    assert_eq!(calls[0].rel_dirs, vec![".aionrs/skills"]);
+    assert_eq!(calls[0].rel_dirs, vec![".pounding/skills"]);
     assert_eq!(calls[0].skill_names, vec!["cron"]);
 }
 

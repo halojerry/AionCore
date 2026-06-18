@@ -24,7 +24,11 @@ impl AppConfig {
 
     /// Path to the SQLite database file.
     pub fn database_path(&self) -> PathBuf {
+<<<<<<< HEAD
         self.data_dir.join("pounding.db")
+=======
+        self.data_dir.join("pounding-backend.db")
+>>>>>>> feature/pounding-rebase-june-2026
     }
 }
 
@@ -78,6 +82,10 @@ mod tests {
             data_dir: PathBuf::from("/tmp/aionui"),
             ..Default::default()
         };
+<<<<<<< HEAD
         assert_eq!(config.database_path(), PathBuf::from("/tmp/aionui/pounding.db"));
+=======
+        assert_eq!(config.database_path(), PathBuf::from("/tmp/aionui/pounding-backend.db"));
+>>>>>>> feature/pounding-rebase-june-2026
     }
 }

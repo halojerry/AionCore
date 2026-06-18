@@ -14,6 +14,7 @@ mod embed;
 mod extract;
 mod http_client;
 pub mod managed_resources;
+pub mod native_cli_runtime;
 pub mod node_runtime;
 mod resolver;
 mod shell_env;
@@ -26,7 +27,12 @@ pub use acp_tool_runtime::{
 };
 pub use agent_env::agent_process_env;
 pub use cache::init;
-pub use managed_resources::{ManagedResourcesMode, managed_resources_mode, set_managed_resources_mode};
+pub use managed_resources::{ManagedResourcesMode, bundled_root_candidate, managed_resources_mode, requires_bundled_resources, set_managed_resources_mode};
+pub use native_cli_runtime::{
+    NativeCliFailureKind, NativeCliProgress, NativeCliProgressPhase, NativeCliProgressReporter, NativeCliRuntimeKind,
+    NativeCliToolError, NativeCliToolId, NativeCliToolSupport, ResolvedNativeCliTool, SharedNativeCliProgressReporter,
+    ensure_native_cli_tool, ensure_native_cli_tool_with_reporter, probe_native_cli_tool_supported,
+};
 pub use node_runtime::{
     DoctorRow, NodeRuntimeError, NodeRuntimeFailureKind, NodeRuntimeProgress, NodeRuntimeProgressPhase,
     NodeRuntimeProgressReporter, NodeRuntimeSupport, NodeTool, ResolvedCommand, ResolvedNodeRuntime,

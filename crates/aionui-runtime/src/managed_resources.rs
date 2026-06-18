@@ -21,7 +21,7 @@ pub struct ManagedResourceSource {
     pub root: PathBuf,
 }
 
-const BUNDLED_RESOURCES_ENV: &str = "AIONUI_BUNDLED_MANAGED_RESOURCES";
+const BUNDLED_RESOURCES_ENV: &str = "POUNDING_BUNDLED_MANAGED_RESOURCES";
 
 pub fn set_managed_resources_mode(mode: ManagedResourcesMode) {
     *mode_lock().write().expect("managed resources mode lock poisoned") = mode;
@@ -143,21 +143,16 @@ pub fn materialize_directory(source_root: &Path, target_root: &Path) -> std::io:
 
 fn resource_roots() -> Vec<ManagedResourceSource> {
     let mut roots = Vec::new();
-
-    match managed_resources_mode() {
-        ManagedResourcesMode::Bundled => {
-            if let Some(root) = bundled_root()
-                && root.is_dir()
-            {
-                roots.push(ManagedResourceSource {
-                    kind: ManagedResourceSourceKind::Bundled,
-                    root,
-                });
-            }
-        }
-        ManagedResourcesMode::Download => {}
+    // Always include bundled root if available, regardless of mode.
+    // Download mode also needs bundled resources for offline-first behavior.
+    if let Some(root) = bundled_root()
+        && root.is_dir()
+    {
+        roots.push(ManagedResourceSource {
+            kind: ManagedResourceSourceKind::Bundled,
+            root,
+        });
     }
-
     roots
 }
 
@@ -254,11 +249,11 @@ mod tests {
     }
 
     #[test]
-    fn download_mode_ignores_configured_bundled_root() {
+    fn download_mode_includes_bundled_root_when_configured() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().join("managed");
         if !crate::test_support::run_in_env_child(
-            "managed_resources::tests::download_mode_ignores_configured_bundled_root",
+            "managed_resources::tests::download_mode_includes_bundled_root_when_configured",
             |command| {
                 command.env(BUNDLED_RESOURCES_ENV, &root);
             },
@@ -271,7 +266,7 @@ mod tests {
         set_managed_resources_mode(ManagedResourcesMode::Download);
 
         let sources = node_sources("node-v24.11.0-darwin-arm64");
-        assert!(sources.is_empty());
+        assert!(!sources.is_empty(), "download mode should include bundled root for offline-first behavior");
         assert!(!requires_bundled_resources());
 
         set_managed_resources_mode(ManagedResourcesMode::Download);

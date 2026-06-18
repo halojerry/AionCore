@@ -37,9 +37,9 @@ pub fn init(data_dir: impl AsRef<Path>) {
 /// 1. Path supplied via [`init`] (`{data_dir}/runtime`) when the backend
 ///    started with `--data-dir`.
 /// 2. Platform cache dir (via `dirs::cache_dir()`):
-///    - macOS:   `~/Library/Caches/aionui/runtime`
-///    - Linux:   `$XDG_CACHE_HOME/aionui/runtime` (fallback `~/.cache/aionui/runtime`)
-///    - Windows: `%LOCALAPPDATA%\aionui\runtime`
+///    - macOS:   `~/Library/Caches/pounding/runtime`
+///    - Linux:   `$XDG_CACHE_HOME/pounding/runtime` (fallback `~/.cache/pounding/runtime`)
+///    - Windows: `%LOCALAPPDATA%\pounding\runtime`
 ///
 /// Returns `None` only when neither [`init`] has run nor a platform cache
 /// dir is determinable (exotic envs).
@@ -47,7 +47,7 @@ pub fn runtime_root() -> Option<PathBuf> {
     if let Some(p) = RUNTIME_ROOT_OVERRIDE.get() {
         return Some(p.clone());
     }
-    dirs::cache_dir().map(|d| d.join("aionui").join("runtime"))
+    dirs::cache_dir().map(|d| d.join("pounding").join("runtime"))
 }
 
 /// Per-version cache directory name: `bun-<version>-<sha12>`.
@@ -71,6 +71,10 @@ pub fn node_runtime_root() -> Option<PathBuf> {
 
 pub fn managed_acp_tool_root() -> Option<PathBuf> {
     runtime_root().map(|root| root.join("managed-tools").join("acp"))
+}
+
+pub fn native_cli_tool_root() -> Option<PathBuf> {
+    runtime_root().map(|root| root.join("managed-tools").join("cli"))
 }
 
 #[cfg(test)]
@@ -97,7 +101,7 @@ mod tests {
             .take(2)
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(tail, vec!["runtime".to_string(), "aionui".to_string()]);
+        assert_eq!(tail, vec!["runtime".to_string(), "pounding".to_string()]);
     }
 
     #[test]
@@ -118,7 +122,7 @@ mod tests {
             .collect();
         assert_eq!(
             tail,
-            vec!["node".to_string(), "runtime".to_string(), "aionui".to_string()]
+            vec!["node".to_string(), "runtime".to_string(), "pounding".to_string()]
         );
     }
 
@@ -137,7 +141,27 @@ mod tests {
                 "acp".to_string(),
                 "managed-tools".to_string(),
                 "runtime".to_string(),
-                "aionui".to_string()
+                "pounding".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn native_cli_tool_root_appends_expected_directory() {
+        let dir = native_cli_tool_root().expect("cache available");
+        let tail: Vec<_> = dir
+            .components()
+            .rev()
+            .take(4)
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                "cli".to_string(),
+                "managed-tools".to_string(),
+                "runtime".to_string(),
+                "pounding".to_string()
             ]
         );
     }
