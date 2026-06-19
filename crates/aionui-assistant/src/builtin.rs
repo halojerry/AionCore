@@ -288,7 +288,7 @@ mod tests {
         // Sanity-check a couple of known ids from the committed manifest.
         assert!(reg.has("word-creator"));
         assert!(reg.has("cowork"));
-        assert!(reg.has("ozon-assistants"));
+        assert!(reg.has("pounding-ozon-assistant"));
     }
 
     #[test]

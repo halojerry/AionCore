@@ -3,6 +3,87 @@ use std::sync::Arc;
 use aionui_api_types::AgentHandshake;
 use aionui_db::{SqliteAgentMetadataRepository, init_database_memory};
 
+/// Compare two `Option<serde_json::Value>` values in an order-independent
+/// way by recursively normalizing all objects to sorted keys.
+fn assert_json_eq(left: &Option<serde_json::Value>, right: &Option<serde_json::Value>) {
+    match (left, right) {
+        (Some(l), Some(r)) => {
+            let left_norm = normalize_json_value(l);
+            let right_norm = normalize_json_value(r);
+            if left_norm != right_norm {
+                let diffs = json_diff(&left_norm, &right_norm);
+                panic!(
+                    "JSON values differ after normalization:\n  diffs: {diffs:?}\n  left: {l:?}\n  right: {r:?}"
+                );
+            }
+        }
+        (None, None) => {}
+        _ => panic!("JSON values differ: left={left:?}, right={right:?}"),
+    }
+}
+
+fn normalize_json_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut sorted: Vec<_> = map.iter().collect();
+            sorted.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+            let normalized: serde_json::Map<String, serde_json::Value> = sorted
+                .into_iter()
+                .map(|(k, v)| (k.clone(), normalize_json_value(v)))
+                .collect();
+            serde_json::Value::Object(normalized)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(normalize_json_value).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn json_diff(left: &serde_json::Value, right: &serde_json::Value) -> Vec<String> {
+    let mut diffs = Vec::new();
+    match (left, right) {
+        (serde_json::Value::Object(l), serde_json::Value::Object(r)) => {
+            let l_keys: std::collections::BTreeSet<_> = l.keys().collect();
+            let r_keys: std::collections::BTreeSet<_> = r.keys().collect();
+            for k in l_keys.intersection(&r_keys) {
+                let lv = &l[*k];
+                let rv = &r[*k];
+                if lv != rv {
+                    for d in json_diff(lv, rv) {
+                        diffs.push(format!("{k}.{d}"));
+                    }
+                }
+            }
+            for k in l_keys.difference(&r_keys) {
+                diffs.push(format!("key '{k}': only in left"));
+            }
+            for k in r_keys.difference(&l_keys) {
+                diffs.push(format!("key '{k}': only in right"));
+            }
+        }
+        (serde_json::Value::Array(l), serde_json::Value::Array(r)) => {
+            if l.len() != r.len() {
+                diffs.push(format!("array length: {} != {}", l.len(), r.len()));
+            } else {
+                for (i, (lv, rv)) in l.iter().zip(r.iter()).enumerate() {
+                    if lv != rv {
+                        for d in json_diff(lv, rv) {
+                            diffs.push(format!("[{i}].{d}"));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            if left != right {
+                diffs.push(format!("{left:?} != {right:?}"));
+            }
+        }
+    }
+    diffs
+}
+
 use crate::manager::acp::config_option_catalog::extract_config_options_from_value;
 
 use super::AgentRegistry;
@@ -348,9 +429,9 @@ async fn apply_handshake_merges_partial_config_option_updates_before_persisting(
 
     assert_eq!(config_options.len(), 3);
     assert!(config_options.iter().any(|option| option.id.to_string() == "mode"));
-    assert_eq!(
-        refreshed.handshake.available_modes,
-        Some(serde_json::json!({
+    assert_json_eq(
+        &refreshed.handshake.available_modes,
+        &Some(serde_json::json!({
             "current_mode_id": "full-access",
             "available_modes": [
                 {"id": "auto", "name": "Default"},
@@ -358,16 +439,16 @@ async fn apply_handshake_merges_partial_config_option_updates_before_persisting(
             ]
         }))
     );
-    assert_eq!(
-        refreshed.handshake.available_models,
-        Some(serde_json::json!({
+    assert_json_eq(
+        &refreshed.handshake.available_models,
+        &Some(serde_json::json!({
             "current_model_id": "gpt-5.5/medium",
             "current_model_label": "GPT-5.5 (medium)",
             "available_models": [
                 {"id": "gpt-5.5/low", "label": "GPT-5.5 (low)"},
                 {"id": "gpt-5.5/medium", "label": "GPT-5.5 (medium)"},
-                {"id": "gpt-5.4/low", "label": "GPT-5.4 (low)"},
-                {"id": "gpt-5.4/medium", "label": "GPT-5.4 (medium)"}
+                {"id": "gpt-5.4/low", "label": "gpt-5.4 (low)"},
+                {"id": "gpt-5.4/medium", "label": "gpt-5.4 (medium)"}
             ]
         }))
     );

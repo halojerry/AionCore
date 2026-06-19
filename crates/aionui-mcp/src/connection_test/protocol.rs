@@ -77,27 +77,52 @@ pub(super) struct SseEvent {
 // Stdio protocol helpers
 // ---------------------------------------------------------------------------
 
+/// Drain the stderr background read task after an early exit.
+async fn drain_stderr_handle(handle: tokio::task::JoinHandle<String>) -> String {
+    // Abort the task first — we may be returning before stderr EOF
+    handle.abort();
+    match handle.await {
+        Ok(s) => s,
+        Err(_) => String::new(),
+    }
+}
+
 /// Run the MCP protocol handshake over stdio (newline-delimited JSON-RPC).
+/// stderr is captured for diagnostics on failure.
 pub(super) async fn run_stdio_protocol(
     mut stdin: tokio::process::ChildStdin,
     stdout: tokio::process::ChildStdout,
+    stderr: tokio::process::ChildStderr,
 ) -> McpConnectionTestResult {
     let mut reader = BufReader::new(stdout);
+    let mut stderr_reader = BufReader::new(stderr);
+
+    // Spawn a background task to continuously read stderr
+    let stderr_handle = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        let _ = stderr_reader.read_to_end(&mut buf).await;
+        String::from_utf8_lossy(&buf).into_owned()
+    });
 
     // 1. initialize
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_initialize_request(1)).await {
+        let stderr_text = drain_stderr_handle(stderr_handle).await;
+        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
-            format!("Failed to send initialize: {e}"),
+            format!("Failed to send initialize: {e}{detail}"),
             Some(serde_json::json!({ "transport": "stdio", "stage": "initialize_send" })),
         );
     }
     let init_resp = match read_jsonrpc_response(&mut reader).await {
         Ok(r) => r,
         Err(e) => {
+            let stderr_text = drain_stderr_handle(stderr_handle).await;
+            let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
             return error_result(
                 McpConnectionTestErrorCode::ProtocolError,
-                format!("initialize response: {e}"),
+                format!("initialize response: {e}{detail}"),
                 Some(serde_json::json!({ "transport": "stdio", "stage": "initialize_response" })),
             );
         }
@@ -108,27 +133,33 @@ pub(super) async fn run_stdio_protocol(
 
     // 2. initialized notification
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_initialized_notification()).await {
+        let stderr_text = drain_stderr_handle(stderr_handle).await;
+        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
-            format!("Failed to send initialized: {e}"),
+            format!("Failed to send initialized: {e}{detail}"),
             Some(serde_json::json!({ "transport": "stdio", "stage": "initialized_send" })),
         );
     }
 
     // 3. tools/list
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_tools_list_request(2)).await {
+        let stderr_text = drain_stderr_handle(stderr_handle).await;
+        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
-            format!("Failed to send tools/list: {e}"),
+            format!("Failed to send tools/list: {e}{detail}"),
             Some(serde_json::json!({ "transport": "stdio", "stage": "tools_list_send" })),
         );
     }
     let tools_resp = match read_jsonrpc_response(&mut reader).await {
         Ok(r) => r,
         Err(e) => {
+            let stderr_text = drain_stderr_handle(stderr_handle).await;
+            let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
             return error_result(
                 McpConnectionTestErrorCode::ProtocolError,
-                format!("tools/list response: {e}"),
+                format!("tools/list response: {e}{detail}"),
                 Some(serde_json::json!({ "transport": "stdio", "stage": "tools_list_response" })),
             );
         }

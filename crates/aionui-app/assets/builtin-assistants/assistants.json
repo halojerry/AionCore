@@ -1221,7 +1221,7 @@
       },
       "avatar": "avatars/social-cover-design.jpg",
       "preset_agent_type": "aionrs",
-      "enabled_skills": [],
+      "enabled_skills": ["social-cover-design"],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
       "rule_file": "rules/social-cover-design.{locale}.md",
@@ -1324,6 +1324,218 @@
           "Знайди останнє листування щодо затвердження бюджету в пошті Feishu",
           "Створи таблицю Base для відстеження найму з колонками: ім'я, роль, етап, нотатки",
           "Знайди всі мої очікувані завдання погодження та покажи деталі"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "getnote-assistant",
+      "name": "GetNote Assistant",
+      "name_i18n": {
+        "en-US": "GetNote Assistant",
+        "zh-CN": "得到大脑助手",
+        "ru-RU": "Помощник GetNote",
+        "uk-UA": "Помічник GetNote"
+      },
+      "description": "Your GetNote (得到大脑) knowledge assistant. Save notes, manage knowledge bases, semantic search, organize with tags — all via the getnote CLI tool.",
+      "description_i18n": {
+        "en-US": "Your GetNote knowledge assistant. Save notes, manage knowledge bases, semantic search, organize with tags.",
+        "zh-CN": "得到大脑知识助手。保存笔记、管理知识库、语义搜索、标签整理，一站式知识管理。",
+        "ru-RU": "Ваш помощник знаний GetNote. Сохраняйте заметки, управляйте базами знаний, семантический поиск, организация с тегами.",
+        "uk-UA": "Ваш помічник знань GetNote. Зберігайте нотатки, керуйте базами знань, семантичний пошук, організація з тегами."
+      },
+      "avatar": "avatars/getnote-assistant.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "getnote-shared", "getnote-auth", "getnote-note", "getnote-kb", "getnote-search", "getnote-tag"
+      ],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/getnote-assistant.{locale}.md",
+      "prompts": [
+        "Save this article to my GetNote: <URL>",
+        "Search my GetNote for notes about machine learning",
+        "Create a knowledge base called 'Project Research' and add my recent notes about AI",
+        "List my recent 20 notes and summarize key topics",
+        "Find all notes tagged with 'important' in my knowledge base",
+        "Share my GetNote note about the Q2 planning summary"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Save this article to my GetNote: <URL>",
+          "Search my GetNote for notes about machine learning",
+          "Create a knowledge base called 'Project Research' and add my recent notes about AI",
+          "List my recent 20 notes and summarize key topics",
+          "Find all notes tagged with 'important' in my knowledge base",
+          "Share my GetNote note about the Q2 planning summary"
+        ],
+        "zh-CN": [
+          "帮我把这篇文章保存到得到笔记：<URL>",
+          "在我的得到笔记中搜索关于机器学习的笔记",
+          "创建一个叫「项目研究」的知识库，把最近关于AI的笔记加进去",
+          "列出我最近的20条笔记，总结关键主题",
+          "在我的知识库中找出所有标记为「重要」的笔记",
+          "分享我关于Q2规划总结的得到笔记"
+        ],
+        "ru-RU": [
+          "Сохрани эту статью в мои GetNote: <URL>",
+          "Найди в моих GetNote заметки о машинном обучении",
+          "Создай базу знаний «Исследование проекта» и добавь мои недавние заметки об AI",
+          "Покажи мои последние 20 заметок и обобщи ключевые темы",
+          "Найди все заметки с тегом «важное» в моей базе знаний",
+          "Поделись моей заметкой GetNote о планировании Q2"
+        ],
+        "uk-UA": [
+          "Збережи цю статтю в мої GetNote: <URL>",
+          "Знайди в моїх GetNote нотатки про машинне навчання",
+          "Створи базу знань «Дослідження проєкту» і додай мої недавні нотатки про AI",
+          "Покажи мої останні 20 нотаток і підсумуй ключові теми",
+          "Знайди всі нотатки з тегом «важливе» в моїй базі знань",
+          "Поділися моєю нотаткою GetNote про планування Q2"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "teacher-assistant",
+      "name": "Teacher Assistant",
+      "name_i18n": {
+        "en-US": "Elementary Teacher Assistant",
+        "zh-CN": "小学全科助手",
+        "ru-RU": "Помощник учителя начальных классов",
+        "uk-UA": "Помічник вчителя початкових класів"
+      },
+      "description": "Your all-in-one elementary school teaching assistant covering Chinese, Math, English, Science, and Morality & Law. Generate complete nine-piece lesson prep resources with one click.",
+      "description_i18n": {
+        "en-US": "Your all-in-one elementary school teaching assistant covering Chinese, Math, English, Science, and Morality & Law. Generate complete lesson plans, lecture scripts, study guides, exercises, illustrations, interactive webpages, PPTs, podcast scripts, and educational games.",
+        "zh-CN": "小学全科教学助手，覆盖语文、数学、英语、科学、道法五个科目。一键生成教案、讲课稿、导学案、习题、配图、交互网页、PPT、播客稿、教学游戏九件套。",
+        "ru-RU": "Универсальный помощник учителя начальных классов: китайский, математика, английский, естествознание, мораль и право. Создавайте полные планы уроков, сценарии лекций, учебные руководства, упражнения, иллюстрации, интерактивные веб-страницы, PPT и обучающие игры.",
+        "uk-UA": "Універсальний помічник вчителя початкових класів: китайська, математика, англійська, природознавство, мораль і право. Створюйте повні плани уроків, сценарії лекцій, навчальні посібники, вправи, ілюстрації, інтерактивні веб-сторінки, PPT та навчальні ігри."
+      },
+      "avatar": "avatars/teaching-assistant.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "elementary-teacher",
+        "officecli-docx",
+        "officecli-xlsx",
+        "officecli-pptx",
+        "morph-ppt",
+        "mermaid",
+        "pdf"
+      ],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/teacher-assistant.{locale}.md",
+      "prompts": [
+        "帮我备一节二年级语文课《小蝌蚪找妈妈》，要全套九件套",
+        "帮我设计一节四年级数学课《分数的意义》，习题要Excel格式的",
+        "帮我备一节三年级英语课《At the Zoo》，PPT要生动好看的",
+        "帮我设计一节五年级科学课《种子的发芽实验》，要交互网页和通关游戏",
+        "帮我备一节三年级道法课《诚实守信》，要全套资源",
+        "帮我做一份一年级数学《20以内加减法》的闯关游戏"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Prepare a complete lesson for Grade 2 Chinese: 'The Little Tadpole Looks for Mom' — full nine-piece set",
+          "Design a Grade 4 Math lesson on 'The Meaning of Fractions' with Excel-format exercises",
+          "Prepare a Grade 3 English lesson 'At the Zoo' with a vivid animated PPT",
+          "Design a Grade 5 Science lesson on 'Seed Germination Experiment' with interactive webpage and game",
+          "Prepare a Grade 3 Morality lesson on 'Honesty and Trustworthiness' with full resources",
+          "Create an arithmetic challenge game for Grade 1 Math: 'Addition and Subtraction within 20'"
+        ],
+        "zh-CN": [
+          "帮我备一节二年级语文课《小蝌蚪找妈妈》，要全套九件套",
+          "帮我设计一节四年级数学课《分数的意义》，习题要Excel格式的",
+          "帮我备一节三年级英语课《At the Zoo》，PPT要生动好看的",
+          "帮我设计一节五年级科学课《种子的发芽实验》，要交互网页和通关游戏",
+          "帮我备一节三年级道法课《诚实守信》，要全套资源",
+          "帮我做一份一年级数学《20以内加减法》的闯关游戏"
+        ],
+        "ru-RU": [
+          "Подготовь полный урок китайского языка для 2 класса «Маленький головастик ищет маму»",
+          "Разработай урок математики для 4 класса «Значение дробей» с упражнениями в Excel",
+          "Подготовь урок английского для 3 класса «В зоопарке» с красивой анимированной презентацией",
+          "Разработай урок естествознания для 5 класса «Эксперимент с проращиванием семян»",
+          "Подготовь урок морали для 3 класса «Честность и надёжность»",
+          "Создай арифметическую игру для 1 класса «Сложение и вычитание в пределах 20»"
+        ],
+        "uk-UA": [
+          "Підготуй повний урок китайської мови для 2 класу «Маленький пуголовок шукає маму»",
+          "Розроби урок математики для 4 класу «Значення дробів» з вправами в Excel",
+          "Підготуй урок англійської для 3 класу «У зоопарку» з гарною анімованою презентацією",
+          "Розроби урок природознавства для 5 класу «Експеримент із пророщуванням насіння»",
+          "Підготуй урок моралі для 3 класу «Чесність і надійність»",
+          "Створи арифметичну гру для 1 класу «Додавання та віднімання в межах 20»"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "xiaohongshu-creator",
+      "name": "XHS Creator",
+      "name_i18n": {
+        "en-US": "XHS Creator",
+        "zh-CN": "小红书创作助手",
+        "ru-RU": "Помощник Xiaohongshu",
+        "uk-UA": "Помічник Xiaohongshu"
+      },
+      "description": "One-stop growth toolkit for Xiaohongshu creators: account diagnostics, viral topic discovery, title generation, copywriting optimization, trend tracking, cover design, and viral note creation. Covers the full workflow from research to publishing.",
+      "description_i18n": {
+        "en-US": "One-stop growth toolkit for Xiaohongshu creators: account diagnostics, viral topic discovery, title generation, copywriting optimization, trend tracking, cover design, and viral note creation.",
+        "zh-CN": "面向小红书创作者的一站式增长工具箱：账号诊断、爆款选题、标题生成、文案优化、热门趋势、封面制作与爆款笔记创作。覆盖从调研到发布的完整工作流。",
+        "ru-RU": "Универсальный набор инструментов для роста создателей контента на Xiaohongshu: диагностика аккаунта, поиск вирусных тем, генерация заголовков, оптимизация текстов, отслеживание трендов, дизайн обложек и создание вирусных заметок.",
+        "uk-UA": "Універсальний набір інструментів для зростання творців контенту на Xiaohongshu: діагностика акаунту, пошук вірусних тем, генерація заголовків, оптимізація текстів, відстеження трендів, дизайн обкладинок і створення вірусних нотаток."
+      },
+      "avatar": "avatars/xiaohongshu-creator.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "redbook",
+        "xhs-content-lab",
+        "social-cover-design"
+      ],
+      "custom_skill_names": [],
+      "disabled_builtin_skills": [],
+      "rule_file": "rules/xiaohongshu-creator.{locale}.md",
+      "prompts": [
+        "帮我诊断我的小红书账号，看看哪里可以优化",
+        "帮我分析「AI编程」这个话题在小红书的竞争格局，找到蓝海关键词",
+        "围绕「效率工具」这个赛道，帮我策划 7 天的选题日历",
+        "拆解这篇爆款笔记，告诉我它为什么火了",
+        "帮我生成 10 个关于「远程工作」的高流量标题",
+        "优化我这段小红书文案，提升互动率"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Diagnose my XHS account and suggest optimizations",
+          "Analyze the competitive landscape for 'AI programming' on Xiaohongshu and find blue ocean keywords",
+          "Create a 7-day content calendar for the 'productivity tools' niche",
+          "Break down this viral note and tell me why it worked",
+          "Generate 10 high-engagement titles about 'remote work'",
+          "Optimize my XHS copy to improve engagement"
+        ],
+        "zh-CN": [
+          "帮我诊断我的小红书账号，看看哪里可以优化",
+          "帮我分析「AI编程」这个话题在小红书的竞争格局，找到蓝海关键词",
+          "围绕「效率工具」这个赛道，帮我策划 7 天的选题日历",
+          "拆解这篇爆款笔记，告诉我它为什么火了",
+          "帮我生成 10 个关于「远程工作」的高流量标题",
+          "优化我这段小红书文案，提升互动率"
+        ],
+        "ru-RU": [
+          "Диагностируй мой аккаунт XHS и предложи улучшения",
+          "Проанализируй конкурентную среду для «AI программирования» на Xiaohongshu и найди свободные ключевые слова",
+          "Создай 7-дневный календарь контента для ниши «инструменты продуктивности»",
+          "Разбери эту вирусную заметку и объясни, почему она сработала",
+          "Сгенерируй 10 заголовков с высокой вовлечённостью о «удалённой работе»",
+          "Оптимизируй мой текст XHS для повышения вовлечённости"
+        ],
+        "uk-UA": [
+          "Діагностуй мій акаунт XHS та запропонуй покращення",
+          "Проаналізуй конкурентне середовище для «AI програмування» на Xiaohongshu та знайди вільні ключові слова",
+          "Створи 7-денний календар контенту для ніші «інструменти продуктивності»",
+          "Розбери цю вірусну нотатку та поясни, чому вона спрацювала",
+          "Згенеруй 10 заголовків з високою залученістю про «віддалену роботу»",
+          "Оптимізуй мій текст XHS для підвищення залученості"
         ]
       },
       "models": []

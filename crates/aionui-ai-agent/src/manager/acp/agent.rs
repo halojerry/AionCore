@@ -326,6 +326,7 @@ impl AcpAgentManager {
                 let (exit_code, signal) = exit_status_parts(exit);
                 error!(
                     conversation_id = %params.conversation_id,
+                    command = %format!("{} {}", params.command_spec.command.display(), params.command_spec.args.join(" ")),
                     exit_code = ?exit_code,
                     signal = ?signal,
                     stderr = %stderr,

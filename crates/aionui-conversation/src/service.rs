@@ -2523,7 +2523,13 @@ impl ConversationService {
         let build_opts = self.build_task_options(&row).await?;
         self.ensure_auto_workspace_skill_links(&row, &build_opts).await;
         let stored_workspace = build_opts.context.workspace.stored_path.clone();
-        let agent = task_manager.get_or_build_task(conversation_id, build_opts).await?;
+        let agent = match task_manager.get_or_build_task(conversation_id, build_opts).await {
+            Ok(agent) => agent,
+            Err(e) => {
+                warn!(%user_id, %conversation_id, error = %e, "Warmup: agent task build failed, continuing");
+                return Ok(());
+            }
+        };
 
         // Persist auto-resolved workspace if factory picked a different path.
         self.maybe_persist_workspace(conversation_id, &stored_workspace, agent.workspace())

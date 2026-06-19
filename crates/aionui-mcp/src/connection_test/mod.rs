@@ -124,7 +124,7 @@ impl McpConnectionTestService {
             .envs(env.iter())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
+            .stderr(std::process::Stdio::piped());
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -133,7 +133,8 @@ impl McpConnectionTestService {
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
-        let result = match tokio::time::timeout(self.timeout, run_stdio_protocol(stdin, stdout)).await {
+        let stderr = child.stderr.take().expect("stderr was piped");
+        let result = match tokio::time::timeout(self.timeout, run_stdio_protocol(stdin, stdout, stderr)).await {
             Ok(r) => r,
             Err(_) => timeout_result(self.timeout),
         };
