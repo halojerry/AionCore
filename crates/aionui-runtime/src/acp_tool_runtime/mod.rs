@@ -1001,18 +1001,17 @@ fn prepare_staging_root(tool: ManagedAcpToolId, spec: PlatformSpec) -> Result<Pa
     )))
 }
 
-fn bundle_prepare_staging_root(tool: ManagedAcpToolId, spec: PlatformSpec, bundle_root: &Path) -> PathBuf {
+fn bundle_prepare_staging_root(tool: ManagedAcpToolId, _spec: PlatformSpec, _bundle_root: &Path) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    bundle_root.join(".staging").join(format!(
-        "{}-{}-{}-{}",
-        tool.slug(),
-        tool.version(),
-        spec.manifest_key,
-        nonce
-    ))
+    // Use temp_dir() instead of bundle_root to keep staging paths short.
+    // Deep nesting under bundle_root can exceed Windows MAX_PATH (260 chars)
+    // and cause npm to fail with EISDIR when resolving paths.
+    std::env::temp_dir()
+        .join("pounding-prepare")
+        .join(format!("{}-{}-{}", tool.slug(), tool.version(), nonce))
 }
 
 fn bundle_tool_root(bundle_root: &Path, tool: ManagedAcpToolId, spec: PlatformSpec) -> PathBuf {
