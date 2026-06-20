@@ -1245,6 +1245,16 @@ mod tests {
     fn resolve_package_smoke_target_prefers_importable_entry_for_exported_package() {
         let tmp = tempfile::tempdir().unwrap();
         let project_dir = tmp.path();
+        // Create the actual entrypoint file so the defence check passes.
+        let entry_path = project_dir
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("lib.js");
+        std::fs::create_dir_all(entry_path.parent().unwrap()).unwrap();
+        std::fs::write(&entry_path, "// smoke").unwrap();
+
         let package_json = InstalledPackageJson {
             name: "@agentclientprotocol/claude-agent-acp".into(),
             bin: json!({
