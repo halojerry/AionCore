@@ -6,8 +6,11 @@ use tracing::{debug, info};
 
 use crate::task_manager::IWorkerTaskManager;
 
-/// Default idle timeout for ACP agents (5 minutes).
-const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 5 * 60;
+/// Default idle timeout for ACP agents (15 minutes).
+/// Raised from 5 min because Codex and other CLI agents persist sessions
+/// on disk, and users may spend >5 min reading a response. Killing the
+/// CLI process between turns discards in-memory session state.
+const DEFAULT_IDLE_TIMEOUT_SECS: i64 = 15 * 60;
 
 /// Scan interval for idle agent cleanup (1 minute).
 const SCAN_INTERVAL_SECS: u64 = 60;
