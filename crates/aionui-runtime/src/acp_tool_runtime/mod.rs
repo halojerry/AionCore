@@ -547,11 +547,26 @@ async fn prepare_local_tool_source_to_root(
     fs::create_dir_all(&project_dir).map_err(ManagedAcpToolError::io)?;
     fs::create_dir_all(&npm_cache_dir).map_err(ManagedAcpToolError::io)?;
 
+    // Co-locate npm config files and prefix on the staging drive so all
+    // npm paths resolve on the same filesystem as the CWD.  On Windows CI
+    // runners the managed Node runtime lives on C: while the staging
+    // directory is on D:; cross-drive path resolution inside npm can
+    // produce bare drive letters (e.g. `D:`) and fail with EISDIR.
+    let npm_userconfig = staging_root.join("blank_user_npmrc");
+    let npm_globalconfig = staging_root.join("blank_global_npmrc");
+    let npm_prefix = staging_root.join("npm-prefix");
+    fs::write(&npm_userconfig, []).map_err(ManagedAcpToolError::io)?;
+    fs::write(&npm_globalconfig, []).map_err(ManagedAcpToolError::io)?;
+    fs::create_dir_all(&npm_prefix).map_err(ManagedAcpToolError::io)?;
+
     write_dev_package_json(&project_dir)?;
     run_npm_prepare_step(
         node_runtime,
         &project_dir,
         &npm_cache_dir,
+        &npm_userconfig,
+        &npm_globalconfig,
+        &npm_prefix,
         [
             "install",
             "--package-lock-only",
@@ -573,6 +588,9 @@ async fn prepare_local_tool_source_to_root(
         node_runtime,
         &project_dir,
         &npm_cache_dir,
+        &npm_userconfig,
+        &npm_globalconfig,
+        &npm_prefix,
         [
             "ci",
             "--omit=dev",
@@ -592,7 +610,16 @@ async fn prepare_local_tool_source_to_root(
     let manifest = build_local_artifact_manifest(tool, &project_dir)?;
     validate_bridge_entrypoint(&project_dir, &manifest)?;
     validate_platform_binary(tool, &project_dir, spec)?;
-    validate_dependency_tree(node_runtime, &project_dir, &npm_cache_dir, tool).await?;
+    validate_dependency_tree(
+        node_runtime,
+        &project_dir,
+        &npm_cache_dir,
+        &npm_userconfig,
+        &npm_globalconfig,
+        &npm_prefix,
+        tool,
+    )
+    .await?;
     validate_package_smoke(node_runtime, &project_dir, tool).await?;
 
     let manifest_path = project_dir.join("manifest.json");
@@ -605,7 +632,16 @@ async fn prepare_local_tool_source_to_root(
 
     managed_resources::materialize_directory(&project_dir, target_root).map_err(ManagedAcpToolError::io)?;
     let resolved = validate_tool_root(tool, target_root, None)?;
-    validate_dependency_tree(node_runtime, target_root, &npm_cache_dir, tool).await?;
+    validate_dependency_tree(
+        node_runtime,
+        target_root,
+        &npm_cache_dir,
+        &npm_userconfig,
+        &npm_globalconfig,
+        &npm_prefix,
+        tool,
+    )
+    .await?;
     validate_package_smoke(node_runtime, target_root, tool).await?;
     info!(
         tool = tool.slug(),
@@ -621,6 +657,9 @@ async fn run_npm_prepare_step<const N: usize>(
     node_runtime: &crate::ResolvedNodeRuntime,
     project_dir: &Path,
     npm_cache_dir: &Path,
+    npm_userconfig: &Path,
+    npm_globalconfig: &Path,
+    npm_prefix: &Path,
     args: [&str; N],
     label: &str,
 ) -> Result<(), ManagedAcpToolError> {
@@ -628,6 +667,9 @@ async fn run_npm_prepare_step<const N: usize>(
     builder
         .current_dir(project_dir)
         .env("npm_config_cache", npm_cache_dir)
+        .env("npm_config_userconfig", npm_userconfig)
+        .env("npm_config_globalconfig", npm_globalconfig)
+        .env("npm_config_prefix", npm_prefix)
         .args(args);
     let output = builder.output().await.map_err(ManagedAcpToolError::io)?;
     if output.status.success() {
@@ -747,12 +789,18 @@ async fn validate_dependency_tree(
     node_runtime: &crate::ResolvedNodeRuntime,
     project_dir: &Path,
     npm_cache_dir: &Path,
+    npm_userconfig: &Path,
+    npm_globalconfig: &Path,
+    npm_prefix: &Path,
     tool: ManagedAcpToolId,
 ) -> Result<(), ManagedAcpToolError> {
     run_npm_prepare_step(
         node_runtime,
         project_dir,
         npm_cache_dir,
+        npm_userconfig,
+        npm_globalconfig,
+        npm_prefix,
         ["ls", "--omit=dev", "--all"],
         &format!("validate managed {} dependency tree", tool.display_name()),
     )
