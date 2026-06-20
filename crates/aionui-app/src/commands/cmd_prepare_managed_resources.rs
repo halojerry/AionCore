@@ -46,9 +46,13 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
         NativeCliToolId::OpenCode,
         NativeCliToolId::OpenClaw,
     ] {
-        let resolved = ensure_native_cli_tool(tool)
-            .await
-            .map_err(|error| prepare_managed_resources_error_with_detail("native-cli.prepare", error))?;
+        let resolved = match ensure_native_cli_tool(tool).await {
+            Ok(r) => r,
+            Err(error) => {
+                eprintln!("prepare-managed-resources stage=native-cli.prepare detail: {error} (continuing)");
+                continue;
+            }
+        };
         let dest_dir = output_root
             .join("cli")
             .join(tool.slug())
