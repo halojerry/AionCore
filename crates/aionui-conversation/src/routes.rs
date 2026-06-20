@@ -255,9 +255,10 @@ async fn cancel(
     body: Result<Json<CancelConversationRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<CancelConversationResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    let turn_id = req.turn_id.as_deref().unwrap_or("");
     let response = state
         .service
-        .cancel(&user.id, &id, &req.turn_id, &state.task_manager)
+        .cancel(&user.id, &id, turn_id, &state.task_manager)
         .await
         .map_err(ApiError::from)?;
     Ok(Json(ApiResponse::ok(response)))

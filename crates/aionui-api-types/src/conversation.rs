@@ -107,7 +107,8 @@ pub struct SendMessageResponse {
 /// Body for `POST /api/conversations/:id/cancel`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CancelConversationRequest {
-    pub turn_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
 }
 
 /// Response for `POST /api/conversations/:id/cancel`.
