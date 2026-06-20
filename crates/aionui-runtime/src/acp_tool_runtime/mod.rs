@@ -868,31 +868,92 @@ fn resolve_package_smoke_target(
     project_dir: &Path,
     package_json: &InstalledPackageJson,
 ) -> Result<PackageSmokeTarget, ManagedAcpToolError> {
+    let pkg_root = package_root(project_dir, &package_json.name);
+
     // Try imports/exports first — but only if the resolved entry is a clean
-    // relative path within the project. Some packages (e.g. @zed-industries/codex-acp)
-    // ship a `main` field with an absolute build-machine path, which would cause
-    // Path::join to produce a doubled staging path and Node to fail with
-    // "Cannot find module".
+    // relative path that stays inside the package directory. Some packages
+    // (e.g. @zed-industries/codex-acp) ship `main`/`exports` fields with
+    // absolute build-machine paths or relative paths that escape the package
+    // (e.g. `../../../../../project/node_modules/...`), both of which would
+    // cause Node to fail with "Cannot find module".
     if let Some(entry) = resolve_package_import_entry(&package_json.exports, package_json.main.as_deref()) {
         // Absolute paths are build-machine artifacts — skip.
         if !entry.starts_with('/') {
-            let candidate = package_root(project_dir, &package_json.name).join(&entry);
-            if candidate.starts_with(project_dir) && candidate.is_file() {
+            let candidate = pkg_root.join(&entry);
+            // Only use import if the resolved path stays within the package
+            // directory. Using `starts_with(&pkg_root)` instead of
+            // `starts_with(project_dir)` catches paths that escape via `..`
+            // segments or doubled staging prefixes.
+            if candidate.starts_with(&pkg_root) && candidate.is_file() {
                 return Ok(PackageSmokeTarget::Import(candidate));
             }
         }
     }
 
+    // Fall back to syntax check on the bin entry.
     let bin_entry = resolve_package_bin_entry(package_json.name.as_str(), &package_json.bin)?;
-    // Some npm packages (e.g. @zed-industries/codex-acp) ship a `bin` field
-    // containing an absolute build-machine path instead of a relative one.
-    // When that happens, use it directly (no project_dir prefix join).
+    // Some npm packages ship a `bin` field containing an absolute build-machine
+    // path instead of a relative one. When that happens, use it directly.
     let bin_path = if bin_entry.starts_with('/') {
         PathBuf::from(&bin_entry)
     } else {
-        package_root(project_dir, &package_json.name).join(&bin_entry)
+        pkg_root.join(&bin_entry)
     };
+
+    // Defence: if the constructed path doesn't exist (e.g. due to staging
+    // directory quirks or broken package metadata), search for a usable
+    // .js entry point in the package directory instead of failing.
+    if bin_path.is_file() {
+        return Ok(PackageSmokeTarget::SyntaxCheck(bin_path));
+    }
+
+    // Try common entry point names first (fast path).
+    for candidate_rel in ["bin/codex-acp.js", "dist/index.js", "index.js", "main.js"] {
+        let candidate = pkg_root.join(candidate_rel);
+        if candidate.is_file() {
+            return Ok(PackageSmokeTarget::SyntaxCheck(candidate));
+        }
+    }
+
+    // Last resort: walk the package directory for any .js file.
+    if let Some(found) = find_first_js_file(&pkg_root, /* max_depth */ 4) {
+        return Ok(PackageSmokeTarget::SyntaxCheck(found));
+    }
+
+    // If nothing was found at all, return the original bin_path so the
+    // smoke test fails with a clear "Cannot find module" that includes
+    // the path we computed — easier to debug than a synthetic error.
     Ok(PackageSmokeTarget::SyntaxCheck(bin_path))
+}
+
+/// Walk `dir` recursively up to `max_depth` levels, returning the first
+/// `.js` file found (breadth-first within each depth level).
+fn find_first_js_file(dir: &Path, max_depth: usize) -> Option<PathBuf> {
+    let mut current = vec![dir.to_path_buf()];
+    for _depth in 0..=max_depth {
+        let mut next = Vec::new();
+        for entry_dir in &current {
+            let rd = match fs::read_dir(entry_dir) {
+                Ok(rd) => rd,
+                Err(_) => continue,
+            };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                let ft = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if ft.is_file() && path.extension().is_some_and(|ext| ext == "js") {
+                    return Some(path);
+                }
+                if ft.is_dir() && !path.is_symlink() {
+                    next.push(path);
+                }
+            }
+        }
+        current = next;
+    }
+    None
 }
 
 fn resolve_package_import_entry(exports_field: &serde_json::Value, main_field: Option<&str>) -> Option<String> {

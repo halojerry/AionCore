@@ -75,6 +75,20 @@ impl ConversationService {
     // ── Model ───────────────────────────────────────────────────────
 
     pub async fn get_model(&self, conversation_id: &str) -> Result<GetModelInfoResponse, ConversationError> {
+        // Check conversation existence first — non-existent conversations
+        // should return 404, not a default null model response.
+        if self
+            .conversation_repo()
+            .get(conversation_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("Failed to check conversation existence: {e}")))?
+            .is_none()
+        {
+            return Err(ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            });
+        }
+
         match self.task(conversation_id) {
             Ok(task) => task.get_model().await.map_err(ConversationError::from),
             Err(ConversationError::ActiveAgentNotFound { .. }) => Ok(GetModelInfoResponse { model_info: None }),
