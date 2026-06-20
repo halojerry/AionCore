@@ -868,10 +868,18 @@ fn resolve_package_smoke_target(
     project_dir: &Path,
     package_json: &InstalledPackageJson,
 ) -> Result<PackageSmokeTarget, ManagedAcpToolError> {
+    // Try imports/exports first — but only if the resolved entry is a clean
+    // relative path (not an absolute build-machine path or a staging artifact
+    // that would cause a doubled module resolution error).
     if let Some(entry) = resolve_package_import_entry(&package_json.exports, package_json.main.as_deref()) {
-        return Ok(PackageSmokeTarget::Import(
-            package_root(project_dir, &package_json.name).join(entry),
-        ));
+        let candidate = package_root(project_dir, &package_json.name).join(&entry);
+        // Defend against packages whose `main`/`exports` field leaks an
+        // absolute build-machine path. When that happens the resolved path
+        // won't start with the project_dir and `node` will fail with a
+        // doubled-path "Cannot find module" error.
+        if candidate.starts_with(project_dir) && candidate.is_file() {
+            return Ok(PackageSmokeTarget::Import(candidate));
+        }
     }
 
     let bin_entry = resolve_package_bin_entry(package_json.name.as_str(), &package_json.bin)?;
