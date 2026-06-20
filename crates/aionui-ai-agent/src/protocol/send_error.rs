@@ -1323,7 +1323,7 @@ mod tests {
 
         for managed_binary_missing in [
             "expected managed Claude ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\AionUi\\aionui\\runtime\\acp\\claude-agent-acp\\0.39.0\\win32-x64\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe",
-            "expected managed Codex ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\AionUi\\aionui\\runtime\\acp\\codex-acp\\0.14.0\\win32-x64\\node_modules\\@zed-industries\\codex-acp-win32-x64\\bin\\codex-acp.exe",
+            "expected managed Codex ACP platform binary missing: C:\\Users\\user\\AppData\\Roaming\\AionUi\\aionui\\runtime\\acp\\codex-acp\\0.16.0\\win32-x64\\node_modules\\@zed-industries\\codex-acp-win32-x64\\bin\\codex-acp.exe",
         ] {
             assert_classification(
                 managed_binary_missing,
