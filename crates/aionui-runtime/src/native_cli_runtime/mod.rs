@@ -35,7 +35,7 @@ struct PlatformSpec {
 impl PlatformSpec {
     fn download_url(self, tool: NativeCliToolId) -> String {
         format!(
-            "https://github.com/halojerry/pounding/releases/download/native-cli-{slug}-v{version}/{slug}-{platform}.{ext}",
+            "https://github.com/halojerry/poundingcore/releases/download/native-cli-{slug}-v{version}/{slug}-{platform}.{ext}",
             slug = tool.slug(),
             version = tool.version(),
             platform = self.manifest_key,
@@ -697,7 +697,7 @@ mod tests {
         assert!(url.contains("hermes"));
         assert!(url.contains("darwin-arm64"));
         assert!(url.contains("tar.gz"));
-        assert!(url.contains("halojerry/pounding"));
+        assert!(url.contains("halojerry/poundingcore"));
     }
 
     #[test]
