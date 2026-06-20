@@ -258,42 +258,6 @@ async fn resolve_agent_command_spec(
         value: value.to_string_lossy().into_owned(),
     }));
 
-    // OpenClaw ACP bridge needs gateway URL and token to connect to the
-    // gateway before it can complete the stdio initialize handshake.
-    // The gateway must be running on ws://127.0.0.1:18789 before the
-    // bridge starts. This is handled by OpenClawGatewayManager in the
-    // frontend, which auto-starts the gateway daemon on demand.
-    if meta.backend.as_deref() == Some("openclaw") {
-        if let Ok(home) = std::env::var("HOME") {
-            let openclaw_home = std::path::PathBuf::from(&home).join(".openclaw");
-            env.push(aionui_common::EnvVar {
-                name: "OPENCLAW_HOME".to_owned(),
-                value: openclaw_home.to_string_lossy().into_owned(),
-            });
-            let config_path = openclaw_home.join("openclaw.json");
-            if let Ok(config_bytes) = std::fs::read_to_string(&config_path) {
-                if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_bytes) {
-                    if let Some(token) = config["gateway"]["auth"]["token"].as_str() {
-                        env.push(aionui_common::EnvVar {
-                            name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
-                            value: token.to_owned(),
-                        });
-                        info!("OpenClaw: gateway token loaded from {}", config_path.display());
-                    } else {
-                        warn!("OpenClaw: gateway.auth.token missing in {} — run login first", config_path.display());
-                    }
-                }
-            } else {
-                warn!("OpenClaw: {} not found — gateway auth unavailable; run login first", config_path.display());
-            }
-        }
-        env.push(aionui_common::EnvVar {
-            name: "OPENCLAW_GATEWAY_URL".to_owned(),
-            value: "ws://127.0.0.1:18789".to_owned(),
-        });
-        info!("OpenClaw: env vars injected for generic spawn path");
-    }
-
     Ok(CommandSpec {
         command: resolved.program,
         args,
