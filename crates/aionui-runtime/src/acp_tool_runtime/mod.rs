@@ -869,16 +869,17 @@ fn resolve_package_smoke_target(
     package_json: &InstalledPackageJson,
 ) -> Result<PackageSmokeTarget, ManagedAcpToolError> {
     // Try imports/exports first — but only if the resolved entry is a clean
-    // relative path (not an absolute build-machine path or a staging artifact
-    // that would cause a doubled module resolution error).
+    // relative path within the project. Some packages (e.g. @zed-industries/codex-acp)
+    // ship a `main` field with an absolute build-machine path, which would cause
+    // Path::join to produce a doubled staging path and Node to fail with
+    // "Cannot find module".
     if let Some(entry) = resolve_package_import_entry(&package_json.exports, package_json.main.as_deref()) {
-        let candidate = package_root(project_dir, &package_json.name).join(&entry);
-        // Defend against packages whose `main`/`exports` field leaks an
-        // absolute build-machine path. When that happens the resolved path
-        // won't start with the project_dir and `node` will fail with a
-        // doubled-path "Cannot find module" error.
-        if candidate.starts_with(project_dir) && candidate.is_file() {
-            return Ok(PackageSmokeTarget::Import(candidate));
+        // Absolute paths are build-machine artifacts — skip.
+        if !entry.starts_with('/') {
+            let candidate = package_root(project_dir, &package_json.name).join(&entry);
+            if candidate.starts_with(project_dir) && candidate.is_file() {
+                return Ok(PackageSmokeTarget::Import(candidate));
+            }
         }
     }
 
