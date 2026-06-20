@@ -884,9 +884,15 @@ fn resolve_package_smoke_target(
     }
 
     let bin_entry = resolve_package_bin_entry(package_json.name.as_str(), &package_json.bin)?;
-    Ok(PackageSmokeTarget::SyntaxCheck(
-        package_root(project_dir, &package_json.name).join(bin_entry),
-    ))
+    // Some npm packages (e.g. @zed-industries/codex-acp) ship a `bin` field
+    // containing an absolute build-machine path instead of a relative one.
+    // When that happens, use it directly (no project_dir prefix join).
+    let bin_path = if bin_entry.starts_with('/') {
+        PathBuf::from(&bin_entry)
+    } else {
+        package_root(project_dir, &package_json.name).join(&bin_entry)
+    };
+    Ok(PackageSmokeTarget::SyntaxCheck(bin_path))
 }
 
 fn resolve_package_import_entry(exports_field: &serde_json::Value, main_field: Option<&str>) -> Option<String> {
