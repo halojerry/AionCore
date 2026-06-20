@@ -12,6 +12,13 @@ const SUBCOMMAND: &str = "prepare-managed-resources";
 pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) -> Result<ExitCode, CliBoundaryError> {
     let output_root = args.bundle_out;
     std::fs::create_dir_all(&output_root).map_err(|_| prepare_managed_resources_error("output.create"))?;
+    // Canonicalize to an absolute path so that all derived paths (staging
+    // directories, package roots, and smoke test targets) are absolute.
+    // Without this, a relative --bundle-out (e.g. `./managed-resources`)
+    // causes Node subprocesses to resolve relative paths against a different
+    // CWD and produce doubled staging paths.
+    let output_root =
+        std::fs::canonicalize(&output_root).map_err(|_| prepare_managed_resources_error("output.canonicalize"))?;
 
     let node_runtime = ensure_node_runtime()
         .await

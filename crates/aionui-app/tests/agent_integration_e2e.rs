@@ -294,7 +294,9 @@ async fn agents_endpoint_handles_openclaw_as_acp_backend() {
         .expect("OpenClaw ACP builtin row should exist");
     assert_eq!(meta.agent_type, AgentType::Acp);
     assert_eq!(meta.backend.as_deref(), Some("openclaw"));
-    assert_eq!(meta.command.as_deref(), Some("openclaw"));
+    // Migration 014 moved OpenClaw to the managed native CLI path:
+    // command is now NULL and resolved at runtime via NativeCliToolId.
+    assert_eq!(meta.command, None);
     assert_eq!(meta.args, vec!["acp"]);
     assert_eq!(meta.agent_source, AgentSource::Builtin);
 
@@ -311,7 +313,8 @@ async fn agents_endpoint_handles_openclaw_as_acp_backend() {
     if meta.available {
         let openclaw = openclaw.expect("available OpenClaw ACP should be visible from /api/agents");
         assert_eq!(openclaw["agent_type"], "acp");
-        assert_eq!(openclaw["command"], "openclaw");
+        // command is NULL post migration 014 — the field is absent from JSON
+        assert!(openclaw.get("command").is_none() || openclaw["command"].is_null());
         assert_eq!(openclaw["args"], json!(["acp"]));
     } else {
         assert!(
