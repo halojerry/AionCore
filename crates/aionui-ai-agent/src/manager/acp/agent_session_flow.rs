@@ -16,7 +16,7 @@ use agent_client_protocol::schema::{ContentBlock, LoadSessionRequest, PromptRequ
 use aionui_api_types::SlashCommandItem;
 use serde_json::Value;
 use tokio::sync::broadcast::error::TryRecvError;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Debug)]
 pub(super) enum PromptOutcome {
@@ -77,18 +77,28 @@ impl AcpAgentManager {
     /// Emits a `warn!` so ops can still see the original failure that
     /// triggered the rebuild.
     async fn rebuild_after_session_not_found(&self, stale_sid: &str, err: &AcpError) -> Result<String, AgentError> {
+        let backend = self.params.metadata.backend.as_deref().unwrap_or("unknown");
         warn!(
             conversation_id = %self.params.conversation_id,
+            backend,
             stale_session_id = %stale_sid,
             error = %err,
-            "open_session_resume: stale session id rejected by CLI; rebuilding via session/new"
+            "open_session_resume: stale session id rejected by CLI; rebuilding via session/new (context may be lost)"
         );
         {
             let mut session = self.session.write().await;
             session.clear_session_id();
             self.commit_session_changes(&mut session).await;
         }
-        self.open_session_new().await
+        let new_sid = self.open_session_new().await?;
+        info!(
+            conversation_id = %self.params.conversation_id,
+            backend,
+            stale_session_id = %stale_sid,
+            new_session_id = %new_sid,
+            "open_session_resume: session rebuilt — previous conversation context has been discarded"
+        );
+        Ok(new_sid)
     }
 
     async fn rebuild_after_acp_session_not_found(&self, stale_sid: &str, err: AcpError) -> Result<String, AgentError> {

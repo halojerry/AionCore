@@ -407,24 +407,41 @@ async fn resolve_builtin_native_cli_command_spec(
                                 name: "OPENCLAW_GATEWAY_TOKEN".to_owned(),
                                 value: token.to_owned(),
                             });
+                            info!(
+                                "OpenClaw config loaded: gateway token found, home={}",
+                                openclaw_home.display()
+                            );
                         } else {
-                            warn!("OpenClaw config missing gateway.auth.token — ACP bridge auth will fail");
+                            warn!(
+                                "OpenClaw config missing gateway.auth.token at {} — run POUNDING login to regenerate",
+                                config_path.display()
+                            );
                         }
                     }
                     Err(e) => {
-                        warn!(%e, "Failed to parse openclaw.json — ACP bridge auth will fail");
+                        warn!(
+                            %e,
+                            path = %config_path.display(),
+                            "Failed to parse openclaw.json — file may be corrupt; delete it and re-login to regenerate"
+                        );
                     }
                 },
                 Err(e) => {
-                    warn!(%e, "Failed to read openclaw.json — ACP bridge auth will fail");
+                    warn!(
+                        %e,
+                        path = %config_path.display(),
+                        "openclaw.json not found — OpenClaw config has not been provisioned; log in with NewAPI account first"
+                    );
                 }
             }
         }
         // Point ACP subprocess at the existing gateway
+        let gateway_url = "ws://127.0.0.1:18789";
         env.push(aionui_common::EnvVar {
             name: "OPENCLAW_GATEWAY_URL".to_owned(),
-            value: "ws://127.0.0.1:18789".to_owned(),
+            value: gateway_url.to_owned(),
         });
+        info!(gateway_url, "OpenClaw ACP subprocess configured");
     }
 
     Ok(CommandSpec {
