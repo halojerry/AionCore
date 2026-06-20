@@ -79,12 +79,8 @@ pub(super) struct SseEvent {
 
 /// Drain the stderr background read task after an early exit.
 async fn drain_stderr_handle(handle: tokio::task::JoinHandle<String>) -> String {
-    // Abort the task first — we may be returning before stderr EOF
     handle.abort();
-    match handle.await {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    }
+    handle.await.unwrap_or_default()
 }
 
 /// Run the MCP protocol handshake over stdio (newline-delimited JSON-RPC).
