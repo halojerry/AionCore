@@ -104,7 +104,11 @@ pub(super) async fn run_stdio_protocol(
     // 1. initialize
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_initialize_request(1)).await {
         let stderr_text = drain_stderr_handle(stderr_handle).await;
-        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!(" stderr: {stderr_text}")
+        };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
             format!("Failed to send initialize: {e}{detail}"),
@@ -115,7 +119,11 @@ pub(super) async fn run_stdio_protocol(
         Ok(r) => r,
         Err(e) => {
             let stderr_text = drain_stderr_handle(stderr_handle).await;
-            let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
+            let detail = if stderr_text.is_empty() {
+                String::new()
+            } else {
+                format!(" stderr: {stderr_text}")
+            };
             return error_result(
                 McpConnectionTestErrorCode::ProtocolError,
                 format!("initialize response: {e}{detail}"),
@@ -130,7 +138,11 @@ pub(super) async fn run_stdio_protocol(
     // 2. initialized notification
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_initialized_notification()).await {
         let stderr_text = drain_stderr_handle(stderr_handle).await;
-        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!(" stderr: {stderr_text}")
+        };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
             format!("Failed to send initialized: {e}{detail}"),
@@ -141,7 +153,11 @@ pub(super) async fn run_stdio_protocol(
     // 3. tools/list
     if let Err(e) = write_jsonrpc_line(&mut stdin, &build_tools_list_request(2)).await {
         let stderr_text = drain_stderr_handle(stderr_handle).await;
-        let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
+        let detail = if stderr_text.is_empty() {
+            String::new()
+        } else {
+            format!(" stderr: {stderr_text}")
+        };
         return error_result(
             McpConnectionTestErrorCode::ProtocolError,
             format!("Failed to send tools/list: {e}{detail}"),
@@ -152,7 +168,11 @@ pub(super) async fn run_stdio_protocol(
         Ok(r) => r,
         Err(e) => {
             let stderr_text = drain_stderr_handle(stderr_handle).await;
-            let detail = if stderr_text.is_empty() { String::new() } else { format!(" stderr: {stderr_text}") };
+            let detail = if stderr_text.is_empty() {
+                String::new()
+            } else {
+                format!(" stderr: {stderr_text}")
+            };
             return error_result(
                 McpConnectionTestErrorCode::ProtocolError,
                 format!("tools/list response: {e}{detail}"),

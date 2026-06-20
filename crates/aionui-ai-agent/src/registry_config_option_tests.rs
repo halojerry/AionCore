@@ -12,9 +12,7 @@ fn assert_json_eq(left: &Option<serde_json::Value>, right: &Option<serde_json::V
             let right_norm = normalize_json_value(r);
             if left_norm != right_norm {
                 let diffs = json_diff(&left_norm, &right_norm);
-                panic!(
-                    "JSON values differ after normalization:\n  diffs: {diffs:?}\n  left: {l:?}\n  right: {r:?}"
-                );
+                panic!("JSON values differ after normalization:\n  diffs: {diffs:?}\n  left: {l:?}\n  right: {r:?}");
             }
         }
         (None, None) => {}
@@ -33,9 +31,7 @@ fn normalize_json_value(value: &serde_json::Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(normalized)
         }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(normalize_json_value).collect())
-        }
+        serde_json::Value::Array(arr) => serde_json::Value::Array(arr.iter().map(normalize_json_value).collect()),
         other => other.clone(),
     }
 }
@@ -437,7 +433,7 @@ async fn apply_handshake_merges_partial_config_option_updates_before_persisting(
                 {"id": "auto", "name": "Default"},
                 {"id": "full-access", "name": "Full Access"}
             ]
-        }))
+        })),
     );
     assert_json_eq(
         &refreshed.handshake.available_models,
@@ -450,6 +446,6 @@ async fn apply_handshake_merges_partial_config_option_updates_before_persisting(
                 {"id": "gpt-5.4/low", "label": "gpt-5.4 (low)"},
                 {"id": "gpt-5.4/medium", "label": "gpt-5.4 (medium)"}
             ]
-        }))
+        })),
     );
 }

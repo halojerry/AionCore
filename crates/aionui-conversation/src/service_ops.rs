@@ -77,9 +77,7 @@ impl ConversationService {
     pub async fn get_model(&self, conversation_id: &str) -> Result<GetModelInfoResponse, ConversationError> {
         match self.task(conversation_id) {
             Ok(task) => task.get_model().await.map_err(ConversationError::from),
-            Err(ConversationError::ActiveAgentNotFound { .. }) => {
-                Ok(GetModelInfoResponse { model_info: None })
-            }
+            Err(ConversationError::ActiveAgentNotFound { .. }) => Ok(GetModelInfoResponse { model_info: None }),
             Err(e) => Err(e),
         }
     }
