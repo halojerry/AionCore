@@ -913,7 +913,7 @@ fn resolve_package_smoke_target(
     // cause Node to fail with "Cannot find module".
     if let Some(entry) = resolve_package_import_entry(&package_json.exports, package_json.main.as_deref()) {
         // Absolute paths are build-machine artifacts — skip.
-        if !entry.starts_with('/') {
+        if !Path::new(&entry).is_absolute() {
             let candidate = pkg_root.join(&entry);
             // Only use import if the resolved path stays within the package
             // directory. Using `starts_with(&pkg_root)` instead of
@@ -929,7 +929,7 @@ fn resolve_package_smoke_target(
     let bin_entry = resolve_package_bin_entry(package_json.name.as_str(), &package_json.bin)?;
     // Some npm packages ship a `bin` field containing an absolute build-machine
     // path instead of a relative one. When that happens, use it directly.
-    let bin_path = if bin_entry.starts_with('/') {
+    let bin_path = if Path::new(&bin_entry).is_absolute() {
         PathBuf::from(&bin_entry)
     } else {
         pkg_root.join(&bin_entry)
