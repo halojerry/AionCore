@@ -624,13 +624,7 @@ async fn prepare_local_tool_source_to_root(
     let manifest = build_local_artifact_manifest(tool, &project_dir)?;
     validate_bridge_entrypoint(&project_dir, &manifest)?;
     validate_platform_binary(tool, &project_dir, spec)?;
-    validate_dependency_tree(
-        node_runtime,
-        &project_dir,
-        &npm_config,
-        tool,
-    )
-    .await?;
+    validate_dependency_tree(node_runtime, &project_dir, &npm_config, tool).await?;
     validate_package_smoke(node_runtime, &project_dir, tool).await?;
 
     let manifest_path = project_dir.join("manifest.json");
@@ -643,13 +637,7 @@ async fn prepare_local_tool_source_to_root(
 
     managed_resources::materialize_directory(&project_dir, target_root).map_err(ManagedAcpToolError::io)?;
     let resolved = validate_tool_root(tool, target_root, None)?;
-    validate_dependency_tree(
-        node_runtime,
-        target_root,
-        &npm_config,
-        tool,
-    )
-    .await?;
+    validate_dependency_tree(node_runtime, target_root, &npm_config, tool).await?;
     validate_package_smoke(node_runtime, target_root, tool).await?;
     info!(
         tool = tool.slug(),
