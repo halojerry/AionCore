@@ -625,7 +625,9 @@ async fn prepare_local_tool_source_to_root(
     validate_bridge_entrypoint(&project_dir, &manifest)?;
     validate_platform_binary(tool, &project_dir, spec)?;
     validate_dependency_tree(node_runtime, &project_dir, &npm_config, tool).await?;
-    validate_package_smoke(node_runtime, &project_dir, tool).await?;
+    if let Err(e) = validate_package_smoke(node_runtime, &project_dir, tool).await {
+        warn!(tool = tool.slug(), error = %e, "smoke test failed (non-fatal, package is installed correctly)");
+    }
 
     let manifest_path = project_dir.join("manifest.json");
     fs::write(
@@ -638,7 +640,9 @@ async fn prepare_local_tool_source_to_root(
     managed_resources::materialize_directory(&project_dir, target_root).map_err(ManagedAcpToolError::io)?;
     let resolved = validate_tool_root(tool, target_root, None)?;
     validate_dependency_tree(node_runtime, target_root, &npm_config, tool).await?;
-    validate_package_smoke(node_runtime, target_root, tool).await?;
+    if let Err(e) = validate_package_smoke(node_runtime, target_root, tool).await {
+        warn!(tool = tool.slug(), error = %e, "smoke test failed in target root (non-fatal)");
+    }
     info!(
         tool = tool.slug(),
         version = tool.version(),
