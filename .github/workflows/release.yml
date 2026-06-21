@@ -32,6 +32,7 @@ env:
 jobs:
   prepare-release:
     name: Prepare Release Metadata
+    if: ${{ !contains(github.ref_name, '-Pounding') }}
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.metadata.outputs.version }}
