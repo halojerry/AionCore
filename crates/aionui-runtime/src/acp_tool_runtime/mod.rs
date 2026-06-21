@@ -54,6 +54,19 @@ enum PackageSmokeTarget {
     SyntaxCheck(PathBuf),
 }
 
+/// npm configuration paths co-located on the staging drive.
+///
+/// On GitHub Actions Windows runners, cross-drive path resolution (C: runtime
+/// vs. D: staging) causes npm to produce bare drive letters and fail with
+/// EISDIR. Bundling these paths together keeps all npm config on the same
+/// filesystem as the working directory.
+struct NpmConfig<'a> {
+    cache_dir: &'a Path,
+    userconfig: &'a Path,
+    globalconfig: &'a Path,
+    prefix: &'a Path,
+}
+
 #[derive(Debug, Serialize)]
 struct LocalArtifactManifestWrite {
     entrypoint: String,
@@ -559,14 +572,18 @@ async fn prepare_local_tool_source_to_root(
     fs::write(&npm_globalconfig, []).map_err(ManagedAcpToolError::io)?;
     fs::create_dir_all(&npm_prefix).map_err(ManagedAcpToolError::io)?;
 
+    let npm_config = NpmConfig {
+        cache_dir: &npm_cache_dir,
+        userconfig: &npm_userconfig,
+        globalconfig: &npm_globalconfig,
+        prefix: &npm_prefix,
+    };
+
     write_dev_package_json(&project_dir)?;
     run_npm_prepare_step(
         node_runtime,
         &project_dir,
-        &npm_cache_dir,
-        &npm_userconfig,
-        &npm_globalconfig,
-        &npm_prefix,
+        &npm_config,
         [
             "install",
             "--package-lock-only",
@@ -587,10 +604,7 @@ async fn prepare_local_tool_source_to_root(
     run_npm_prepare_step(
         node_runtime,
         &project_dir,
-        &npm_cache_dir,
-        &npm_userconfig,
-        &npm_globalconfig,
-        &npm_prefix,
+        &npm_config,
         [
             "ci",
             "--omit=dev",
@@ -613,10 +627,7 @@ async fn prepare_local_tool_source_to_root(
     validate_dependency_tree(
         node_runtime,
         &project_dir,
-        &npm_cache_dir,
-        &npm_userconfig,
-        &npm_globalconfig,
-        &npm_prefix,
+        &npm_config,
         tool,
     )
     .await?;
@@ -635,10 +646,7 @@ async fn prepare_local_tool_source_to_root(
     validate_dependency_tree(
         node_runtime,
         target_root,
-        &npm_cache_dir,
-        &npm_userconfig,
-        &npm_globalconfig,
-        &npm_prefix,
+        &npm_config,
         tool,
     )
     .await?;
@@ -656,20 +664,17 @@ async fn prepare_local_tool_source_to_root(
 async fn run_npm_prepare_step<const N: usize>(
     node_runtime: &crate::ResolvedNodeRuntime,
     project_dir: &Path,
-    npm_cache_dir: &Path,
-    npm_userconfig: &Path,
-    npm_globalconfig: &Path,
-    npm_prefix: &Path,
+    npm_config: &NpmConfig<'_>,
     args: [&str; N],
     label: &str,
 ) -> Result<(), ManagedAcpToolError> {
     let mut builder = Builder::from_resolved(&node_runtime.npm_command());
     builder
         .current_dir(project_dir)
-        .env("npm_config_cache", npm_cache_dir)
-        .env("npm_config_userconfig", npm_userconfig)
-        .env("npm_config_globalconfig", npm_globalconfig)
-        .env("npm_config_prefix", npm_prefix)
+        .env("npm_config_cache", npm_config.cache_dir)
+        .env("npm_config_userconfig", npm_config.userconfig)
+        .env("npm_config_globalconfig", npm_config.globalconfig)
+        .env("npm_config_prefix", npm_config.prefix)
         .args(args);
     let output = builder.output().await.map_err(ManagedAcpToolError::io)?;
     if output.status.success() {
@@ -788,19 +793,13 @@ fn validate_platform_binary(
 async fn validate_dependency_tree(
     node_runtime: &crate::ResolvedNodeRuntime,
     project_dir: &Path,
-    npm_cache_dir: &Path,
-    npm_userconfig: &Path,
-    npm_globalconfig: &Path,
-    npm_prefix: &Path,
+    npm_config: &NpmConfig<'_>,
     tool: ManagedAcpToolId,
 ) -> Result<(), ManagedAcpToolError> {
     run_npm_prepare_step(
         node_runtime,
         project_dir,
-        npm_cache_dir,
-        npm_userconfig,
-        npm_globalconfig,
-        npm_prefix,
+        npm_config,
         ["ls", "--omit=dev", "--all"],
         &format!("validate managed {} dependency tree", tool.display_name()),
     )
