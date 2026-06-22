@@ -209,10 +209,35 @@ impl ConversationService {
                 return Err(err);
             }
         };
-        let response = task
-            .set_config_option(option_id, &req.value)
-            .await
-            .map_err(ConversationError::from)?;
+        // Redirect model/mode switches to the dedicated endpoints that
+        // actually apply the change to the running agent. The upstream
+        // config-options infrastructure (config_option_catalog, ConfigSnapshot,
+        // resolve_set_path) is not fully backported yet, so set_config_option
+        // would hit a stub that returns Observed without doing anything.
+        let response = match option_id {
+            "model" => {
+                task.set_model_confirmed(&req.value)
+                    .await
+                    .map_err(ConversationError::from)?;
+                SetConfigOptionResponse {
+                    confirmation: ConfigOptionConfirmation::Observed,
+                    config_options: None,
+                }
+            }
+            "mode" => {
+                task.set_mode(&req.value)
+                    .await
+                    .map_err(ConversationError::from)?;
+                SetConfigOptionResponse {
+                    confirmation: ConfigOptionConfirmation::Observed,
+                    config_options: None,
+                }
+            }
+            _ => task
+                .set_config_option(option_id, &req.value)
+                .await
+                .map_err(ConversationError::from)?,
+        };
 
         // Mirror runtime model/mode switches into the persisted assistant
         // snapshot + preference so the next conversation seeded from this
