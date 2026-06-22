@@ -100,6 +100,27 @@ pub(super) async fn build(
             tracing::info!(?keys, "cc-switch: env vars injected");
         }
     }
+
+    // cc-switch unified config: ensure live config files are fresh before spawn.
+    // Each CLI reads its own config files at process start — we write them here
+    // from the cc-switch DB (the SSOT) so the user's latest model selection is
+    // always reflected, even if the config files were deleted or corrupted.
+    //
+    // NOTE: OpenClaw is intentionally excluded — its config format involves
+    // gateway tokens and merge-mode which are managed by the TypeScript
+    // writeOpenClawManagedProviderModel path. Overwriting it from Rust
+    // causes gateway crashes (ConfigMutationConflictError).
+    match meta.backend.as_deref() {
+        Some("codex") => {
+            crate::cc_switch::ensure_codex_live_config();
+            tracing::info!("cc-switch: codex live config ensured");
+        }
+        Some("opencode") => {
+            crate::cc_switch::ensure_opencode_live_config();
+            tracing::info!("cc-switch: opencode live config ensured");
+        }
+        _ => {}
+    }
     let session_snapshot = build_context.session_snapshot;
 
     // Load user-configured MCP servers from the DB so they reach

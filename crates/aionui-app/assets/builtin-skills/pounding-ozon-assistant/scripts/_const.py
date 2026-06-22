@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-SKILL_VERSION = '0.4.0'
+SKILL_VERSION = '0.6.0'
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 DATA_DIR = SKILL_ROOT / 'data'
@@ -66,6 +66,26 @@ CONFIG_FILE = get_config_file()
 LEGACY_CONFIG_FILE = get_legacy_config_file()
 
 # Defaults
+import json as _json
+
+
+def _read_pounding_config(key_path: str) -> str | None:
+    config_path = Path.home() / ".pounding" / "config.json"
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path) as f:
+            cfg = _json.load(f)
+        for part in key_path.split("."):
+            if isinstance(cfg, dict):
+                cfg = cfg.get(part)
+            else:
+                return None
+        return str(cfg) if cfg is not None else None
+    except Exception:
+        return None
+
+
 DEFAULT_OZON_CURRENCY = 'RUB'
 DEFAULT_MXOU_BASE_URL = 'https://api.mxou.cn'
 DEFAULT_IMAGE_ASPECT = '1024x1536'

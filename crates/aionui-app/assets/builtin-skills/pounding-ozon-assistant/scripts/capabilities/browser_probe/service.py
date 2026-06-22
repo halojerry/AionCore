@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
@@ -9,18 +10,42 @@ import subprocess
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from urllib.request import urlopen
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
+import socket as _socket
 
 from scripts._const import DATA_DIR, DEFAULT_CACHE_TTL_SECONDS, get_config_profile
 
-import socket as _socket
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+    _PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PlaywrightError = Exception  # type: ignore
+    PlaywrightTimeoutError = Exception  # type: ignore
+    sync_playwright = None  # type: ignore
+    _PLAYWRIGHT_AVAILABLE = False
+
+# Auto-cleanup Playwright instances on exit
+import atexit as _atexit
+def _cleanup_playwright():
+    bi = globals().get("_browser_instance")
+    pi = globals().get("_playwright_instance")
+    try:
+        if bi is not None:
+            try: bi.close()
+            except Exception: pass
+        if pi is not None:
+            try: pi.stop()
+            except Exception: pass
+    except Exception:
+        pass
+_atexit.register(_cleanup_playwright)
 
 
 def _pick_free_port() -> int:
@@ -743,6 +768,37 @@ def find_browser_executable(explicit: str | None = None) -> str | None:
             pass
 
     # ═══════════════════════════════════════════════════════════════════════
+
+    # Phase 2.5: Detect running Chromium browser — prefer what user is already using
+    # This catches cases where Edge or Brave is running but Chrome is first in the path list
+    try:
+        proc = subprocess.run(['ps', '-axo', 'command='], capture_output=True, text=True, timeout=5)
+        seen = set()
+        browser_exes = [
+            '/Google Chrome.app/Contents/MacOS/Google Chrome',
+            '/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+            '/Brave Browser.app/Contents/MacOS/Brave Browser',
+            '/Chromium.app/Contents/MacOS/Chromium',
+            '/Opera.app/Contents/MacOS/Opera',
+            '/Vivaldi.app/Contents/MacOS/Vivaldi',
+        ]
+        for line in (proc.stdout or '').splitlines():
+            # Skip helper/renderer/gpu processes — only match main browser executable
+            if any(h in line for h in ['Helper', 'helper', 'renderer', 'gpu-process']):
+                continue
+            for exe in browser_exes:
+                idx = line.find(exe)
+                if idx >= 0:
+                    p = line[idx:idx + len(exe)]
+                    if Path(p).exists() and p not in seen:
+                        seen.add(p)
+                    break
+        # Insert running browsers FIRST (before static paths)
+        for rp in seen:
+            paths.insert(0, rp)
+    except Exception:
+        pass
+
     # Phase 3: Playwright bundled Chromium (pip install playwright)
     # ═══════════════════════════════════════════════════════════════════════
     try:
@@ -1018,17 +1074,72 @@ def _load_browser_session(profile: str) -> dict[str, Any] | None:
 
 
 def _write_browser_session(profile: str, payload: dict[str, Any]) -> Path:
+    import tempfile
+    import os as _os_atomic
     target = _session_file(profile)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix='.session-', suffix='.json')
+    try:
+        _os_atomic.write(fd, json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8'))
+        _os_atomic.fsync(fd)
+    finally:
+        _os_atomic.close(fd)
+    _os_atomic.replace(tmp, str(target))
     return target
 
 
 def _cdp_available(cdp_url: str) -> bool:
     try:
         with urlopen(cdp_url + '/json/version', timeout=2) as resp:
-            return resp.status == 200
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode('utf-8'))
+            if 'Browser' not in data:
+                return False
+            # Exclude Electron apps (e.g. VS Code, POUNDING-Dev) that expose CDP
+            # but aren't real Chrome and can't navigate to 1688 pages
+            ua = str(data.get('User-Agent', ''))
+            if 'Electron' in ua:
+                return False
+            return True
     except Exception:
         return False
+
+
+def _chrome_user_data_dir_matches(cdp_url: str, expected_dir: str) -> bool:
+    """Verify that the Chrome at cdp_url uses the expected --user-data-dir profile.
+
+    Returns True if the Chrome's profile matches expected_dir, or if we can't
+    determine the profile (conservative: don't break existing sessions).
+    """
+    if not expected_dir:
+        return True  # No expectation → don't block
+    expected_resolved = str(Path(expected_dir).resolve())
+    try:
+        proc = subprocess.run(
+            ['ps', '-axo', 'command='],
+            check=False, capture_output=True, text=True,
+        )
+    except Exception:
+        return True  # Can't check → don't block (conservative)
+
+    port_match = re.search(r':(\d+)/?', cdp_url)
+    if not port_match:
+        return True
+    port = port_match.group(1)
+
+    for line in (proc.stdout or '').splitlines():
+        if f'--remote-debugging-port={port}' not in line:
+            continue
+        dir_match = re.search(r'--user-data-dir=(\S+)', line)
+        if dir_match:
+            actual = str(Path(dir_match.group(1)).resolve())
+            return actual == expected_resolved
+        # Chrome launched without explicit --user-data-dir → can't verify
+        return True
+    # CDP is alive but no Chrome process with --remote-debugging-port found
+    # → likely Electron or another app, NOT our Chrome
+    return False
 
 
 def _find_live_cdp_session_for_profile(
@@ -1082,65 +1193,142 @@ def _find_live_cdp_session_for_profile(
             loose_matches.append(entry)
 
     # Prefer exact profile match, fall back to any live CDP session
-    resolved = (exact_matches or loose_matches or [None])[-1]
+    # Only SAVE exact matches — loose matches belong to other repos/profiles
+    resolved = None
+    should_save = False
+    if exact_matches:
+        resolved = exact_matches[-1]
+        should_save = True
+    elif loose_matches:
+        resolved = loose_matches[-1]
+        should_save = False  # Don't persist another repo's Chrome session
     if resolved is None:
         return None
-    try:
-        _write_browser_session(profile, resolved)
-    except Exception:
-        pass
+    resolved.setdefault('created_at', int(time.time()))
+    if should_save:
+        try:
+            _write_browser_session(profile, resolved)
+        except Exception:
+            pass
     return resolved
 
 
 def _resolve_browser_session(profile: str) -> dict[str, Any]:
     session = _load_browser_session(profile) or {}
+    # Expire login after 24h
+    if session.get('login_detected'):
+        created = session.get('created_at', 0)
+        if created and time.time() - created > 86400:
+            session.pop('login_detected', None)
     cdp_url = str(session.get('cdp_url') or '').strip()
-    if cdp_url and _cdp_available(cdp_url):
+    expected_dir = str(_profile_dir(profile))
+    if cdp_url and _cdp_available(cdp_url) and _chrome_user_data_dir_matches(cdp_url, expected_dir):
         return session
+    # Cached session is stale — delete it so we don't keep returning dead CDP URLs
+    if session:
+        try:
+            _session_file(profile).unlink(missing_ok=True)
+        except Exception:
+            pass
     recovered = _find_live_cdp_session_for_profile(profile, session)
     if recovered:
         return recovered
 
-    # No live Chrome found — do NOT auto-launch.
-    # Auto-launching creates a new browser window that loses login state
-    # and triggers 1688 anti-bot detection.
-    # Instead: caller (enrich_product_with_cdp) will call _wait_for_login_session()
-    # which explicitly opens the 1688 login page for the user to scan QR,
-    # then keeps Chrome open for subsequent CDP reuse.
-    return session
+    # No live Chrome found — auto-launch with persistent profile.
+    # Uses Playwright to launch Chrome with anti-detection stealth args.
+    # The persistent profile preserves cookies so the user only needs to log in once.
+    try:
+        from scripts.capabilities.browser_probe.stealth import STEALTH_ARGS
+        import random as _random, socket as _sock, playwright.sync_api as _pw
+
+        profile_dir = _profile_dir(profile)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        # Find an available CDP port
+        cdp_port = 9222
+        for p in range(9222, 9300):
+            try:
+                with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+                    s.bind(('127.0.0.1', p))
+                    cdp_port = p
+                    break
+            except OSError:
+                continue
+
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+        _logger.info("Auto-launching Chrome with profile %s on port %d", profile_dir, cdp_port)
+
+        pw = _pw.sync_playwright().start()
+        browser = pw.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=False,
+            args=STEALTH_ARGS + [f'--remote-debugging-port={cdp_port}'],
+            locale='zh-CN',
+            viewport={'width': _random.randint(1366, 1920), 'height': _random.randint(768, 1080)},
+        )
+        cdp_url = f'http://127.0.0.1:{cdp_port}'
+        # Brief wait for CDP to be ready
+        import time as _time
+        _time.sleep(2)
+        if _cdp_available(cdp_url):
+            _logger.info("Auto-launched Chrome ready at %s", cdp_url)
+            return {'cdp_url': cdp_url, 'browser': browser, 'playwright': pw}
+    except Exception as e:
+        _logger.debug("Auto-launch failed: %s", e)
+    return {}
 
 
-def _connect_existing_chrome(p: Any, cdp_url: str) -> Any:
+def _connect_existing_chrome(p: Any, cdp_url: str) -> tuple[Any, bool]:
     """Connect to an existing Chrome instance via CDP.
-
-    Falls back to launching a NEW Playwright Chromium instance (not the
-    system Chrome) when the existing instance was launched externally
-    (e.g. by the POUNDING app) and doesn't support Playwright's CDP
-    features (Browser.setDownloadBehavior).
-
-    The fallback uses Playwright's bundled Chromium so there is no
-    user-data-dir conflict with the running Chrome.
     """
     import logging as _logging
     _logger = _logging.getLogger(__name__)
 
-    try:
-        return p.chromium.connect_over_cdp(cdp_url)
-    except Exception as exc:
-        if 'setDownloadBehavior' not in str(exc) and 'Browser context management' not in str(exc):
-            raise
-        # Existing Chrome was launched externally — launch Playwright's
-        # bundled Chromium instead (no user-data-dir conflict).
-        _logger.warning("CDP connect_over_cdp failed (%s), launching Playwright Chromium", exc)
-        from scripts.capabilities.browser_probe.stealth import STEALTH_ARGS
-        browser = p.chromium.launch(
-            headless=False,
-            args=STEALTH_ARGS,
-        )
-        return browser
+    # 1. Try connecting to existing Chrome via CDP (retry up to 3 times)
+    for attempt in range(3):
+        try:
+            browser = p.chromium.connect_over_cdp(cdp_url)
+            _logger.info("Connected to existing Chrome at %s", cdp_url)
+            return browser, True
+        except Exception as exc:
+            if attempt < 2:
+                import time as _time_cdp
+                _time_cdp.sleep(3)
+            else:
+                _logger.debug("connect_over_cdp failed after 3 attempts (%s)", exc)
+
+    # 2. Fallback: launch new browser with persistent profile (shared cookies)
+    from scripts.capabilities.browser_probe.stealth import STEALTH_ARGS
+    import random as _random
+    profile_dir = _profile_dir('default')
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    _logger.info("Launching new persistent context (profile: %s)", profile_dir)
+
+    import socket as _sock
+    cdp_port = 9222
+    for p in range(9222, 9300):
+        try:
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as s:
+                s.bind(('127.0.0.1', p))
+                cdp_port = p
+                break
+        except OSError:
+            continue
+    browser = p.chromium.launch_persistent_context(
+        user_data_dir=str(profile_dir),
+        headless=False,
+        args=STEALTH_ARGS + [f'--remote-debugging-port={cdp_port}'],
+        locale='zh-CN',
+        viewport={'width': _random.randint(1366, 1920), 'height': _random.randint(768, 1080)},
+    )
+    return browser, False
 
 
 def _first_browser_context(browser: Any) -> Any:
+    # launch_persistent_context returns a BrowserContext directly
+    if hasattr(browser, 'new_page') and not hasattr(browser, 'new_context'):
+        return browser
     import random as _random
     contexts = list(getattr(browser, 'contexts', []) or [])
     if contexts:
@@ -1319,11 +1507,27 @@ def _wait_for_login_session(
 
     try:
         # Reuse existing browser if available
-        if _browser_instance and _browser_instance.is_connected():
-            browser = _browser_instance
-            page = browser.new_page()
-        else:
-            _playwright_instance = sync_playwright().start()
+        if _browser_instance is not None:
+            try:
+                # BrowserContext from launch_persistent_context — check liveness via pages
+                if _browser_instance.pages:
+                    browser = _browser_instance
+                    page = browser.new_page()
+                else:
+                    _browser_instance = None
+            except Exception:
+                _browser_instance = None
+        if _browser_instance is None:
+            # Run Playwright sync start in thread when asyncio loop is active
+            _in_async2 = False
+            try: _in_async2 = asyncio.get_running_loop() is not None
+            except RuntimeError: pass
+            if _in_async2:
+                with ThreadPoolExecutor(max_workers=1) as _exec:
+                    _fut = _exec.submit(lambda: sync_playwright().start())
+                    _playwright_instance = _fut.result(timeout=30)
+            else:
+                _playwright_instance = sync_playwright().start()
             browser = _playwright_instance.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=False,
@@ -1334,9 +1538,20 @@ def _wait_for_login_session(
             _browser_instance = browser
             page = browser.new_page()
 
-        # Save CDP URL for session reuse
-        cdp_url = f'http://127.0.0.1:{cdp_port}'
-        session['cdp_url'] = cdp_url
+        # Save CDP URL for session reuse — verify port is actually live
+        import time as _time2
+        # Wait up to 10s for CDP port to become ready (2s was too short on slower machines)
+        for _cdp_wait in range(5):
+            _time2.sleep(2)
+            actual_cdp_url = f'http://127.0.0.1:{cdp_port}'
+            if _cdp_available(actual_cdp_url):
+                break
+        else:
+            # Port still not ready — scan for the real one
+            recovered = _find_live_cdp_session_for_profile(profile_name, session)
+            if recovered:
+                actual_cdp_url = str(recovered.get('cdp_url') or '')
+        session['cdp_url'] = actual_cdp_url
         session['remote_debugging_port'] = cdp_port
         session['user_data_dir'] = str(profile_dir)
         try:
@@ -1497,7 +1712,11 @@ def _filter_probe_images(images: list[str]) -> list[str]:
         seen.add(value)
         deduped.append(value)
     filtered = [url for url in deduped if is_likely_product_image(url)]
-    return filtered or deduped
+    # 排序：主产品图在前（白底图 > 1688图 > 其它），gg_dtc缩略图已被 is_likely_product_image 过滤
+    from scripts.lib.reference_images import reference_priority
+    scored = [(reference_priority(url), url) for url in filtered]
+    scored.sort(key=lambda x: x[0])
+    return [url for _, url in scored] or deduped
 
 
 def _auto_install_browser() -> bool:
@@ -1580,6 +1799,28 @@ def check_cdp_prerequisites(
     issues: list[str] = []
     suggestions: list[str] = []
 
+    # 0. Check if we're in a headless environment (no display at all)
+    import os as _os
+    _is_headless = False
+    if _os.name != 'nt':
+        # Mac: check if window server available; Linux: check DISPLAY
+        if _os.uname().sysname == 'Darwin':
+            import subprocess as _sp
+            try:
+                r = _sp.run(['pgrep', '-x', 'WindowServer'], capture_output=True, timeout=2)
+                _is_headless = r.returncode != 0
+            except Exception:
+                pass
+        else:
+            _is_headless = not (_os.environ.get('DISPLAY') or _os.environ.get('WAYLAND_DISPLAY'))
+    if _is_headless:
+        return {
+            'ok': False, 'browser_available': False, 'browser_path': None,
+            'session_available': False, 'cdp_url': None, 'login_required': True,
+            'issues': ['无图形界面，无法启动浏览器'],
+            'suggestions': ['在桌面环境运行 publish-new 以启用 CDP 富集'],
+        }
+
     # 1. Check browser
     resolved_browser = find_browser_executable(browser_path)
     browser_available = bool(resolved_browser)
@@ -1636,27 +1877,10 @@ def check_cdp_prerequisites(
             f'  Chrome 需带参数: --remote-debugging-port=9222 --user-data-dir=<profile目录>'
         )
 
-    # 3. Check login (quick check if session available)
+    # 3. Check login — use saved session flag, don't open new pages (CDP-incompatible)
     login_required = True
     if session_available:
-        try:
-            with sync_playwright() as p:
-                browser = _connect_existing_chrome(p, cdp_url)
-                try:
-                    context = browser.contexts[0] if browser.contexts else browser.new_context()
-                    page = context.new_page()
-                    try:
-                        page.goto('https://detail.1688.com/', wait_until='domcontentloaded', timeout=15000)
-                        snapshot = _probe_login_snapshot(page)
-                        login_required = _snapshot_login_required(
-                            snapshot.get('url'), snapshot.get('bodyText')
-                        )
-                    finally:
-                        page.close()
-                finally:
-                    browser.close()
-        except Exception:
-            login_required = True
+        login_required = not bool(session.get('login_detected'))
 
     if session_available and login_required:
         issues.append('浏览器会话未登录 1688')
@@ -1682,47 +1906,58 @@ def probe_1688_page_safe(
 
     Never raises — returns a result dict with `ok`, `data`, `error`, `degraded`.
     Use this as the primary entry point from agent flows (Worker A Step 2b).
+
+    Detects asyncio event loop and runs Playwright sync code in a separate
+    thread to avoid "Playwright Sync API inside the asyncio loop" errors.
     """
+    # Check if we're inside an asyncio event loop
+    _in_async = False
     try:
-        result = probe_1688_page(url, **kwargs)
-        probe = result.get('probe', {})
-        return {
-            'ok': result.get('ready', False),
-            'degraded': not result.get('ready', False),
-            'data': {
-                'title': probe.get('title', ''),
-                'price': probe.get('price', ''),
-                'brand': probe.get('brand', ''),
-                'seller': probe.get('seller', ''),
-                'images': _filter_probe_images(list(probe.get('images') or [])),
-                'weight_grams': (probe.get('packagingRows') or [{}])[0].get('weightGrams') if probe.get('packagingRows') else None,
-                'packaging_rows': probe.get('packagingRows', []),
-                'sku_details': probe.get('skuDetails', []),
-                'attributes': probe.get('attributes', []),
-                'option_groups': probe.get('optionGroups', []),
-            },
-            'error': None if result.get('ready') else '页面数据未完全提取，部分字段可能缺失',
-            'raw': result,
-        }
-    except Exception as exc:
-        return {
-            'ok': False,
-            'degraded': True,
-            'data': {
-                'title': '',
-                'price': '',
-                'brand': '',
-                'seller': '',
-                'images': [],
-                'weight_grams': None,
-                'packaging_rows': [],
-                'sku_details': [],
-                'attributes': [],
-                'option_groups': [],
-            },
-            'error': str(exc),
-            'raw': {},
-        }
+        _in_async = asyncio.get_running_loop() is not None
+    except RuntimeError:
+        pass
+
+    def _do_probe():
+        try:
+            result = probe_1688_page(url, **kwargs)
+            probe = result.get('probe', {})
+            return {
+                'ok': result.get('ready', False),
+                'degraded': not result.get('ready', False),
+                'data': {
+                    'title': probe.get('title', ''),
+                    'price': probe.get('price', ''),
+                    'brand': probe.get('brand', ''),
+                    'seller': probe.get('seller', ''),
+                    'images': _filter_probe_images(list(probe.get('images') or [])),
+                    'weight_grams': (probe.get('packagingRows') or [{}])[0].get('weightGrams') if probe.get('packagingRows') else None,
+                    'packaging_rows': probe.get('packagingRows', []),
+                    'sku_details': probe.get('skuDetails', []),
+                    'attributes': probe.get('attributes', []),
+                    'option_groups': probe.get('optionGroups', []),
+                },
+                'error': None if result.get('ready') else '页面数据未完全提取，部分字段可能缺失',
+                'raw': result,
+            }
+        except Exception as exc:
+            return {
+                'ok': False,
+                'degraded': True,
+                'data': {
+                    'title': '', 'price': '', 'brand': '', 'seller': '',
+                    'images': [], 'weight_grams': None,
+                    'packaging_rows': [], 'sku_details': [], 'attributes': [], 'option_groups': [],
+                },
+                'error': str(exc),
+                'raw': {},
+            }
+
+    if _in_async:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_do_probe)
+            return future.result(timeout=kwargs.get('timeout_seconds', 120) + 30)
+    else:
+        return _do_probe()
 
 
 def probe_1688_page(
@@ -1746,6 +1981,10 @@ def probe_1688_page(
     if cached is not None:
         cached['artifact_path'] = str(_artifact_path(task_id or current_task_id()))
         return cached
+
+    # Pre-probe random delay: simulate human browsing pace, avoid rate limiting
+    pre_delay_ms = random.randint(2000, 5000)
+    time.sleep(pre_delay_ms / 1000.0)
 
     resolved_browser = find_browser_executable(browser_path)
     if not resolved_browser:
@@ -1778,7 +2017,7 @@ def probe_1688_page(
         raise ConfigError('未发现可复用的 1688 浏览器会话，请先执行 browser_login 完成登录，或保持同一 profile 的 Chrome 会话可连接')
     try:
         with sync_playwright() as p:
-            browser = _connect_existing_chrome(p, cdp_url)
+            browser, connected_to_existing = _connect_existing_chrome(p, cdp_url)
             try:
                 matched_existing_page = _find_matching_open_page(browser, target_url)
                 page = matched_existing_page
@@ -1819,7 +2058,9 @@ def probe_1688_page(
                     except Exception:
                         pass
             finally:
-                browser.close()
+                # Only close if we launched a new browser; never close user's existing Chrome
+                if not connected_to_existing:
+                    browser.close()
     except PlaywrightError as exc:
         raise ConfigError(f'浏览器探测失败: {exc}') from exc
     result = {

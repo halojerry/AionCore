@@ -19,10 +19,10 @@ def _cmd_status() -> dict[str, Any]:
     status = check_config()
     config = load_config()
     lines = ['**配置状态**\n']
-    for key, label in get_required_keys().items():
+    for key, meta in get_required_keys().items():
         val = config.get(key, os.environ.get(key, ''))
         masked = val[:6] + '****' if val else '(未设置)'
-        lines.append(f'- {label}: `{masked}`')
+        lines.append(f"- {meta['label']}: `{masked}`")
     lines.append('')
     if status['missing']:
         lines.append(f'缺失: {", ".join(status["missing"])}')

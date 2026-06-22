@@ -11,6 +11,14 @@ use super::CcSwitchPaths;
 pub(crate) struct CcSwitchSettings {
     #[serde(rename = "currentProviderClaude")]
     pub(crate) current_provider_claude: Option<String>,
+    #[serde(rename = "currentProviderCodex")]
+    pub(crate) current_provider_codex: Option<String>,
+    #[serde(rename = "currentProviderHermes")]
+    pub(crate) current_provider_hermes: Option<String>,
+    #[serde(rename = "currentProviderOpencode")]
+    pub(crate) current_provider_opencode: Option<String>,
+    #[serde(rename = "currentProviderOpenclaw")]
+    pub(crate) current_provider_openclaw: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -117,6 +125,224 @@ pub fn read_claude_provider_env() -> HashMap<String, String> {
         return HashMap::new();
     };
     read_claude_provider_env_with_paths(&paths)
+}
+
+// ---------------------------------------------------------------------------
+// Generic per-app-type provider reading
+// ---------------------------------------------------------------------------
+
+fn read_provider_config_json(app_type: &str) -> Option<serde_json::Value> {
+    let paths = CcSwitchPaths::system()?;
+    let settings_content = fs::read_to_string(&paths.settings_path).ok()?;
+    let settings: CcSwitchSettings = serde_json::from_str(&settings_content).ok()?;
+
+    let provider_id = match app_type {
+        "claude" => settings.current_provider_claude,
+        "codex" => settings.current_provider_codex,
+        "hermes" => settings.current_provider_hermes,
+        "opencode" => settings.current_provider_opencode,
+        "openclaw" => settings.current_provider_openclaw,
+        _ => return None,
+    }
+    .filter(|s| !s.trim().is_empty())?;
+
+    if !paths.database_path.exists() {
+        return None;
+    }
+
+    let conn = Connection::open_with_flags(&paths.database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .ok()?;
+
+    let settings_config_json: String = conn
+        .query_row(
+            "SELECT settings_config FROM providers WHERE id = ?1 AND app_type = ?2 LIMIT 1",
+            rusqlite::params![provider_id, app_type],
+            |row| row.get(0),
+        )
+        .ok()?;
+
+    serde_json::from_str(&settings_config_json).ok()
+}
+
+pub fn read_provider_env_by_app_type(app_type: &str) -> HashMap<String, String> {
+    let Some(config) = read_provider_config_json(app_type) else {
+        return HashMap::new();
+    };
+    let Some(env_obj) = config.get("env").and_then(|v| v.as_object()) else {
+        return HashMap::new();
+    };
+    normalize_env(env_obj)
+}
+
+/// Ensure the Codex live config files are up to date before spawning.
+/// Reads the cc-switch DB provider row for app_type='codex' and writes
+/// ~/.codex/auth.json and ~/.codex/config.toml if the DB has newer state.
+pub fn ensure_codex_live_config() {
+    let Some(config) = read_provider_config_json("codex") else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+
+    let codex_dir = home.join(".codex");
+    let auth_path = codex_dir.join("auth.json");
+    let config_path = codex_dir.join("config.toml");
+
+    // Write auth.json
+    if let Some(auth) = config.get("auth") {
+        if let Err(e) = std::fs::create_dir_all(&codex_dir)
+            .and_then(|_| std::fs::write(&auth_path, serde_json::to_string_pretty(auth).unwrap_or_default()))
+        {
+            tracing::warn!(error = %e, "cc-switch: failed to write codex auth.json");
+        }
+    }
+
+    // Write config.toml
+    let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let model_provider = config
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+    let wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses");
+
+    let toml_content = format!(
+        "model_provider = \"{model_provider}\"\n\
+         model = \"{model}\"\n\
+         \n\
+         [model_providers]\n\
+         [model_providers.\"{model_provider}\"]\n\
+         name = \"POUNDING API\"\n\
+         base_url = \"{base_url}\"\n\
+         wire_api = \"{wire_api}\"\n\
+         requires_openai_auth = true\n"
+    );
+
+    if let Err(e) = std::fs::create_dir_all(&codex_dir).and_then(|_| std::fs::write(&config_path, &toml_content)) {
+        tracing::warn!(error = %e, "cc-switch: failed to write codex config.toml");
+    }
+}
+
+/// Ensure the OpenCode live config file is up to date before spawning.
+pub fn ensure_opencode_live_config() {
+    let Some(config) = read_provider_config_json("opencode") else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+
+    let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let api_key = config.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+    let npm = config
+        .get("npm")
+        .and_then(|v| v.as_str())
+        .unwrap_or("@ai-sdk/openai-compatible");
+    let provider_id = model.split('/').next().unwrap_or("pounding-managed");
+
+    let opencode_config = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "model": model,
+        "provider": {
+            provider_id: {
+                "npm": npm,
+                "options": {
+                    "baseURL": base_url,
+                    "apiKey": api_key,
+                },
+                "models": {
+                    model.split('/').nth(1).unwrap_or(""): { "name": model.split('/').nth(1).unwrap_or("") }
+                }
+            }
+        }
+    });
+
+    let config_path = home.join(".opencode").join("config.json");
+    if let Err(e) = std::fs::create_dir_all(config_path.parent().unwrap())
+        .and_then(|_| std::fs::write(&config_path, serde_json::to_string_pretty(&opencode_config).unwrap_or_default()))
+    {
+        tracing::warn!(error = %e, "cc-switch: failed to write opencode config.json");
+    }
+}
+
+/// Ensure the OpenClaw live config file is up to date before spawning.
+pub fn ensure_openclaw_live_config() {
+    let Some(config) = read_provider_config_json("openclaw") else {
+        return;
+    };
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+
+    let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
+    let api_key = config.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
+    let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
+    let api = config.get("api").and_then(|v| v.as_str()).unwrap_or("openai-completions");
+    let provider_id = model.split('/').next().unwrap_or("pounding-managed");
+
+    let openclaw_config = serde_json::json!({
+        "agents": {
+            "defaults": {
+                "model": {
+                    "primary": model
+                },
+                "models": {
+                    model: { "alias": model.split('/').nth(1).unwrap_or("") }
+                }
+            }
+        },
+        "models": {
+            "providers": {
+                provider_id: {
+                    "baseUrl": base_url,
+                    "api": api,
+                    "auth": "api-key",
+                    "authHeader": true,
+                    "models": [{ "id": model.split('/').nth(1).unwrap_or(""), "name": model.split('/').nth(1).unwrap_or("") }]
+                }
+            }
+        }
+    });
+
+    // Preserve auth token if already set
+    let config_path = home.join(".openclaw").join("openclaw.json");
+    let mut merged = openclaw_config;
+    if let Ok(existing) = std::fs::read_to_string(&config_path) {
+        if let Ok(existing_val) = serde_json::from_str::<serde_json::Value>(&existing) {
+            if let Some(existing_token) = existing_val
+                .get("gateway")
+                .and_then(|g| g.get("auth"))
+                .and_then(|a| a.get("token"))
+            {
+                if let serde_json::Value::Object(ref mut map) = merged {
+                    map.entry("gateway".to_string())
+                        .or_insert_with(|| {
+                            serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"})
+                        });
+                }
+            }
+        }
+    }
+    // Always set gateway mode to local
+    if let serde_json::Value::Object(ref mut map) = merged {
+        map.entry("gateway".to_string())
+            .or_insert_with(|| serde_json::json!({"mode": "local"}));
+    }
+
+    if let Err(e) = std::fs::create_dir_all(config_path.parent().unwrap())
+        .and_then(|_| std::fs::write(&config_path, serde_json::to_string_pretty(&merged).unwrap_or_default()))
+    {
+        tracing::warn!(error = %e, "cc-switch: failed to write openclaw.json");
+    }
+    // Also write the API key
+    if !api_key.is_empty() {
+        let auth_path = home.join(".openclaw").join("auth.json");
+        let auth = serde_json::json!({ "OPENAI_API_KEY": api_key });
+        let _ = std::fs::create_dir_all(auth_path.parent().unwrap())
+            .and_then(|_| std::fs::write(&auth_path, serde_json::to_string_pretty(&auth).unwrap_or_default()));
+    }
 }
 
 #[cfg(test)]

@@ -141,7 +141,7 @@ def main(args: list[str]) -> int:
         final = poll_pipeline_task(
             task_id,
             interval_sec=3.0,
-            max_wait_sec=getattr(parsed, 'max_poll_sec', 600),
+            max_wait_sec=getattr(parsed, 'max_polls', 600) * 3,
         )
         result['final'] = final
         result['status'] = final.get('status', result.get('status', ''))

@@ -1,6 +1,6 @@
 [project]
 name = "pounding-ozon-hybrid"
-version = "0.1.0"
+version = "0.5.0"
 description = "1688→Ozon cloud pipeline skill — local selection + n8n cloud execution"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,7 +13,7 @@ browser = ["playwright>=1.40"]
 pricing = ["openpyxl>=3.1"]
 
 [project.scripts]
-pounding-ozon = "cli:main"
+pounding-ozon = "scripts.cli:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

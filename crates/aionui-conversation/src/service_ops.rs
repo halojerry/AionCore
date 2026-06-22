@@ -108,6 +108,9 @@ impl ConversationService {
         }
         let task = match self.task(conversation_id) {
             Ok(task) => task,
+            Err(ConversationError::ActiveAgentNotFound { .. }) => {
+                return Ok(GetModelInfoResponse { model_info: None });
+            }
             Err(err) => {
                 tracing::warn!(
                     conversation_id,
@@ -163,10 +166,11 @@ impl ConversationService {
     }
 
     pub async fn get_slash_commands(&self, conversation_id: &str) -> Result<Vec<SlashCommandItem>, ConversationError> {
-        self.task(conversation_id)?
-            .get_slash_commands()
-            .await
-            .map_err(ConversationError::from)
+        match self.task(conversation_id) {
+            Ok(task) => task.get_slash_commands().await.map_err(ConversationError::from),
+            Err(ConversationError::ActiveAgentNotFound { .. }) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     // ── Side question ───────────────────────────────────────────────

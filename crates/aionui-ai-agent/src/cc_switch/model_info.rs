@@ -14,6 +14,8 @@ fn sanitize_model_value(value: &str) -> Option<String> {
     static PREFIX_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)^set model to\s+").unwrap());
     static SUFFIX_RE: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"\[(?:\d{1,3}(?:;\d{1,3})*)m\]?$").unwrap());
+    // Claude Code 1M context marker: deepseek-v4-pro[1M] → deepseek-v4-pro
+    static ONE_M_RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\[1m\]$").unwrap());
 
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -23,8 +25,9 @@ fn sanitize_model_value(value: &str) -> Option<String> {
     let without_ansi = ANSI_RE.replace_all(trimmed, "").to_string();
     let without_prefix = PREFIX_RE.replace(&without_ansi, "").to_string();
     let without_suffix = SUFFIX_RE.replace(&without_prefix, "").to_string();
+    let without_one_m = ONE_M_RE.replace(&without_suffix, "").to_string();
 
-    let normalized = without_suffix.trim();
+    let normalized = without_one_m.trim();
     (!normalized.is_empty()).then(|| normalized.to_owned())
 }
 
@@ -33,6 +36,7 @@ pub(crate) fn normalize_claude_model_slot(value: &str) -> Option<&'static str> {
         "sonnet" | "default" => Some("default"),
         "opus" => Some("opus"),
         "haiku" => Some("haiku"),
+        "fable" => Some("fable"),
         _ => None,
     }
 }
@@ -59,11 +63,20 @@ pub fn build_model_info_from_env(
     let haiku_model = env
         .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
         .and_then(|s| sanitize_model_value(s));
+    let fable_model = env
+        .get("ANTHROPIC_DEFAULT_FABLE_MODEL")
+        .and_then(|s| sanitize_model_value(s))
+        .or(opus_model.clone());
 
     let mut available = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let candidates = [("default", default_model), ("opus", opus_model), ("haiku", haiku_model)];
+    let candidates = [
+        ("default", default_model),
+        ("opus", opus_model),
+        ("haiku", haiku_model),
+        ("fable", fable_model),
+    ];
 
     for (slot, model_id_opt) in &candidates {
         if let Some(model_id) = model_id_opt
@@ -240,6 +253,7 @@ mod tests {
         assert_eq!(normalize_claude_model_slot("default"), Some("default"));
         assert_eq!(normalize_claude_model_slot("opus"), Some("opus"));
         assert_eq!(normalize_claude_model_slot("haiku"), Some("haiku"));
+        assert_eq!(normalize_claude_model_slot("fable"), Some("fable"));
         assert_eq!(normalize_claude_model_slot("unknown"), None);
         assert_eq!(normalize_claude_model_slot(""), None);
     }

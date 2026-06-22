@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PARENT = os.path.dirname(_HERE)
@@ -28,8 +31,8 @@ if _PARENT not in sys.path:
 try:
     from scripts.lib.config_store import load_env_file
     load_env_file()
-except Exception:
-    pass
+except Exception as e:
+    logger.debug('load_env_file failed: %s', e)
 
 _VERBOSE = False
 
@@ -47,9 +50,44 @@ def _out(data: dict) -> None:
 # Worker commands (map to cloud_client entry functions)
 # ═══════════════════════════════════════════════════════════════════════════
 
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """检查并下载最新版本."""
+    from scripts.lib.update import check_skill_version, download_skill_update
+    result = check_skill_version()
+    if not result.get("update_available"):
+        _out({"ok": True, "message": "已是最新版本 v" + result.get("current_version", ""),
+              "current": result.get("current_version"), "latest": result.get("latest_version")})
+        return 0
+    download = download_skill_update(result.get("latest_version", ""), result.get("changed_files", []))
+    _out(download)
+    return 0 if download.get("ok") else 1
+
+
+def cmd_bootstrap(args: argparse.Namespace) -> int:
+    """首次安装 — 从 COS 下载完整技能包."""
+    from scripts.lib.update import bootstrap_skill
+    result = bootstrap_skill()
+    _out(result)
+    return 0 if result.get("ok") else 1
+
+
+
 def cmd_configure(args: argparse.Namespace) -> int:
-    """Check config or set a key."""
+    """Check config, set a key, or configure a store profile."""
     from scripts.lib.config_store import check_config
+
+    # Store profile setup
+    if args.store and (args.currency or args.shipping):
+        from scripts.lib.config_store import write_store_profile
+        provider, service = "", ""
+        if args.shipping:
+            parts = args.shipping.split(",")
+            provider = parts[0].strip()
+            service = parts[1].strip() if len(parts) > 1 else ""
+        profile = write_store_profile(args.store, args.currency, provider, service)
+        _out({"ok": True, "store_id": args.store, "profile": profile, "message": "店铺配置已保存到 ~/.pounding/config.json"})
+        return 0
 
     cfg = check_config()
     if args.key:
@@ -97,7 +135,7 @@ def cmd_publish_new(args: argparse.Namespace) -> int:
 
 def cmd_follow_sell(args: argparse.Namespace) -> int:
     """Worker B — 跟卖（SKU 导入）."""
-    from scripts.lib.cloud_client import follow_sell_cloud
+    from scripts.lib.cloud.follow_sell import follow_sell_cloud
 
     result = follow_sell_cloud(
         sku=args.sku,
@@ -201,9 +239,12 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", help="命令")
 
     # configure
-    p = sub.add_parser("configure", help="检查/设置凭证")
+    p = sub.add_parser("configure", help="检查/设置凭证或店铺配置")
     p.add_argument("key", nargs="?", default="", help="配置项名")
     p.add_argument("value", nargs="?", default="", help="配置值")
+    p.add_argument("--store", default="", metavar="ID", help="店铺 ID (如 4718259)")
+    p.add_argument("--currency", default="", metavar="CUR", help="店铺货币 (CNY/RUB)")
+    p.add_argument("--shipping", default="", metavar="PROVIDER,SERVICE", help="物流方式 (如 RETS,Express)")
     p.set_defaults(func=cmd_configure)
 
     # find-supply (Worker E)
@@ -266,6 +307,14 @@ def main() -> int:
     p.add_argument("--timeout", type=int, default=120, help="超时秒数")
     p.set_defaults(func=cmd_probe)
 
+    # update — check and download latest skill version
+    p = sub.add_parser("update", help="检查并下载最新版本")
+    p.set_defaults(func=cmd_update)
+
+    # bootstrap — first-run install
+    p = sub.add_parser("bootstrap", help="首次安装（初始化环境）")
+    p.set_defaults(func=cmd_bootstrap)
+
     args = parser.parse_args()
     _VERBOSE = getattr(args, 'verbose', False)
 
@@ -283,4 +332,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
