@@ -11,7 +11,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Router};
 use serde::Deserialize;
-use serde_json::json;
 
 use aionui_api_types::{
     ApiResponse, AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest,
@@ -140,7 +139,6 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     // Auth rate limited routes (login, qr-login)
     let auth_rate_limited = Router::new()
         .route("/login", post(login_handler))
-        .route("/api/auth/newapi-login", post(newapi_login_handler))
         .route("/api/auth/qr-login", post(qr_login_handler))
         .route_layer(from_fn_with_state(auth_limiter, auth_rate_limit_middleware))
         .with_state(state.clone());
@@ -156,6 +154,10 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
         .route(
             "/api/auth/internal/users/system/credentials",
             post(set_system_user_credentials_handler),
+        )
+        .route(
+            "/api/auth/internal/users/sync-credentials",
+            post(sync_credentials_handler),
         )
         .route(
             "/api/auth/internal/users/by-username/{username}",
@@ -295,142 +297,6 @@ async fn login_handler(
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/auth/newapi-login — proxy login through POUNDING API (mxou.cn)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct NewApiLoginRequest {
-    username: String,
-    password: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct NewApiLoginApiResponse {
-    token: Option<String>,
-    #[serde(alias = "accessToken", alias = "access_token")]
-    access_token: Option<String>,
-    key: Option<String>,
-    value: Option<String>,
-    message: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct NewApiUserSelfResponse {
-    id: Option<serde_json::Value>,
-    username: Option<String>,
-    email: Option<String>,
-    message: Option<String>,
-}
-
-async fn newapi_login_handler(
-    State(state): State<AuthRouterState>,
-    body: Result<Json<NewApiLoginRequest>, JsonRejection>,
-) -> Result<Response, ApiError> {
-    let Json(req) = body.map_err(ApiError::from)?;
-
-    if req.username.is_empty() || req.username.len() > 64 {
-        return Err(ApiError::BadRequest("Invalid username".into()));
-    }
-    if req.password.is_empty() || req.password.len() > 128 {
-        return Err(ApiError::BadRequest("Invalid password".into()));
-    }
-
-    // 1. Call POUNDING API login
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("HTTP client error: {e}")))?;
-
-    let login_resp = client
-        .post("https://api.mxou.cn/api/user/login")
-        .json(&json!({
-            "username": &req.username,
-            "password": &req.password,
-        }))
-        .send()
-        .await
-        .map_err(|e| ApiError::BadGateway(format!("POUNDING API unreachable: {e}")))?;
-
-    let status = login_resp.status();
-    let login_body: NewApiLoginApiResponse = login_resp
-        .json()
-        .await
-        .map_err(|e| ApiError::BadGateway(format!("Failed to parse login response: {e}")))?;
-
-    if !status.is_success() {
-        let msg = login_body
-            .message
-            .or(login_body.error)
-            .unwrap_or_else(|| format!("Login failed (HTTP {})", status.as_u16()));
-        return Err(ApiError::Unauthorized(msg));
-    }
-
-    let api_token = login_body
-        .token
-        .or(login_body.access_token)
-        .or(login_body.key)
-        .or(login_body.value)
-        .ok_or_else(|| ApiError::BadGateway("POUNDING API returned no token".into()))?;
-
-    // 2. Fetch user info from POUNDING API
-    let user_self: Option<NewApiUserSelfResponse> =
-        match client
-            .get("https://api.mxou.cn/api/user/self")
-            .header("Authorization", format!("Bearer {}", &api_token))
-            .send()
-            .await
-        {
-            Ok(resp) => resp.json().await.ok(),
-            Err(_) => None,
-        };
-
-    // 3. Create or find local user
-    let local_username = user_self
-        .as_ref()
-        .and_then(|u| u.username.as_deref())
-        .unwrap_or(&req.username);
-
-    let existing = state
-        .user_repo
-        .find_by_username(local_username)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
-
-    let user = match existing {
-        Some(u) => u,
-        None => {
-            state
-                .user_repo
-                .create_user(local_username, "")
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to create user: {e}")))?
-        }
-    };
-
-    // 4. Sign JWT and set session cookie
-    let token = state
-        .jwt_service
-        .sign(&user.id, &user.username)
-        .map_err(|e| ApiError::Internal(format!("Token signing error: {e}")))?;
-
-    if let Err(e) = state.user_repo.update_last_login(&user.id).await {
-        tracing::warn!("Failed to update last login for {}: {e}", user.id);
-    }
-
-    let cookie = state.cookie_config.build_session_cookie(&token);
-    let resp = LoginResponse::new(
-        PublicUser {
-            id: user.id,
-            username: user.username,
-        },
-        token,
-    );
-
-    Ok(([(header::SET_COOKIE, cookie)], Json(resp)).into_response())
-}
-
-// ---------------------------------------------------------------------------
 // POST /logout
 // ---------------------------------------------------------------------------
 
@@ -545,6 +411,40 @@ async fn set_system_user_credentials_handler(
         .set_system_user_credentials(&req.username, &req.password_hash)
         .await
         .map_err(db_error_to_api_error)?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// ── POST /api/auth/internal/users/sync-credentials ─────────────────
+
+#[derive(Debug, Deserialize)]
+struct SyncCredentialsRequest {
+    username: String,
+    password: String,
+}
+
+async fn sync_credentials_handler(
+    State(state): State<AuthRouterState>,
+    body: Result<Json<SyncCredentialsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    ensure_local_mode(state.local)?;
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    if req.username.is_empty() || req.username.len() > 64 {
+        return Err(ApiError::BadRequest("Invalid username".into()));
+    }
+    if req.password.is_empty() || req.password.len() > 128 {
+        return Err(ApiError::BadRequest("Invalid password".into()));
+    }
+
+    let password_hash = hash_password(&req.password)
+        .map_err(|e| ApiError::Internal(format!("Password hashing failed: {e}")))?;
+
+    state
+        .user_repo
+        .set_system_user_credentials(&req.username, &password_hash)
+        .await
+        .map_err(db_error_to_api_error)?;
+
     Ok(Json(ApiResponse::ok(())))
 }
 
