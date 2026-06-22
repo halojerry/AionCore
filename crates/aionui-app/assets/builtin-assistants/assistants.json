@@ -20,7 +20,8 @@
       "avatar": "avatars/word-creator.jpg",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
-        "officecli-docx"
+        "officecli-docx",
+        "humanizer"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -853,7 +854,8 @@
       "preset_agent_type": "aionrs",
       "enabled_skills": [
         "xiaohongshu-recruiter",
-        "x-recruiter"
+        "x-recruiter",
+        "humanizer"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1012,7 +1014,8 @@
       "avatar": "avatars/story-roleplay.jpg",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
-        "story-roleplay"
+        "story-roleplay",
+        "humanizer"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1115,7 +1118,7 @@
         "ru-RU": "Создаёт заполняемые формы Word (.docx) с реальными элементами управления содержимым, флажками, полями MERGEFIELD и защитой документа — редактируются только заданные поля, остальное заблокировано. HR-анкеты, опросы, шаблоны контрактов / SOW, комплаенс-чеклисты, медицинские опросники.",
         "uk-UA": "Створюйте заповнювані форми Word (.docx) зі справжніми елементами керування вмістом, полями-прапорцями, MERGEFIELD для злиття пошти та захистом документа — редагуються лише задані поля, решта залишається заблокованою. HR-анкети, опитування, шаблони контрактів / SOW, комплаєнс-чеклисти, медичні анкети."
       },
-      "avatar": "📋",
+      "avatar": "avatars/word-form-creator.jpg",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
         "officecli-word-form"
@@ -1221,7 +1224,9 @@
       },
       "avatar": "avatars/social-cover-design.jpg",
       "preset_agent_type": "aionrs",
-      "enabled_skills": ["social-cover-design"],
+      "enabled_skills": [
+        "social-cover-design"
+      ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
       "rule_file": "rules/social-cover-design.{locale}.md",
@@ -1273,13 +1278,33 @@
       "avatar": "avatars/lark-assistant.jpg",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
-        "lark-shared", "lark-calendar", "lark-im", "lark-doc", "lark-drive",
-        "lark-markdown", "lark-sheets", "lark-slides", "lark-base", "lark-task",
-        "lark-mail", "lark-contact", "lark-wiki", "lark-event", "lark-vc",
-        "lark-vc-agent", "lark-whiteboard", "lark-minutes", "lark-note",
-        "lark-openapi-explorer", "lark-skill-maker", "lark-attendance",
-        "lark-approval", "lark-okr", "lark-workflow-meeting-summary",
-        "lark-workflow-standup-report", "lark-apps"
+        "lark-shared",
+        "lark-calendar",
+        "lark-im",
+        "lark-doc",
+        "lark-drive",
+        "lark-markdown",
+        "lark-sheets",
+        "lark-slides",
+        "lark-base",
+        "lark-task",
+        "lark-mail",
+        "lark-contact",
+        "lark-wiki",
+        "lark-event",
+        "lark-vc",
+        "lark-vc-agent",
+        "lark-whiteboard",
+        "lark-minutes",
+        "lark-note",
+        "lark-openapi-explorer",
+        "lark-skill-maker",
+        "lark-attendance",
+        "lark-approval",
+        "lark-okr",
+        "lark-workflow-meeting-summary",
+        "lark-workflow-standup-report",
+        "lark-apps"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1347,7 +1372,12 @@
       "avatar": "avatars/getnote-assistant.jpg",
       "preset_agent_type": "aionrs",
       "enabled_skills": [
-        "getnote-shared", "getnote-auth", "getnote-note", "getnote-kb", "getnote-search", "getnote-tag"
+        "getnote-shared",
+        "getnote-auth",
+        "getnote-note",
+        "getnote-kb",
+        "getnote-search",
+        "getnote-tag"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1421,7 +1451,8 @@
         "officecli-pptx",
         "morph-ppt",
         "mermaid",
-        "pdf"
+        "pdf",
+        "humanizer"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1491,7 +1522,10 @@
       "enabled_skills": [
         "redbook",
         "xhs-content-lab",
-        "social-cover-design"
+        "social-cover-design",
+        "xiaohongshu",
+        "marketing-skills",
+        "humanizer"
       ],
       "custom_skill_names": [],
       "disabled_builtin_skills": [],
@@ -1536,6 +1570,697 @@
           "Розбери цю вірусну нотатку та поясни, чому вона спрацювала",
           "Згенеруй 10 заголовків з високою залученістю про «віддалену роботу»",
           "Оптимізуй мій текст XHS для підвищення залученості"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "aihot",
+      "name": "AI 每日资讯",
+      "name_i18n": {
+        "en-US": "AI Daily News",
+        "zh-CN": "AI 每日资讯"
+      },
+      "description": "每日精选 AI 模型/产品/行业/论文动态速递。自然语言查询，按分类筛选，灵活时间窗口。",
+      "description_i18n": {
+        "en-US": "Daily curated AI news on models, products, industry, and research papers.",
+        "zh-CN": "每日精选 AI 模型/产品/行业/论文动态速递。"
+      },
+      "avatar": "avatars/aihot.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "aihot"
+      ],
+      "rule_file": "rules/aihot.{locale}.md",
+      "prompts": [
+        "今天 AI 圈有什么新动态？",
+        "本周大模型领域有哪些重要发布？",
+        "搜索关于 AI Agent 的最新论文"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "What's new in AI today?",
+          "Any major LLM releases this week?"
+        ],
+        "zh-CN": [
+          "今天 AI 圈有什么新动态？",
+          "本周大模型领域有哪些重要发布？"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "chaogeek-kongming",
+      "name": "孔明思维",
+      "name_i18n": {
+        "en-US": "Kongming Thinker",
+        "zh-CN": "孔明思维"
+      },
+      "description": "面向超级个体的苏格拉底式思维伙伴。用一个关键问题帮你明确意图，检查认知缴械风险，将想法组织为可执行上下文包。",
+      "description_i18n": {
+        "en-US": "Socratic thinking partner for solo creators — one question at a time.",
+        "zh-CN": "面向超级个体的苏格拉底式思维伙伴。"
+      },
+      "avatar": "avatars/chaogeek-kongming.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "socratic-alignment",
+        "cognitive-disarmament",
+        "agentic-opc-workflow"
+      ],
+      "rule_file": "rules/chaogeek-kongming.{locale}.md",
+      "prompts": [
+        "我想做一个 AI 产品，帮我理清思路",
+        "帮我审视这个商业计划是否有认知盲区",
+        "把这个想法组织成可执行的方案"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Help me clarify my product idea",
+          "Review my business plan for blind spots"
+        ],
+        "zh-CN": [
+          "我想做一个 AI 产品，帮我理清思路",
+          "帮我审视这个商业计划是否有认知盲区"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "china-ecommerce-expert",
+      "name": "电商运营",
+      "name_i18n": {
+        "en-US": "China E-Commerce Ops",
+        "zh-CN": "电商运营"
+      },
+      "description": "精通天猫、京东、拼多多等国内电商平台运营。从选品到打造爆款，一站式运营支持。",
+      "description_i18n": {
+        "en-US": "Expert in Tmall, JD, Pinduoduo operations — from product selection to bestseller.",
+        "zh-CN": "精通天猫、京东、拼多多等平台运营，从选品到打造爆款一站式支持。"
+      },
+      "avatar": "avatars/china-ecommerce-expert.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "market-researcher",
+        "multi-search-engine",
+        "humanizer",
+        "agent-browser",
+        "ecommerce-growth-strategy"
+      ],
+      "rule_file": "rules/china-ecommerce-expert.{locale}.md",
+      "prompts": [
+        "帮我在天猫上分析竞品定价策略",
+        "京东新店如何快速起量？",
+        "帮我搜索这个品类在各平台的销量数据"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Analyze competitor pricing on Tmall",
+          "How to scale a new JD store?"
+        ],
+        "zh-CN": [
+          "帮我在天猫上分析竞品定价策略",
+          "京东新店如何快速起量？"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "chuangye-manor",
+      "name": "创业顾问",
+      "name_i18n": {
+        "en-US": "Startup Advisor",
+        "zh-CN": "创业顾问"
+      },
+      "description": "基于林正刚 50 年企业管理框架的创业教练。帮助创业者做对选择、排对顺序、选对行为。覆盖 GTM 策略、销售阶段管理、商业模型设计、团队管理。",
+      "description_i18n": {
+        "en-US": "Startup coach based on 50-year enterprise management framework. GTM strategy, sales stages, business modeling.",
+        "zh-CN": "基于林正刚 50 年企业管理框架的创业教练。"
+      },
+      "avatar": "avatars/chuangye-manor.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "manor-host",
+        "manor-judge",
+        "knowledge-growth",
+        "knowledge-gtm",
+        "knowledge-business",
+        "knowledge-org",
+        "knowledge-sequence",
+        "pitch-perfect"
+      ],
+      "rule_file": "rules/chuangye-manor.{locale}.md",
+      "prompts": [
+        "帮我梳理创业项目的 GTM 主轴",
+        "我的销售流程有什么问题？",
+        "设计一个适合我现阶段的商业模型"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Help me design my GTM strategy",
+          "What's wrong with my sales pipeline?"
+        ],
+        "zh-CN": [
+          "帮我梳理创业项目的 GTM 主轴",
+          "我的销售流程有什么问题？"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "content-creator",
+      "name": "内容创作",
+      "name_i18n": {
+        "en-US": "Content Creator",
+        "zh-CN": "内容创作"
+      },
+      "description": "多平台内容创作专家。擅长大文写作、小说创作、多平台文案，支持 Minimax 排版输出和去 AI 味润色。",
+      "description_i18n": {
+        "en-US": "Multi-platform content creation: novels, copywriting, AI-humanized text, formatted docx output.",
+        "zh-CN": "多平台内容创作专家。大文写作、小说、文案，支持排版输出和去 AI 味润色。"
+      },
+      "avatar": "avatars/content-creator.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "humanizer",
+        "minimax-docx",
+        "novel-writer",
+        "novel-writing",
+        "agent-browser",
+        "novelist"
+      ],
+      "rule_file": "rules/content-creator.{locale}.md",
+      "prompts": [
+        "帮我写一篇关于 AI 发展的深度文章",
+        "创作一个短篇小说的开头",
+        "把我这段文案改得更有人味"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Write a deep-dive on AI development",
+          "Start a short story for me"
+        ],
+        "zh-CN": [
+          "帮我写一篇关于 AI 发展的深度文章",
+          "创作一个短篇小说的开头"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "foreign-trade-expert",
+      "name": "外贸助手",
+      "name_i18n": {
+        "en-US": "Foreign Trade Assistant",
+        "zh-CN": "外贸助手"
+      },
+      "description": "外贸全流程助手。海关数据查询（HS 编码/关税）、Google Maps 客户开发、AI 冷邮件自动化、B2B 平台运营。",
+      "description_i18n": {
+        "en-US": "Foreign trade assistant: customs data, HS codes, Google Maps lead gen, cold email automation.",
+        "zh-CN": "外贸全流程助手。海关数据查询、客户开发、冷邮件自动化、B2B 平台运营。"
+      },
+      "avatar": "avatars/foreign-trade-expert.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "humanizer",
+        "agent-browser",
+        "hscode-scraper",
+        "topease-customs",
+        "gmaps-lead-gen",
+        "cold-email-automation",
+        "hsciq-mcp"
+      ],
+      "rule_file": "rules/foreign-trade-expert.{locale}.md",
+      "prompts": [
+        "帮我在 Google Maps 上找旧金山的家居用品进口商",
+        "查询蓝牙耳机的 HS 编码和美国关税",
+        "给这个潜在客户写一封英文开发信"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Find home goods importers in SF on Google Maps",
+          "Check HS code and US tariff for Bluetooth earbuds"
+        ],
+        "zh-CN": [
+          "帮我在 Google Maps 上找旧金山的家居用品进口商",
+          "查询蓝牙耳机的 HS 编码和美国关税"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "douyin-strategist",
+      "name": "抖音运营",
+      "name_i18n": {
+        "en-US": "Douyin Strategist",
+        "zh-CN": "抖音运营"
+      },
+      "description": "精通抖音算法和内容生态。短视频爆款策略、商业化变现、Remotion 视频制作、文案去 AI 味润色。",
+      "description_i18n": {
+        "en-US": "Douyin algorithm and content strategy expert. Viral videos, monetization, Remotion toolkit.",
+        "zh-CN": "精通抖音算法和内容生态。短视频爆款策略、商业化变现。"
+      },
+      "avatar": "avatars/douyin-strategist.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "humanizer",
+        "remotion-video-toolkit",
+        "agent-browser",
+        "douyin-operations"
+      ],
+      "rule_file": "rules/douyin-strategist.{locale}.md",
+      "prompts": [
+        "分析这个抖音账号为什么火了",
+        "帮我策划 7 天的选题日历",
+        "制作一段产品展示短视频"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Analyze why this Douyin account went viral",
+          "Plan a 7-day content calendar"
+        ],
+        "zh-CN": [
+          "分析这个抖音账号为什么火了",
+          "帮我策划 7 天的选题日历"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "equity-research",
+      "name": "股票研究",
+      "name_i18n": {
+        "en-US": "Equity Research",
+        "zh-CN": "股票研究"
+      },
+      "description": "⚠️ 仅供参考，不构成投资建议。全能型股票研究专家。覆盖首次覆盖报告、DCF/可比估值、多空推介、业绩分析、组合风控、催化剂日历、行业综述、晨会纪要等 16 项研报能力。",
+      "description_i18n": {
+        "en-US": "Full-service equity research: initiation coverage, DCF/comps valuation, long/short pitch, earnings analysis, portfolio risk.",
+        "zh-CN": "⚠️ 仅供参考不构成投资建议。覆盖首次覆盖、估值、多空推介、业绩分析、组合风控等 16 项能力。"
+      },
+      "avatar": "avatars/equity-research.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "initiating-coverage",
+        "company-tearsheet",
+        "earnings-analysis",
+        "earnings-preview",
+        "dcf-model-builder",
+        "comps-valuation",
+        "long-short-pitch",
+        "memo-builder",
+        "event-scenario-analyzer",
+        "portfolio-risk",
+        "catalyst-calendar",
+        "sector-overview",
+        "idea-generation",
+        "model-update",
+        "thesis-tracker",
+        "morning-note",
+        "agent-browser",
+        "stock-ai-analyzer"
+      ],
+      "rule_file": "rules/equity-research.{locale}.md",
+      "prompts": [
+        "写一份宁德时代的首次覆盖报告",
+        "对比比亚迪和特斯拉的估值",
+        "本周新能源板块有什么重要催化剂？"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Write an initiation coverage report for CATL",
+          "Compare valuation of BYD vs Tesla"
+        ],
+        "zh-CN": [
+          "写一份宁德时代的首次覆盖报告",
+          "对比比亚迪和特斯拉的估值"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "financial-analysis",
+      "name": "金融建模",
+      "name_i18n": {
+        "en-US": "Financial Modeling",
+        "zh-CN": "金融建模"
+      },
+      "description": "⚠️ 仅供参考，不构成投资建议。投行级财务建模专家。三表联动、DCF 估值、LBO 杠杆收购、可比公司分析、合并模型、模型审查、PPT 模板创建。严格遵循行业标准颜色规范。",
+      "description_i18n": {
+        "en-US": "Investment-bank grade financial modeling: 3-statements, DCF, LBO, comps, merger models. ⚠️ Reference only, not investment advice.",
+        "zh-CN": "⚠️ 仅供参考不构成投资建议。三表联动、DCF 估值、LBO 杠杆收购、可比分析、模型审查。"
+      },
+      "avatar": "avatars/financial-analysis.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "3-statements",
+        "dcf-model",
+        "lbo-model",
+        "comps-analysis",
+        "competitive-analysis",
+        "check-model",
+        "check-deck",
+        "ppt-template-creator",
+        "skill-creator",
+        "finance-report-analyzer"
+      ],
+      "rule_file": "rules/financial-analysis.{locale}.md",
+      "prompts": [
+        "搭建一个 3 年期 SaaS 财务模型",
+        "为制造业公司做 DCF 估值（含 WACC 和敏感性分析）",
+        "审查这份 Excel 财务模型有没有公式错误"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Build a 3-year SaaS financial model",
+          "Create a DCF valuation with WACC and sensitivity table"
+        ],
+        "zh-CN": [
+          "搭建一个 3 年期 SaaS 财务模型",
+          "为制造业公司做 DCF 估值（含 WACC 和敏感性分析）"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "fortune-consultant",
+      "name": "玄学命理",
+      "name_i18n": {
+        "en-US": "Fortune Consultant",
+        "zh-CN": "玄学命理"
+      },
+      "description": "贯通中西命理体系。八字四柱、紫微斗数、梅花易数、塔罗牌、农历黄历互转，以及奇门/六爻/风水/择吉综合兜底。根据用户输入智能路由到对应体系。",
+      "description_i18n": {
+        "en-US": "Chinese and Western divination systems: BaZi, ZiWei, MeiHua, Tarot, lunar calendar.",
+        "zh-CN": "贯通中西命理体系：八字、紫微、梅花、塔罗、农历黄历，智能路由。"
+      },
+      "avatar": "avatars/fortune-consultant.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "cantian-bazi",
+        "ziwei-doushu",
+        "meihua-yijing",
+        "tarot-reading",
+        "lunar-calendar",
+        "fortune-master",
+        "agent-mbti"
+      ],
+      "rule_file": "rules/fortune-consultant.{locale}.md",
+      "prompts": [
+        "帮我排八字，出生日期 1990-05-15 上午 9 点",
+        "今天农历是什么日子？",
+        "帮我算一卦关于事业发展"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Read my BaZi chart: 1990-05-15 9:00 AM",
+          "What's today's lunar date?"
+        ],
+        "zh-CN": [
+          "帮我排八字，出生日期 1990-05-15 上午 9 点",
+          "今天农历是什么日子？"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "month-end-closer",
+      "name": "月末结账",
+      "name_i18n": {
+        "en-US": "Month-End Closer",
+        "zh-CN": "月末结账"
+      },
+      "description": "财务月末结账助手。运行结账检查清单，交付计提表、滚动对账表、差异说明和结账包。覆盖 BS 波动分析和 P&L 差异说明。",
+      "description_i18n": {
+        "en-US": "Month-end close assistant: accrual schedules, roll-forwards, variance commentary, close packages.",
+        "zh-CN": "财务月末结账助手。计提表、滚动对账、差异说明、结账包。"
+      },
+      "avatar": "avatars/month-end-closer.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "accrual-schedule",
+        "roll-forward",
+        "variance-commentary",
+        "audit-xls",
+        "xlsx-author",
+        "finance-accounting"
+      ],
+      "rule_file": "rules/month-end-closer.{locale}.md",
+      "prompts": [
+        "帮我做这个月的结账检查",
+        "生成计提表和滚动对账表",
+        "分析本月收入差异原因"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Run this month's close checklist",
+          "Generate accrual schedule and roll-forward"
+        ],
+        "zh-CN": [
+          "帮我做这个月的结账检查",
+          "生成计提表和滚动对账表"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "recruitment-expert",
+      "name": "招聘顾问",
+      "name_i18n": {
+        "en-US": "Recruitment Consultant",
+        "zh-CN": "招聘顾问"
+      },
+      "description": "人才招聘全流程顾问。职位描述撰写、面试题设计、录用函模板、人才市场调研、候选人邮件沟通。",
+      "description_i18n": {
+        "en-US": "Full-cycle recruitment consultant: JD writing, interview design, offer templates, talent research.",
+        "zh-CN": "人才招聘全流程顾问。JD 撰写、面试设计、录用函模板、人才调研。"
+      },
+      "avatar": "avatars/recruitment-expert.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "humanizer",
+        "agent-browser",
+        "cn-recruiting-workflow"
+      ],
+      "rule_file": "rules/recruitment-expert.{locale}.md",
+      "prompts": [
+        "帮我写一份高级全栈工程师的 JD",
+        "设计一套前端开发面试题",
+        "帮我搜索 LinkedIn 上符合条件的候选人"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Write a JD for Senior Full-Stack Engineer",
+          "Design interview questions for frontend developer"
+        ],
+        "zh-CN": [
+          "帮我写一份高级全栈工程师的 JD",
+          "设计一套前端开发面试题"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "smb-operations",
+      "name": "中小企业运营",
+      "name_i18n": {
+        "en-US": "SMB Operations",
+        "zh-CN": "中小企业运营"
+      },
+      "description": "中小企业运营经理。处理招聘（JD/面试题/录用函）、入职（企业设置/首日清单/30 天路线图）和业务报告（一页纸快照/周报/季报 QBR）。",
+      "description_i18n": {
+        "en-US": "SMB operations manager: hiring, onboarding, business reporting, weekly/daily summaries.",
+        "zh-CN": "中小企业运营经理。招聘、入职、业务报告一站式支持。"
+      },
+      "avatar": "avatars/smb-operations.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "business-reporting",
+        "hiring",
+        "onboarding",
+        "agent-browser"
+      ],
+      "rule_file": "rules/smb-operations.{locale}.md",
+      "prompts": [
+        "帮我做一份本周业务简报",
+        "为新员工制定 30 天入职路线图",
+        "起草一份区域经理招聘启事"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Create this week's business summary",
+          "Build a 30-day onboarding roadmap"
+        ],
+        "zh-CN": [
+          "帮我做一份本周业务简报",
+          "为新员工制定 30 天入职路线图"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "strategy-backtest-expert",
+      "name": "策略回测",
+      "name_i18n": {
+        "en-US": "Strategy Backtest",
+        "zh-CN": "策略回测"
+      },
+      "description": "⚠️ 仅供参考，不构成投资建议。将交易策略转化为 Python + pandas 回测脚本。生成权益曲线、交易记录、收益汇总和 HTML 仪表盘。支持 A 股/港股/美股/ETF。",
+      "description_i18n": {
+        "en-US": "Convert trading strategies to Python backtest scripts. Generate equity curves, trade logs, HTML dashboards. ⚠️ Not investment advice.",
+        "zh-CN": "⚠️ 仅供参考不构成投资建议。量化策略回测。Python + pandas 脚本，权益曲线、交易记录、HTML 仪表盘。"
+      },
+      "avatar": "avatars/strategy-backtest-expert.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "quant-backtest-lab",
+        "westock-data",
+        "westock-tool",
+        "akshare-stock"
+      ],
+      "rule_file": "rules/strategy-backtest-expert.{locale}.md",
+      "prompts": [
+        "回测一个均线金叉策略（A 股，近 3 年）",
+        "帮我评估这个网格交易策略的历史表现",
+        "生成茅台的权益曲线和交易记录"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Backtest a moving average crossover strategy for A-shares",
+          "Evaluate this grid trading strategy historically"
+        ],
+        "zh-CN": [
+          "回测一个均线金叉策略（A 股，近 3 年）",
+          "帮我评估这个网格交易策略的历史表现"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "tdx-stock-hunter",
+      "name": "通达信选股",
+      "name_i18n": {
+        "en-US": "TDX Stock Hunter",
+        "zh-CN": "通达信选股"
+      },
+      "description": "⚠️ 仅供参考，不构成投资建议。基于通达信数据对 A 股智能选股。自然语言选股条件 → 多维筛选（基本面/技术面/资金面/估值）→ 百分制综合评分排序。",
+      "description_i18n": {
+        "en-US": "A-share stock screener via TDX MCP. Multi-factor screening with percentile scoring. ⚠️ Not investment advice.",
+        "zh-CN": "⚠️ 仅供参考不构成投资建议。通达信 A 股智能选股。多维度筛选 + 百分制评分。"
+      },
+      "avatar": "avatars/tdx-stock-hunter.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "stock-mx"
+      ],
+      "rule_file": "rules/tdx-stock-hunter.{locale}.md",
+      "prompts": [
+        "帮我筛选 ROE > 15%、市盈率 < 20 的 A 股",
+        "找最近资金持续流入的科技股",
+        "筛选符合低估 + 高股息条件的股票"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Screen A-shares with ROE > 15% and PE < 20",
+          "Find tech stocks with consistent capital inflow"
+        ],
+        "zh-CN": [
+          "帮我筛选 ROE > 15%、市盈率 < 20 的 A 股",
+          "找最近资金持续流入的科技股"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "tiktok-strategist",
+      "name": "TikTok 运营",
+      "name_i18n": {
+        "en-US": "TikTok Strategist",
+        "zh-CN": "TikTok 运营"
+      },
+      "description": "精通 TikTok 算法和海外短视频生态。帮助品牌在全球平台爆发。视频内容策略、跨境本地化、去 AI 味文案。",
+      "description_i18n": {
+        "en-US": "TikTok algorithm and global short-video strategy expert. Content strategy, localization, AI-humanized copy.",
+        "zh-CN": "精通 TikTok 算法和海外短视频生态。内容策略、跨境本地化、去 AI 味文案。"
+      },
+      "avatar": "avatars/tiktok-strategist.png",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "libtv-skill",
+        "humanizer",
+        "agent-browser"
+      ],
+      "rule_file": "rules/tiktok-strategist.{locale}.md",
+      "prompts": [
+        "分析这个 TikTok 账号的增长策略",
+        "帮我策划一个适合美国市场的产品展示视频",
+        "我这段英文文案能改成更适合 TikTok 的吗？"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Analyze this TikTok account's growth strategy",
+          "Plan a product showcase video for US market"
+        ],
+        "zh-CN": [
+          "分析这个 TikTok 账号的增长策略",
+          "帮我策划一个适合美国市场的产品展示视频"
+        ]
+      },
+      "models": []
+    },
+    {
+      "id": "academic-research",
+      "name": "学术科研",
+      "name_i18n": {
+        "en-US": "Academic Research",
+        "zh-CN": "学术科研"
+      },
+      "description": "科研全流程助手。七阶段 SOP：文献调研（20+ 数据库并行搜索）→ 创新提案 → 方案设计 → 实验分析 → 论文写作（含图表/排版/引文）→ 投稿返修 → 成果转化（答辩/专利/竞赛）+ 每周学术雷达监测。",
+      "description_i18n": {
+        "en-US": "Full research pipeline assistant: literature search (20+ databases), idea generation, experiment design, paper writing, figure/citation/typesetting, journal matching, rebuttal, and weekly academic radar monitoring.",
+        "zh-CN": "科研全流程助手。七阶段 SOP：文献调研 → 创新提案 → 方案设计 → 实验分析 → 论文写作 → 投稿返修 → 成果转化 + 学术雷达监测。"
+      },
+      "avatar": "avatars/academic-research.jpg",
+      "preset_agent_type": "aionrs",
+      "enabled_skills": [
+        "light-orchestrator",
+        "scholar-megasearch",
+        "arxiv-reader",
+        "light-literature-search",
+        "light-idea-generation",
+        "light-idea-critique",
+        "light-research-plan",
+        "light-data-engineering",
+        "light-result-analysis",
+        "light-paper-drafting",
+        "light-paper-polishing",
+        "humanizer",
+        "light-figure-planning",
+        "light-figure-drawing",
+        "light-citation",
+        "light-typesetting",
+        "light-venue-matching",
+        "light-review-rebuttal",
+        "light-slides",
+        "light-ip-application",
+        "light-competition",
+        "academic-radar",
+        "agent-browser"
+      ],
+      "rule_file": "rules/academic-research.{locale}.md",
+      "prompts": [
+        "帮我搜索近 3 年关于图神经网络的论文并下载 PDF",
+        "基于这些文献帮我找创新点",
+        "把这篇文章润色到可以投 NeurIPS 的水平"
+      ],
+      "prompts_i18n": {
+        "en-US": [
+          "Search and download papers on graph neural networks from last 3 years",
+          "Find research gaps based on these papers"
+        ],
+        "zh-CN": [
+          "帮我搜索近 3 年关于图神经网络的论文并下载 PDF",
+          "基于这些文献帮我找创新点"
         ]
       },
       "models": []
