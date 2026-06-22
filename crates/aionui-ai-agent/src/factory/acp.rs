@@ -171,6 +171,28 @@ pub(super) async fn build(
         }
     }
 
+    // ── Builtin MCP servers ───────────────────────────────────────────
+    // Chrome DevTools MCP — always available for stdio-capable agents.
+    if mcp_capabilities.stdio {
+        match ensure_stdio_launch("npx", &["-y".to_owned(), "chrome-devtools-mcp@latest".to_owned()], &[]).await {
+            Ok((command, args, env)) => {
+                session_mcp_servers.push(McpServer::Stdio(
+                    McpServerStdio::new("chrome-devtools".to_owned(), command)
+                        .args(args)
+                        .env(env),
+                ));
+            }
+            Err(e) => {
+                warn!(ctx.conversation_id, error = %e, "builtin_mcp: chrome-devtools unavailable; skipping");
+            }
+        }
+    }
+
+    // Image Generation MCP — injected when API credentials are available
+    // from the cc-switch provider config.
+    // TODO: read ImageGenConfig from provider settings_config and wire
+    // build_builtin_image_gen_server() output into session_mcp_servers.
+
     let params = Arc::new(
         assemble_acp_params(
             ctx.conversation_id.clone(),
