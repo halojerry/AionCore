@@ -443,10 +443,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn avatar_asset_is_none_for_inline_emoji_avatar() {
+    fn avatar_asset_resolves_for_word_form_creator() {
         let reg = BuiltinAssistantRegistry::load_embedded();
-        // word-form-creator still ships with an inline emoji avatar.
-        assert!(reg.avatar_asset("word-form-creator").is_none());
+        // word-form-creator previously used an inline emoji avatar (📋);
+        // now ships with a proper file avatar like every other builtin.
+        assert!(reg.avatar_asset("word-form-creator").is_some());
     }
 
     #[test]
