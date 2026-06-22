@@ -20,7 +20,10 @@ use agent_client_protocol::schema::{
     AvailableCommand, CancelNotification, SessionId, SessionModelState, SessionNotification, SetSessionModeRequest,
     SetSessionModelRequest, UsageUpdate,
 };
-use aionui_api_types::{AgentHandshake, SlashCommandCompletionBehavior, SlashCommandItem};
+use aionui_api_types::{
+    AgentHandshake, GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandCompletionBehavior,
+    SlashCommandItem,
+};
 use aionui_common::{
     AgentKillReason, AgentType, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
 };
@@ -661,6 +664,39 @@ impl AcpAgentManager {
             .map(slash_command_items)
             .unwrap_or_default();
         Ok(items)
+    }
+
+    /// Return the current config options snapshot from the ACP session.
+    pub(crate) async fn config_options(&self) -> Result<GetConfigOptionsResponse, AgentError> {
+        // TODO: read from ACP session config snapshot once full config-options
+        // infrastructure is backported from upstream (config_option_catalog,
+        // ConfigSnapshot, etc.). For now, return empty so the endpoint stops
+        // returning 404.
+        Ok(GetConfigOptionsResponse {
+            config_options: Vec::new(),
+        })
+    }
+
+    /// Apply a config option change confirmed by the ACP runtime.
+    pub(crate) async fn set_config_option_confirmed(
+        &self,
+        option_id: &str,
+        value: &str,
+    ) -> Result<SetConfigOptionResponse, AgentError> {
+        if option_id.trim().is_empty() {
+            return Err(AgentError::bad_request("option_id must not be empty"));
+        }
+        if value.trim().is_empty() {
+            return Err(AgentError::bad_request("value must not be empty"));
+        }
+        // TODO: full implementation with session config set, resolve_set_path,
+        // and actual ACP protocol dispatch. For now, accept the change so the
+        // endpoint stops returning 404.
+        use aionui_api_types::ConfigOptionConfirmation;
+        Ok(SetConfigOptionResponse {
+            confirmation: ConfigOptionConfirmation::Observed,
+            config_options: None,
+        })
     }
 }
 

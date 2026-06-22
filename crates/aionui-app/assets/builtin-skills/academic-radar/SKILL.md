@@ -1,3 +1,10 @@
+---
+name: academic-radar
+description: >
+  Zero-config, zero-dependency intelligent academic research report generator.
+  Automatically tracks, summarizes, and reports on the latest academic papers
+  and research trends.
+---
 # 学术雷达纯提示词版（小白友好版）V3.0 - 专业严谨版
 
 ## 简介

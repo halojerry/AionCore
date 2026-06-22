@@ -1,5 +1,5 @@
 ---
-name: fsi-comps-analysis
+name: comps-analysis
 description: |
   Build institutional-grade comparable company analyses with operating metrics, valuation multiples, and statistical benchmarking in Excel/spreadsheet format.
 

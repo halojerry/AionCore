@@ -1,6 +1,6 @@
 ---
-name: "抖音运营"
-description: "提供抖音运营的可落地指南与SOP。在开展抖音运营相关工作时调用。"
+name: douyin-operations
+description: "Provides actionable guidelines and SOPs for Douyin (TikTok China) operations. Invoke when working on Douyin-related tasks."
 ---
 # 抖音运营 (douyin-operations)
 ## 内容与节奏
