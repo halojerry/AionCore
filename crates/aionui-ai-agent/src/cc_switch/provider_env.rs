@@ -174,9 +174,25 @@ pub fn read_provider_env_by_app_type(app_type: &str) -> HashMap<String, String> 
     normalize_env(env_obj)
 }
 
+/// Read the Codex proxy port from `~/.pounding/codex-proxy-port`.
+/// Returns `None` if the file doesn't exist or contains an invalid port.
+fn read_codex_proxy_port() -> Option<u16> {
+    let path = dirs::home_dir()?
+        .join(".pounding")
+        .join("codex-proxy-port");
+    let content = std::fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    let port: u16 = trimmed.parse().ok()?;
+    Some(port)
+}
+
 /// Ensure the Codex live config files are up to date before spawning.
 /// Reads the cc-switch DB provider row for app_type='codex' and writes
 /// ~/.codex/auth.json and ~/.codex/config.toml if the DB has newer state.
+///
+/// Overrides `base_url` with the local codex-api-proxy address when the
+/// proxy port file exists, so Codex's Responses API traffic is translated
+/// to Chat Completions for the POUNDING upstream API.
 pub fn ensure_codex_live_config() {
     let Some(config) = read_provider_config_json("codex") else {
         return;
@@ -198,57 +214,82 @@ pub fn ensure_codex_live_config() {
         }
     }
 
-    // Write config.toml
+    // ── Config.toml: defense-in-depth write ──────────────────────────
+    //
+    // The TypeScript side (writeCodexConfigForProviderSync) writes the
+    // authoritative config.toml with model_catalog_json and a full
+    // pounding-models.json.  We only write from Rust as a fallback when
+    // the file is missing or incomplete (no model_catalog_json), which
+    // covers first-login and config-deletion edge cases without
+    // overwriting the richer TypeScript version.
+    //
     // The cc-switch DB stores Codex provider settings_config in two formats:
     // 1. (POUNDING): top-level JSON keys — model, model_provider, base_url, wire_api
     // 2. (legacy cc-switch): a "config" key containing a TOML string with the same fields
-    let mut model = config.get("model").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    let mut model_provider = config
-        .get("model_provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_owned();
-    let mut base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    let mut wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses").to_owned();
+    let mut needs_write = !config_path.exists();
+    if !needs_write {
+        // File exists — check whether it has model_catalog_json.
+        // TypeScript always includes it; if absent, the file is stale.
+        if let Ok(existing) = std::fs::read_to_string(&config_path) {
+            needs_write = !existing.contains("model_catalog_json");
+        } else {
+            needs_write = true;  // unreadable → treat as missing
+        }
+    }
+    if !needs_write {
+        tracing::debug!("cc-switch: codex config.toml exists and is complete; skip");
+    } else {
+        tracing::info!("cc-switch: writing codex config.toml (fallback)");
 
-    // Fallback: if the top-level keys are empty, try parsing the legacy "config" TOML field
-    if model.is_empty() && model_provider.is_empty() && base_url.is_empty() {
-        if let Some(toml_str) = config.get("config").and_then(|v| v.as_str()) {
-            // The TOML string contains fields like:
-            //   model_provider = "custom"
-            //   model = "deepseek-v4-pro"
-            //   [model_providers.custom]
-            //   base_url = "https://..."
-            //   wire_api = "responses"
-            for line in toml_str.lines() {
-                let trimmed = line.trim();
-                if let Some(val) = trimmed.strip_prefix("model_provider = ") {
-                    model_provider = val.trim_matches('"').to_owned();
-                } else if let Some(val) = trimmed.strip_prefix("model = ") {
-                    model = val.trim_matches('"').to_owned();
-                } else if let Some(val) = trimmed.strip_prefix("base_url = ") {
-                    base_url = val.trim_matches('"').to_owned();
-                } else if let Some(val) = trimmed.strip_prefix("wire_api = ") {
-                    wire_api = val.trim_matches('"').to_owned();
+        let mut model = config.get("model").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let mut model_provider = config
+            .get("model_provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let mut base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let mut wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses").to_owned();
+
+        // Fallback: if the top-level keys are empty, try parsing the legacy "config" TOML field
+        if model.is_empty() && model_provider.is_empty() && base_url.is_empty() {
+            if let Some(toml_str) = config.get("config").and_then(|v| v.as_str()) {
+                for line in toml_str.lines() {
+                    let trimmed = line.trim();
+                    if let Some(val) = trimmed.strip_prefix("model_provider = ") {
+                        model_provider = val.trim_matches('"').to_owned();
+                    } else if let Some(val) = trimmed.strip_prefix("model = ") {
+                        model = val.trim_matches('"').to_owned();
+                    } else if let Some(val) = trimmed.strip_prefix("base_url = ") {
+                        base_url = val.trim_matches('"').to_owned();
+                    } else if let Some(val) = trimmed.strip_prefix("wire_api = ") {
+                        wire_api = val.trim_matches('"').to_owned();
+                    }
                 }
             }
         }
-    }
 
-    let toml_content = format!(
-        "model_provider = \"{model_provider}\"\n\
-         model = \"{model}\"\n\
-         \n\
-         [model_providers]\n\
-         [model_providers.\"{model_provider}\"]\n\
-         name = \"POUNDING API\"\n\
-         base_url = \"{base_url}\"\n\
-         wire_api = \"{wire_api}\"\n\
-         requires_openai_auth = true\n"
-    );
+        // Override base_url with the local codex-api-proxy port when available
+        if let Some(port) = read_codex_proxy_port() {
+            base_url = format!("http://127.0.0.1:{port}/v1");
+            tracing::info!(port, "cc-switch: codex base_url overridden to local proxy");
+        }
 
-    if let Err(e) = std::fs::create_dir_all(&codex_dir).and_then(|_| std::fs::write(&config_path, &toml_content)) {
-        tracing::warn!(error = %e, "cc-switch: failed to write codex config.toml");
+        let toml_content = format!(
+            "model_provider = \"{model_provider}\"\n\
+             model = \"{model}\"\n\
+             model_catalog_json = \"pounding-models.json\"\n\
+             \n\
+             [model_providers]\n\
+             [model_providers.\"{model_provider}\"]\n\
+             name = \"POUNDING API\"\n\
+             base_url = \"{base_url}\"\n\
+             wire_api = \"{wire_api}\"\n\
+             requires_openai_auth = true\n"
+        );
+
+        if let Err(e) = std::fs::create_dir_all(&codex_dir).and_then(|_| std::fs::write(&config_path, &toml_content)) {
+            tracing::warn!(error = %e, "cc-switch: failed to write codex config.toml");
+        }
     }
 }
 
@@ -304,6 +345,24 @@ pub fn ensure_openclaw_live_config() {
         return;
     };
 
+    let config_path = home.join(".openclaw").join("openclaw.json");
+
+    // ── Defense-in-depth skip: if the TypeScript path already wrote a complete
+    //     config, don't overwrite it. The TypeScript version includes fields
+    //     (gateway.remote.token, gateway.auth.mode, models.mode) that this
+    //     Rust fallback doesn't generate. Overwriting loses them.
+    if config_path.exists() {
+        if let Ok(existing) = std::fs::read_to_string(&config_path) {
+            let has_gateway_token = existing.contains("\"gateway\"") && existing.contains("\"token\"");
+            let has_auth_mode = existing.contains("\"auth\"") && existing.contains("\"mode\"");
+            if has_gateway_token && has_auth_mode {
+                tracing::debug!("cc-switch: openclaw.json exists and is complete; skip");
+                return;
+            }
+        }
+    }
+    tracing::info!("cc-switch: writing openclaw.json (fallback)");
+
     let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
     let api_key = config.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
     let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
@@ -335,7 +394,6 @@ pub fn ensure_openclaw_live_config() {
     });
 
     // Preserve auth token if already set
-    let config_path = home.join(".openclaw").join("openclaw.json");
     let mut merged = openclaw_config;
     if let Ok(existing) = std::fs::read_to_string(&config_path) {
         if let Ok(existing_val) = serde_json::from_str::<serde_json::Value>(&existing) {
