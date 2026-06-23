@@ -156,6 +156,10 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
             post(set_system_user_credentials_handler),
         )
         .route(
+            "/api/auth/internal/users/sync-credentials",
+            post(sync_credentials_handler),
+        )
+        .route(
             "/api/auth/internal/users/by-username/{username}",
             get(find_user_by_username_handler),
         )
@@ -407,6 +411,40 @@ async fn set_system_user_credentials_handler(
         .set_system_user_credentials(&req.username, &req.password_hash)
         .await
         .map_err(db_error_to_api_error)?;
+    Ok(Json(ApiResponse::ok(())))
+}
+
+// ── POST /api/auth/internal/users/sync-credentials ─────────────────
+
+#[derive(Debug, Deserialize)]
+struct SyncCredentialsRequest {
+    username: String,
+    password: String,
+}
+
+async fn sync_credentials_handler(
+    State(state): State<AuthRouterState>,
+    body: Result<Json<SyncCredentialsRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    ensure_local_mode(state.local)?;
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    if req.username.is_empty() || req.username.len() > 64 {
+        return Err(ApiError::BadRequest("Invalid username".into()));
+    }
+    if req.password.is_empty() || req.password.len() > 128 {
+        return Err(ApiError::BadRequest("Invalid password".into()));
+    }
+
+    let password_hash = hash_password(&req.password)
+        .map_err(|e| ApiError::Internal(format!("Password hashing failed: {e}")))?;
+
+    state
+        .user_repo
+        .set_system_user_credentials(&req.username, &password_hash)
+        .await
+        .map_err(db_error_to_api_error)?;
+
     Ok(Json(ApiResponse::ok(())))
 }
 

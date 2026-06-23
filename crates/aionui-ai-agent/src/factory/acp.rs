@@ -12,7 +12,7 @@ use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
-use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
+use aionui_mcp::{AcpMcpCapabilities, AcpSessionMcpServer, ImageGenConfig, build_builtin_image_gen_server, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, NativeCliToolId, ensure_managed_acp_tool_with_reporter, ensure_native_cli_tool_with_reporter,
     ensure_node_runtime_with_reporter, ensure_runtime_command, ensure_runtime_command_with_reporter,
@@ -168,6 +168,86 @@ pub(super) async fn build(
                     "session_mcp: failed to convert session snapshot; skipping"
                 );
             }
+        }
+    }
+
+    // ── Builtin MCP servers ───────────────────────────────────────────
+    // Chrome DevTools MCP — always available for stdio-capable agents.
+    if mcp_capabilities.stdio {
+        match ensure_stdio_launch("npx", &["-y".to_owned(), "chrome-devtools-mcp@latest".to_owned()], &[]).await {
+            Ok((command, args, env)) => {
+                session_mcp_servers.push(McpServer::Stdio(
+                    McpServerStdio::new("chrome-devtools".to_owned(), command)
+                        .args(args)
+                        .env(env),
+                ));
+            }
+            Err(e) => {
+                warn!(ctx.conversation_id, error = %e, "builtin_mcp: chrome-devtools unavailable; skipping");
+            }
+        }
+    }
+
+    // ── Image Generation MCP ───────────────────────────────────────────
+    // Injected when API credentials are available from the cc-switch
+    // provider config or fallback defaults.
+    //
+    // TODO: Replace "node" placeholder command with the actual image-gen
+    // MCP server script path. The TypeScript implementation at
+    // AionUi/packages/desktop/src/process/resources/builtinMcp/imageGenServer.ts
+    // compiles to builtin-mcp-image-gen.js. When bundled alongside the
+    // backend binary, pass the script path in args.
+    // Awaiting image-gen binary deployment.
+    if mcp_capabilities.stdio {
+        let cc_env = crate::cc_switch::read_claude_provider_env();
+        let api_key = cc_env
+            .get("ANTHROPIC_API_KEY")
+            .or_else(|| cc_env.get("OPENAI_API_KEY"))
+            .cloned();
+
+        let img_config = ImageGenConfig {
+            model: Some("gpt-image-2".into()),
+            api_url: Some("https://api.mxou.cn/v1/images/generations".into()),
+            api_key,
+            size: None,
+            quality: None,
+            style: None,
+        };
+
+        if let Some(server) = build_builtin_image_gen_server(&mcp_capabilities, "node", &img_config) {
+            match server {
+                AcpSessionMcpServer::Stdio {
+                    name,
+                    command,
+                    args,
+                    env,
+                } => {
+                    let env_vars: Vec<EnvVariable> = env
+                        .into_iter()
+                        .map(|nvp| EnvVariable::new(nvp.name, nvp.value))
+                        .collect();
+                    session_mcp_servers.push(McpServer::Stdio(
+                        McpServerStdio::new(name, std::path::PathBuf::from(command))
+                            .args(args)
+                            .env(env_vars),
+                    ));
+                    info!(
+                        ctx.conversation_id,
+                        "image_gen_mcp: injected into session"
+                    );
+                }
+                _ => {
+                    debug!(
+                        ctx.conversation_id,
+                        "image_gen_mcp: unexpected server variant; skipping"
+                    );
+                }
+            }
+        } else {
+            debug!(
+                ctx.conversation_id,
+                "image_gen_mcp: skipped (capabilities mismatch or empty command)"
+            );
         }
     }
 

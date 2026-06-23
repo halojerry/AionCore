@@ -9,13 +9,17 @@
 
 use std::path::Component;
 
+use aionui_ai_agent::{AcpError, AgentError};
 use aionui_api_types::{
-    AgentModeResponse, GetModelInfoResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
+    AgentModeResponse, ConfigOptionConfirmation, GetConfigOptionsResponse, GetModelInfoResponse,
+    SetConfigOptionRequest, SetConfigOptionResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
     SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
 };
+use aionui_common::{AgentKillReason, ErrorChain};
+use tracing::warn;
 
 use crate::ConversationError;
-use crate::service::ConversationService;
+use crate::service::{AssistantRuntimePreferenceUpdate, ConversationService};
 
 const MAX_DIR_DEPTH: usize = 10;
 
@@ -153,6 +157,140 @@ impl ConversationService {
         {
             tracing::warn!(conversation_id, model_id = %req.model_id, error = %e, "Failed to persist model to preferences");
         }
+        Ok(response)
+    }
+
+    // ── Config Options ──────────────────────────────────────────────
+
+    pub async fn get_config_options(
+        &self,
+        conversation_id: &str,
+    ) -> Result<GetConfigOptionsResponse, ConversationError> {
+        match self.task(conversation_id) {
+            Ok(task) => task.get_config_options().await.map_err(ConversationError::from),
+            Err(ConversationError::ActiveAgentNotFound { .. }) => {
+                Ok(GetConfigOptionsResponse { config_options: vec![] })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn set_config_option(
+        &self,
+        conversation_id: &str,
+        option_id: &str,
+        req: SetConfigOptionRequest,
+    ) -> Result<SetConfigOptionResponse, ConversationError> {
+        if option_id.trim().is_empty() {
+            return Err(ConversationError::BadRequest {
+                reason: "option_id must not be empty".into(),
+            });
+        }
+        if req.value.trim().is_empty() {
+            return Err(ConversationError::BadRequest {
+                reason: "value must not be empty".into(),
+            });
+        }
+        let task = match self.task(conversation_id) {
+            Ok(task) => task,
+            Err(ConversationError::ActiveAgentNotFound { .. }) => {
+                return Ok(SetConfigOptionResponse {
+                    confirmation: ConfigOptionConfirmation::CommandAck,
+                    config_options: None,
+                });
+            }
+            Err(err) => {
+                warn!(
+                    conversation_id,
+                    option_id,
+                    value = %req.value,
+                    error = %ErrorChain(&err),
+                    "Set config option skipped because active agent task is unavailable"
+                );
+                return Err(err);
+            }
+        };
+        // Redirect model/mode switches to the dedicated endpoints that
+        // actually apply the change to the running agent. The upstream
+        // config-options infrastructure (config_option_catalog, ConfigSnapshot,
+        // resolve_set_path) is not fully backported yet, so set_config_option
+        // would hit a stub that returns Observed without doing anything.
+        let response = match option_id {
+            "model" => {
+                task.set_model_confirmed(&req.value)
+                    .await
+                    .map_err(ConversationError::from)?;
+                SetConfigOptionResponse {
+                    confirmation: ConfigOptionConfirmation::Observed,
+                    config_options: None,
+                }
+            }
+            "mode" => {
+                task.set_mode(&req.value)
+                    .await
+                    .map_err(ConversationError::from)?;
+                SetConfigOptionResponse {
+                    confirmation: ConfigOptionConfirmation::Observed,
+                    config_options: None,
+                }
+            }
+            _ => match task.set_config_option(option_id, &req.value).await {
+                Ok(response) => response,
+                Err(err @ AgentError::Acp(AcpError::NotConnected)) => {
+                    warn!(
+                        conversation_id,
+                        option_id,
+                        reason = ?AgentKillReason::AgentErrorRecovery,
+                        error = %ErrorChain(&err),
+                        "ACP config option failed because protocol is disconnected; evicting task"
+                    );
+                    self.task_manager()
+                        .kill_and_wait(conversation_id, Some(AgentKillReason::AgentErrorRecovery))
+                        .await;
+                    return Err(ConversationError::from(err));
+                }
+                Err(err) => return Err(ConversationError::from(err)),
+            },
+        };
+
+        // Mirror runtime model/mode switches into the persisted assistant
+        // snapshot + preference so the next conversation seeded from this
+        // assistant in `auto` mode reflects the latest pick.
+        if response.confirmation == ConfigOptionConfirmation::Observed {
+            let updates = match option_id {
+                "model" => Some(AssistantRuntimePreferenceUpdate {
+                    model: Some(req.value.as_str()),
+                    permission: None,
+                }),
+                "mode" => Some(AssistantRuntimePreferenceUpdate {
+                    model: None,
+                    permission: Some(req.value.as_str()),
+                }),
+                _ => None,
+            };
+            if let Some(updates) = updates {
+                if let Err(err) = self.persist_runtime_assistant_snapshot(conversation_id, updates).await {
+                    warn!(
+                        conversation_id,
+                        option_id,
+                        error = %ErrorChain(&err),
+                        "Failed to persist runtime assistant snapshot after set_config_option",
+                    );
+                }
+                if let Err(err) = self
+                    .persist_runtime_assistant_preferences(conversation_id, updates)
+                    .await
+                {
+                    warn!(
+                        conversation_id,
+                        option_id,
+                        error = %ErrorChain(&err),
+                        "Failed to persist runtime assistant preferences after set_config_option",
+                    );
+                }
+            }
+        }
+
         Ok(response)
     }
 

@@ -199,13 +199,41 @@ pub fn ensure_codex_live_config() {
     }
 
     // Write config.toml
-    let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
-    let model_provider = config
+    // The cc-switch DB stores Codex provider settings_config in two formats:
+    // 1. (POUNDING): top-level JSON keys — model, model_provider, base_url, wire_api
+    // 2. (legacy cc-switch): a "config" key containing a TOML string with the same fields
+    let mut model = config.get("model").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let mut model_provider = config
         .get("model_provider")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
-    let wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses");
+        .unwrap_or("")
+        .to_owned();
+    let mut base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+    let mut wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses").to_owned();
+
+    // Fallback: if the top-level keys are empty, try parsing the legacy "config" TOML field
+    if model.is_empty() && model_provider.is_empty() && base_url.is_empty() {
+        if let Some(toml_str) = config.get("config").and_then(|v| v.as_str()) {
+            // The TOML string contains fields like:
+            //   model_provider = "custom"
+            //   model = "deepseek-v4-pro"
+            //   [model_providers.custom]
+            //   base_url = "https://..."
+            //   wire_api = "responses"
+            for line in toml_str.lines() {
+                let trimmed = line.trim();
+                if let Some(val) = trimmed.strip_prefix("model_provider = ") {
+                    model_provider = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("model = ") {
+                    model = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("base_url = ") {
+                    base_url = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("wire_api = ") {
+                    wire_api = val.trim_matches('"').to_owned();
+                }
+            }
+        }
+    }
 
     let toml_content = format!(
         "model_provider = \"{model_provider}\"\n\

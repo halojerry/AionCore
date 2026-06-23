@@ -1,3 +1,9 @@
+---
+name: stock-mx
+description: >
+  MiaoXiang Finance stock analysis skills — includes stock data retrieval, financial
+  analysis, and market research capabilities.
+---
 # 妙想金融Skills使用指南
 
 本文档包含三个妙想金融Skills的详细说明和使用方法。

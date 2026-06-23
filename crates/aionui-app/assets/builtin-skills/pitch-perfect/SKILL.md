@@ -1,3 +1,10 @@
+---
+name: pitch-perfect
+description: >
+  Startup fundraising pitch deck expert based on Oliver Pitch Course, MIT entrepreneurship
+  curriculum, and real-world case studies. Helps entrepreneurs create professional,
+  persuasive pitch decks to improve fundraising success rates.
+---
 # Pitch Perfect - 创业融资路演PPT专家
 
 ## 描述

@@ -151,6 +151,62 @@ pub struct SideQuestionResponse {
     pub answer: Option<String>,
 }
 
+// ── Config Options ──────────────────────────────────────────────
+
+/// Frontend-facing ACP config option. Always serializes with snake_case field names.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpConfigOptionDto {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(rename = "type")]
+    pub option_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_value: Option<String>,
+    #[serde(default)]
+    pub options: Vec<AcpConfigSelectOptionDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcpConfigSelectOptionDto {
+    pub value: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigOptionConfirmation {
+    Observed,
+    CommandAck,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SetConfigOptionRequest {
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GetConfigOptionsResponse {
+    pub config_options: Vec<AcpConfigOptionDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SetConfigOptionResponse {
+    pub confirmation: ConfigOptionConfirmation,
+    pub config_options: Option<Vec<AcpConfigOptionDto>>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
