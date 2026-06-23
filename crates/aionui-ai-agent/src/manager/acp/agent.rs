@@ -195,6 +195,29 @@ fn matched_slash_command(raw_user_input: &str, commands: &[AvailableCommand]) ->
         .map(slash_command_item)
 }
 
+/// Rejects marking the aggregate session as "opened" if the underlying
+/// protocol connection died between the `session/new` request completing
+/// and the guard check here — prevents the aggregate from believing the
+/// session is open when the ACP transport is already gone.
+fn mark_session_opened_after_protocol_ready(
+    session: &mut AcpSession,
+    sid: String,
+    protocol_connected: bool,
+    conversation_id: &str,
+    backend: Option<&str>,
+) -> Result<String, AgentError> {
+    if !protocol_connected {
+        warn!(
+            conversation_id = %conversation_id,
+            backend = backend.unwrap_or("-"),
+            "ACP session open returned after protocol disconnected; rejecting opened transition"
+        );
+        return Err(AcpError::NotConnected.into());
+    }
+    session.mark_opened();
+    Ok(sid)
+}
+
 /// Manages a single ACP Agent instance.
 ///
 /// ACP is the most complex agent type, supporting 20+ CLI sub-backends
@@ -438,6 +461,19 @@ impl AcpAgentManager {
     fn record_user_cancel_request(runtime: &AgentRuntime, session: &mut AcpSession) {
         session.record_close_reason(Some(CloseReason::UserCancel));
         runtime.bump_activity();
+    }
+
+    fn ensure_protocol_connected_for_operation(&self, operation: &'static str) -> Result<(), AgentError> {
+        if self.protocol.is_connected() {
+            return Ok(());
+        }
+        warn!(
+            conversation_id = %self.params.conversation_id,
+            agent_backend = ?self.params.metadata.backend,
+            operation,
+            "ACP operation rejected because protocol is disconnected"
+        );
+        Err(AcpError::NotConnected.into())
     }
 
     pub(crate) async fn mode(&self) -> Result<aionui_api_types::AgentModeResponse, AgentError> {
@@ -689,6 +725,7 @@ impl AcpAgentManager {
         if value.trim().is_empty() {
             return Err(AgentError::bad_request("value must not be empty"));
         }
+        self.ensure_protocol_connected_for_operation("set_config_option")?;
         // TODO: full implementation with session config set, resolve_set_path,
         // and actual ACP protocol dispatch. For now, accept the change so the
         // endpoint stops returning 404.
@@ -748,6 +785,7 @@ impl AcpAgentManager {
     async fn ensure_session_opened(&self) -> Result<String, AgentError> {
         debug!("Ensuring ACP session is opened");
         let _lock = self.session_lock.lock().await;
+        self.ensure_protocol_connected_for_operation("ensure_session_opened")?;
 
         let (session_id, opened) = {
             let s = self.session.read().await;
@@ -762,10 +800,16 @@ impl AcpAgentManager {
 
         {
             let mut s = self.session.write().await;
-            s.mark_opened();
+            let sid = mark_session_opened_after_protocol_ready(
+                &mut s,
+                sid,
+                self.protocol.is_connected(),
+                &self.params.conversation_id,
+                self.backend(),
+            )?;
             self.commit_session_changes(&mut s).await;
+            Ok(sid)
         }
-        Ok(sid)
     }
 
     /// Initialize or resume a session, then send the user message.

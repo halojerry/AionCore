@@ -9,12 +9,13 @@
 
 use std::path::Component;
 
+use aionui_ai_agent::{AcpError, AgentError};
 use aionui_api_types::{
     AgentModeResponse, ConfigOptionConfirmation, GetConfigOptionsResponse, GetModelInfoResponse,
     SetConfigOptionRequest, SetConfigOptionResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
     SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
 };
-use aionui_common::ErrorChain;
+use aionui_common::{AgentKillReason, ErrorChain};
 use tracing::warn;
 
 use crate::ConversationError;
@@ -233,10 +234,23 @@ impl ConversationService {
                     config_options: None,
                 }
             }
-            _ => task
-                .set_config_option(option_id, &req.value)
-                .await
-                .map_err(ConversationError::from)?,
+            _ => match task.set_config_option(option_id, &req.value).await {
+                Ok(response) => response,
+                Err(err @ AgentError::Acp(AcpError::NotConnected)) => {
+                    warn!(
+                        conversation_id,
+                        option_id,
+                        reason = ?AgentKillReason::AgentErrorRecovery,
+                        error = %ErrorChain(&err),
+                        "ACP config option failed because protocol is disconnected; evicting task"
+                    );
+                    self.task_manager()
+                        .kill_and_wait(conversation_id, Some(AgentKillReason::AgentErrorRecovery))
+                        .await;
+                    return Err(ConversationError::from(err));
+                }
+                Err(err) => return Err(ConversationError::from(err)),
+            },
         };
 
         // Mirror runtime model/mode switches into the persisted assistant
