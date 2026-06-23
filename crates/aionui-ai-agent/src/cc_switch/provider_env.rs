@@ -206,34 +206,20 @@ pub fn ensure_codex_live_config() {
     let config_path = codex_dir.join("config.toml");
 
     // Write auth.json
-    if let Some(auth) = config.get("auth") {
-        if let Err(e) = std::fs::create_dir_all(&codex_dir)
+    if let Some(auth) = config.get("auth")
+        && let Err(e) = std::fs::create_dir_all(&codex_dir)
             .and_then(|_| std::fs::write(&auth_path, serde_json::to_string_pretty(auth).unwrap_or_default()))
-        {
-            tracing::warn!(error = %e, "cc-switch: failed to write codex auth.json");
-        }
+    {
+        tracing::warn!(error = %e, "cc-switch: failed to write codex auth.json");
     }
 
     // ── Config.toml: defense-in-depth write ──────────────────────────
-    //
-    // The TypeScript side (writeCodexConfigForProviderSync) writes the
-    // authoritative config.toml with model_catalog_json and a full
-    // pounding-models.json.  We only write from Rust as a fallback when
-    // the file is missing or incomplete (no model_catalog_json), which
-    // covers first-login and config-deletion edge cases without
-    // overwriting the richer TypeScript version.
-    //
-    // The cc-switch DB stores Codex provider settings_config in two formats:
-    // 1. (POUNDING): top-level JSON keys — model, model_provider, base_url, wire_api
-    // 2. (legacy cc-switch): a "config" key containing a TOML string with the same fields
     let mut needs_write = !config_path.exists();
     if !needs_write {
-        // File exists — check whether it has model_catalog_json.
-        // TypeScript always includes it; if absent, the file is stale.
         if let Ok(existing) = std::fs::read_to_string(&config_path) {
             needs_write = !existing.contains("model_catalog_json");
         } else {
-            needs_write = true;  // unreadable → treat as missing
+            needs_write = true;
         }
     }
     if !needs_write {
@@ -251,19 +237,19 @@ pub fn ensure_codex_live_config() {
         let mut wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses").to_owned();
 
         // Fallback: if the top-level keys are empty, try parsing the legacy "config" TOML field
-        if model.is_empty() && model_provider.is_empty() && base_url.is_empty() {
-            if let Some(toml_str) = config.get("config").and_then(|v| v.as_str()) {
-                for line in toml_str.lines() {
-                    let trimmed = line.trim();
-                    if let Some(val) = trimmed.strip_prefix("model_provider = ") {
-                        model_provider = val.trim_matches('"').to_owned();
-                    } else if let Some(val) = trimmed.strip_prefix("model = ") {
-                        model = val.trim_matches('"').to_owned();
-                    } else if let Some(val) = trimmed.strip_prefix("base_url = ") {
-                        base_url = val.trim_matches('"').to_owned();
-                    } else if let Some(val) = trimmed.strip_prefix("wire_api = ") {
-                        wire_api = val.trim_matches('"').to_owned();
-                    }
+        if model.is_empty() && model_provider.is_empty() && base_url.is_empty()
+            && let Some(toml_str) = config.get("config").and_then(|v| v.as_str())
+        {
+            for line in toml_str.lines() {
+                let trimmed = line.trim();
+                if let Some(val) = trimmed.strip_prefix("model_provider = ") {
+                    model_provider = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("model = ") {
+                    model = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("base_url = ") {
+                    base_url = val.trim_matches('"').to_owned();
+                } else if let Some(val) = trimmed.strip_prefix("wire_api = ") {
+                    wire_api = val.trim_matches('"').to_owned();
                 }
             }
         }
@@ -348,17 +334,15 @@ pub fn ensure_openclaw_live_config() {
     let config_path = home.join(".openclaw").join("openclaw.json");
 
     // ── Defense-in-depth skip: if the TypeScript path already wrote a complete
-    //     config, don't overwrite it. The TypeScript version includes fields
-    //     (gateway.remote.token, gateway.auth.mode, models.mode) that this
-    //     Rust fallback doesn't generate. Overwriting loses them.
-    if config_path.exists() {
-        if let Ok(existing) = std::fs::read_to_string(&config_path) {
-            let has_gateway_token = existing.contains("\"gateway\"") && existing.contains("\"token\"");
-            let has_auth_mode = existing.contains("\"auth\"") && existing.contains("\"mode\"");
-            if has_gateway_token && has_auth_mode {
-                tracing::debug!("cc-switch: openclaw.json exists and is complete; skip");
-                return;
-            }
+    //     config, don't overwrite it.
+    if config_path.exists()
+        && let Ok(existing) = std::fs::read_to_string(&config_path)
+    {
+        let has_gateway_token = existing.contains("\"gateway\"") && existing.contains("\"token\"");
+        let has_auth_mode = existing.contains("\"auth\"") && existing.contains("\"mode\"");
+        if has_gateway_token && has_auth_mode {
+            tracing::debug!("cc-switch: openclaw.json exists and is complete; skip");
+            return;
         }
     }
     tracing::info!("cc-switch: writing openclaw.json (fallback)");
@@ -395,20 +379,18 @@ pub fn ensure_openclaw_live_config() {
 
     // Preserve auth token if already set
     let mut merged = openclaw_config;
-    if let Ok(existing) = std::fs::read_to_string(&config_path) {
-        if let Ok(existing_val) = serde_json::from_str::<serde_json::Value>(&existing) {
-            if let Some(existing_token) = existing_val
-                .get("gateway")
-                .and_then(|g| g.get("auth"))
-                .and_then(|a| a.get("token"))
-            {
-                if let serde_json::Value::Object(ref mut map) = merged {
-                    map.entry("gateway".to_string())
-                        .or_insert_with(|| {
-                            serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"})
-                        });
-                }
-            }
+    if let Ok(existing) = std::fs::read_to_string(&config_path)
+        && let Ok(existing_val) = serde_json::from_str::<serde_json::Value>(&existing)
+        && let Some(existing_token) = existing_val
+            .get("gateway")
+            .and_then(|g| g.get("auth"))
+            .and_then(|a| a.get("token"))
+    {
+        if let serde_json::Value::Object(ref mut map) = merged {
+            map.entry("gateway".to_string())
+                .or_insert_with(|| {
+                    serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"})
+                });
         }
     }
     // Always set gateway mode to local
