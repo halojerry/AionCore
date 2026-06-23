@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Json, Path, State};
+use axum::extract::{Json, Path, Query, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::from_fn_with_state;
 use axum::response::{Html, IntoResponse, Response};
@@ -637,11 +637,31 @@ async fn ws_token_handler(
 // POST /api/auth/qr-login
 // ---------------------------------------------------------------------------
 
+/// Fallback query-param extractor for QR login when the POST body is lost
+/// (static-server TCP splicing can drop it in rare race conditions).
+#[derive(Debug, serde::Deserialize)]
+struct QrLoginQuery {
+    qr_token: Option<String>,
+}
+
 async fn qr_login_handler(
     State(state): State<AuthRouterState>,
+    Query(query): Query<QrLoginQuery>,
     body: Result<Json<QrLoginRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
-    let Json(req) = body.map_err(ApiError::from)?;
+    let req = match body {
+        Ok(Json(req)) => req,
+        Err(json_err) => {
+            // Fallback: body may have been lost by static-server TCP splicing.
+            // Try the qr_token query parameter instead.
+            if let Some(token) = query.qr_token.filter(|t| !t.is_empty()) {
+                tracing::info!(token_len = token.len(), "qr-login: using query-param fallback");
+                QrLoginRequest { qr_token: token }
+            } else {
+                return Err(ApiError::from(json_err));
+            }
+        }
+    };
 
     // Validate and consume QR token (one-time use)
     state.qr_token_store.validate_and_consume(&req.qr_token)?;
@@ -715,7 +735,7 @@ const QR_LOGIN_HTML: &str = r#"<!DOCTYPE html>
     el.className = 'status error';
     return;
   }
-  fetch('/api/auth/qr-login', {
+  fetch('/api/auth/qr-login?qr_token=' + encodeURIComponent(token), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ qr_token: token })
