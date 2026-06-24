@@ -226,9 +226,7 @@ impl ConversationService {
                 }
             }
             "mode" => {
-                task.set_mode(&req.value)
-                    .await
-                    .map_err(ConversationError::from)?;
+                task.set_mode(&req.value).await.map_err(ConversationError::from)?;
                 SetConfigOptionResponse {
                     confirmation: ConfigOptionConfirmation::Observed,
                     config_options: None,
