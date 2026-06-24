@@ -110,6 +110,21 @@ impl ConversationService {
                 reason: "model_id must not be empty".into(),
             });
         }
+
+        // Check conversation existence first — non-existent conversations
+        // should return 404, not a default null model response.
+        if self
+            .conversation_repo()
+            .get(conversation_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("Failed to check conversation existence: {e}")))?
+            .is_none()
+        {
+            return Err(ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            });
+        }
+
         let task = match self.task(conversation_id) {
             Ok(task) => task,
             Err(ConversationError::ActiveAgentNotFound { .. }) => {
