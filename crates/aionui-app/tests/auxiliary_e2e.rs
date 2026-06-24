@@ -261,7 +261,9 @@ async fn slash_commands_no_active_task() {
 
     let req = get_with_token(&format!("/api/conversations/{conv_id}/slash-commands"), &token);
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // POUNDING fork: ActiveAgentNotFound → 200 + empty array (not 404)
+    // to reduce Sentry noise. Frontend has silentStatuses: [404] defense-in-depth.
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 // ── Confirmation routes (no active task → graceful defaults) ─────
