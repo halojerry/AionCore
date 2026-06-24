@@ -1,10 +1,10 @@
 ---
 name: pounding-ozon-assistant
 description: 1688→Ozon 跨境电商。上架、跟卖、翻新、变体、选品。客户端采集数据，管线(n8n)处理全部 Ozon 逻辑。
-version: 0.6.0
+version: 0.7.0
 ---
 
-# pounding-ozon v0.6.0
+# pounding-ozon v0.7.0
 
 工作目录 `pounding-ozon-hybrid/`。全部命令用 `/usr/bin/python3`。
 
@@ -41,6 +41,16 @@ JSON 返回。`missing` 不为空按 `user_action` 处理。`cdp.login_required`
 
 # 变体
 /usr/bin/python3 scripts/cli.py publish-variant --family-title "Название" --variants '[...]'
+
+# 搜索1688（纯API，无CDP）
+/usr/bin/python3 scripts/cli.py search "关键词" --page 1 --page-size 5
+
+# CDP抓取详情
+/usr/bin/python3 scripts/cli.py probe --url <1688链接>
+
+# 批量修复价格（扫描¥100/1300默认价）
+/usr/bin/python3 scripts/cli.py fix-prices --dry-run
+/usr/bin/python3 scripts/cli.py fix-prices --product-id <OzonID> --price <新价格>
 ```
 
 ## 类目关键词

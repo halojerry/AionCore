@@ -160,6 +160,82 @@ def cmd_refresh(args: argparse.Namespace) -> int:
     return 0 if result.get("ok") else 1
 
 
+def cmd_fix_prices(args: argparse.Namespace) -> int:
+    """Fix default/dummy prices using Ozon partial update API."""
+    from scripts.lib.ozon_api import update_prices, list_products, list_product_infos
+    from scripts.lib.cloud_client import _get_ozon_credentials
+
+    creds = _get_ozon_credentials()
+    cid = creds["client_id"]
+    akey = creds["api_key"]
+
+    # Single product mode
+    if args.product_id:
+        items = list_product_infos(cid, akey, product_ids=[str(args.product_id)])
+        if not items:
+            _out({"ok": False, "error": f"product {args.product_id} not found"})
+            return 1
+        product = items[0]
+        price = args.price
+        if not price:
+            _out({"ok": False, "error": "--price required for single product mode"})
+            return 1
+        result = update_prices(cid, akey, [
+            {"offer_id": product["offer_id"], "price": str(price), "currency_code": "CNY"}
+        ])
+        _out({"ok": True, "updated": result.get("result", [])})
+        return 0
+
+    # Batch mode: scan all products
+    max_price_val = args.max_price or 200
+    all_ids = []
+    last_id = ""
+    for _ in range(5):
+        batch = list_products(cid, akey, last_id=last_id, limit=100)
+        items = batch.get("result", {}).get("items", [])
+        if not items: break
+        all_ids.extend([str(item["product_id"]) for item in items])
+        last_id = items[-1].get("product_id", "")
+        if len(items) < 100: break
+
+    # Batch query prices via list_product_infos
+    fixes = []
+    for i in range(0, len(all_ids), 100):
+        id_batch = all_ids[i:i+100]
+        try:
+            info_items = list_product_infos(cid, akey, product_ids=id_batch)
+            for p in info_items:
+                price_val = float(p.get("price") or 0)
+                if price_val in (100, 100.0, 1300, 1300.0):
+                    offer = p.get("offer_id", "")
+                    if offer and not offer.startswith("test-"):
+                        fixes.append({"offer_id": offer, "price": str(max_price_val), "currency_code": "CNY"})
+        except Exception as e:
+            pass
+
+    if args.dry_run:
+        _out({"ok": True, "dry_run": True, "would_fix": len(fixes), "products": fixes[:10]})
+        return 0
+
+    if not fixes:
+        _out({"ok": True, "fixed": 0, "message": "no products with suspicious prices"})
+        return 0
+
+    # Batch update (10 per request to respect rate limits)
+    results = []
+    for i in range(0, len(fixes), 10):
+        batch = fixes[i:i+10]
+        try:
+            r = update_prices(cid, akey, batch)
+            results.extend(r.get("result", []))
+        except Exception as e:
+            results.append({"error": str(e)})
+
+    updated = sum(1 for r in results if r.get("updated"))
+    _out({"ok": True, "fixed": updated, "total": len(fixes), "results": results[:5]})
+    return 0
+
+
 def cmd_publish_variant(args: argparse.Namespace) -> int:
     """Worker D — 多变体上架."""
     from scripts.lib.cloud_client import publish_variant_product
@@ -282,6 +358,13 @@ def main() -> int:
     p.set_defaults(func=cmd_refresh)
 
     # publish-variant (Worker D)
+    p = sub.add_parser("fix-prices", help="批量修复产品价格（默认100/1300）")
+    p.add_argument("--product-id", default="", metavar="ID", help="单个产品ID")
+    p.add_argument("--price", default="", metavar="PRICE", help="指定修复价格")
+    p.add_argument("--max-price", type=int, default=200, metavar="N", help="修复后价格上限")
+    p.add_argument("--dry-run", action="store_true", help="只列出待修复不执行")
+    p.set_defaults(func=cmd_fix_prices)
+
     p = sub.add_parser("publish-variant", help="Worker D — 多变体上架")
     p.add_argument("--family-title", required=True, help="族标题")
     p.add_argument("--variants", required=True, help='变体 JSON, 例: \'[{"sku_id":"red","sku_title":"红色","price":"100"}]\'')
