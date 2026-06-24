@@ -21,8 +21,7 @@ use agent_client_protocol::schema::{
     SetSessionModelRequest, UsageUpdate,
 };
 use aionui_api_types::{
-    AgentHandshake, GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandCompletionBehavior,
-    SlashCommandItem,
+    AgentHandshake, GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandCompletionBehavior, SlashCommandItem,
 };
 use aionui_common::{
     AgentKillReason, AgentType, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
