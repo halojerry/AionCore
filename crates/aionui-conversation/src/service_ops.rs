@@ -181,6 +181,20 @@ impl ConversationService {
         &self,
         conversation_id: &str,
     ) -> Result<GetConfigOptionsResponse, ConversationError> {
+        // Check conversation existence first — non-existent conversations
+        // should return 404, not an empty config options list.
+        if self
+            .conversation_repo()
+            .get(conversation_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("Failed to check conversation existence: {e}")))?
+            .is_none()
+        {
+            return Err(ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            });
+        }
+
         match self.task(conversation_id) {
             Ok(task) => task.get_config_options().await.map_err(ConversationError::from),
             Err(ConversationError::ActiveAgentNotFound { .. }) => {
@@ -206,6 +220,21 @@ impl ConversationService {
                 reason: "value must not be empty".into(),
             });
         }
+
+        // Check conversation existence first — non-existent conversations
+        // should return 404, not a default ack response.
+        if self
+            .conversation_repo()
+            .get(conversation_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("Failed to check conversation existence: {e}")))?
+            .is_none()
+        {
+            return Err(ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            });
+        }
+
         let task = match self.task(conversation_id) {
             Ok(task) => task,
             Err(ConversationError::ActiveAgentNotFound { .. }) => {
@@ -317,6 +346,20 @@ impl ConversationService {
     }
 
     pub async fn get_slash_commands(&self, conversation_id: &str) -> Result<Vec<SlashCommandItem>, ConversationError> {
+        // Check conversation existence first — non-existent conversations
+        // should return 404, not an empty commands list.
+        if self
+            .conversation_repo()
+            .get(conversation_id)
+            .await
+            .map_err(|e| ConversationError::internal(format!("Failed to check conversation existence: {e}")))?
+            .is_none()
+        {
+            return Err(ConversationError::NotFound {
+                id: conversation_id.to_owned(),
+            });
+        }
+
         match self.task(conversation_id) {
             Ok(task) => task.get_slash_commands().await.map_err(ConversationError::from),
             Err(ConversationError::ActiveAgentNotFound { .. }) => Ok(Vec::new()),
