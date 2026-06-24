@@ -150,8 +150,7 @@ fn read_provider_config_json(app_type: &str) -> Option<serde_json::Value> {
         return None;
     }
 
-    let conn = Connection::open_with_flags(&paths.database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .ok()?;
+    let conn = Connection::open_with_flags(&paths.database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).ok()?;
 
     let settings_config_json: String = conn
         .query_row(
@@ -177,9 +176,7 @@ pub fn read_provider_env_by_app_type(app_type: &str) -> HashMap<String, String> 
 /// Read the Codex proxy port from `~/.pounding/codex-proxy-port`.
 /// Returns `None` if the file doesn't exist or contains an invalid port.
 fn read_codex_proxy_port() -> Option<u16> {
-    let path = dirs::home_dir()?
-        .join(".pounding")
-        .join("codex-proxy-port");
+    let path = dirs::home_dir()?.join(".pounding").join("codex-proxy-port");
     let content = std::fs::read_to_string(path).ok()?;
     let trimmed = content.trim();
     let port: u16 = trimmed.parse().ok()?;
@@ -234,10 +231,16 @@ pub fn ensure_codex_live_config() {
             .unwrap_or("")
             .to_owned();
         let mut base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let mut wire_api = config.get("wire_api").and_then(|v| v.as_str()).unwrap_or("responses").to_owned();
+        let mut wire_api = config
+            .get("wire_api")
+            .and_then(|v| v.as_str())
+            .unwrap_or("responses")
+            .to_owned();
 
         // Fallback: if the top-level keys are empty, try parsing the legacy "config" TOML field
-        if model.is_empty() && model_provider.is_empty() && base_url.is_empty()
+        if model.is_empty()
+            && model_provider.is_empty()
+            && base_url.is_empty()
             && let Some(toml_str) = config.get("config").and_then(|v| v.as_str())
         {
             for line in toml_str.lines() {
@@ -315,9 +318,12 @@ pub fn ensure_opencode_live_config() {
     });
 
     let config_path = home.join(".opencode").join("config.json");
-    if let Err(e) = std::fs::create_dir_all(config_path.parent().unwrap())
-        .and_then(|_| std::fs::write(&config_path, serde_json::to_string_pretty(&opencode_config).unwrap_or_default()))
-    {
+    if let Err(e) = std::fs::create_dir_all(config_path.parent().unwrap()).and_then(|_| {
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&opencode_config).unwrap_or_default(),
+        )
+    }) {
         tracing::warn!(error = %e, "cc-switch: failed to write opencode config.json");
     }
 }
@@ -350,7 +356,10 @@ pub fn ensure_openclaw_live_config() {
     let model = config.get("model").and_then(|v| v.as_str()).unwrap_or("");
     let api_key = config.get("api_key").and_then(|v| v.as_str()).unwrap_or("");
     let base_url = config.get("base_url").and_then(|v| v.as_str()).unwrap_or("");
-    let api = config.get("api").and_then(|v| v.as_str()).unwrap_or("openai-completions");
+    let api = config
+        .get("api")
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai-completions");
     let provider_id = model.split('/').next().unwrap_or("pounding-managed");
 
     let openclaw_config = serde_json::json!({
@@ -388,9 +397,7 @@ pub fn ensure_openclaw_live_config() {
     {
         if let serde_json::Value::Object(ref mut map) = merged {
             map.entry("gateway".to_string())
-                .or_insert_with(|| {
-                    serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"})
-                });
+                .or_insert_with(|| serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"}));
         }
     }
     // Always set gateway mode to local
