@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{课文标题} - 语文小课堂</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: "Microsoft YaHei", "SimHei", sans-serif;
+            background: linear-gradient(135deg, #e0f7fa 0%, #e8eaf6 30%, #f3e5f5 60%, #fce4ec 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(100, 100, 200, 0.15);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #42a5f5 0%, #7e57c2 50%, #ab47bc 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+
+        /* 进度条 */
+        .progress-section {
+            padding: 15px 30px;
+            background: #f5f0ff;
+            border-bottom: 1px solid #e0d6f0;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #42a5f5, #7e57c2, #ab47bc);
+            width: 0%;
+            transition: width 0.5s;
+            border-radius: 10px;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 5px;
+            color: #5c6bc0;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+
+        .tabs {
+            display: flex;
+            background: #f5f5f5;
+            border-bottom: 2px solid #e0e0e0;
+            flex-wrap: wrap;
+        }
+
+        .tab {
+            flex: 1;
+            min-width: 80px;
+            padding: 15px 10px;
+            text-align: center;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+            background: white;
+            border: none;
+            border-bottom: 3px solid transparent;
+        }
+
+        .tab:hover {
+            background: #ede7f6;
+        }
+
+        .tab.active {
+            background: white;
+            border-bottom: 3px solid #7e57c2;
+            color: #7e57c2;
+            font-weight: bold;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* 课文朗读样式 */
+        .lesson-text {
+            font-size: 1.3em;
+            line-height: 2;
+            padding: 20px;
+            background: linear-gradient(135deg, #e8eaf6, #f3e5f5);
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+
+        .lesson-text p {
+            text-indent: 2em;
+            margin-bottom: 12px;
+        }
+
+        .role-text {
+            color: #7e57c2;
+            font-weight: bold;
+        }
+
+        /* 生字卡样式 */
+        .vocab-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 15px;
+            padding: 20px 0;
+        }
+
+        .vocab-card {
+            background: linear-gradient(135deg, #42a5f5, #7e57c2);
+            color: white;
+            border-radius: 12px;
+            padding: 15px 10px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            min-height: 120px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(100, 100, 200, 0.2);
+        }
+
+        .vocab-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 6px 18px rgba(100, 100, 200, 0.3);
+        }
+
+        .vocab-char {
+            font-size: 2.5em;
+            font-weight: bold;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }
+
+        .vocab-pinyin {
+            font-size: 1em;
+            margin-top: 4px;
+            opacity: 0.9;
+        }
+
+        .vocab-detail {
+            display: none;
+            font-size: 0.8em;
+            line-height: 1.4;
+            margin-top: 6px;
+        }
+
+        .vocab-card.show .vocab-char,
+        .vocab-card.show .vocab-pinyin {
+            display: none;
+        }
+
+        .vocab-card.show .vocab-detail {
+            display: block;
+        }
+
+        /* 练习题样式 */
+        .exercise-card {
+            background: #f9f9f9;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 12px;
+            border-left: 4px solid #7e57c2;
+        }
+
+        .exercise-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #5c6bc0;
+            margin-bottom: 10px;
+        }
+
+        .exercise-content {
+            font-size: 1.1em;
+            color: #555;
+            line-height: 1.8;
+        }
+
+        .answer-box {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            border: 2px dashed #7e57c2;
+            display: none;
+        }
+
+        .answer-box.show {
+            display: block;
+        }
+
+        .show-answer-btn {
+            background: linear-gradient(135deg, #42a5f5, #7e57c2);
+            color: white;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 1em;
+            margin-top: 10px;
+            transition: all 0.3s;
+        }
+
+        .show-answer-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(126, 87, 194, 0.3);
+        }
+
+        /* 重点段落样式 */
+        .highlight {
+            background: linear-gradient(to right, #ffecd2 0%, #fcb69f 100%);
+            padding: 3px 5px;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
+        /* 提示框 */
+        .tip-box {
+            background: linear-gradient(135deg, #e3f2fd, #ede7f6);
+            border-left: 4px solid #7e57c2;
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+
+        .tip-box p {
+            color: #5c6bc0;
+            line-height: 1.8;
+        }
+
+        /* 图片样式 */
+        .image-container {
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .image-container img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .image-caption {
+            margin-top: 10px;
+            color: #7e57c2;
+            font-style: italic;
+        }
+
+        /* 互动按钮 */
+        .interactive-btn {
+            background: linear-gradient(135deg, #66bb6a, #43a047);
+            color: white;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 1em;
+            margin: 5px;
+            transition: all 0.3s;
+        }
+
+        .interactive-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
+        }
+
+        /* 点名转盘 */
+        .wheel-section {
+            text-align: center;
+            padding: 30px 20px;
+            background: linear-gradient(135deg, #e8eaf6, #fce4ec);
+            border-radius: 12px;
+            margin-top: 20px;
+        }
+
+        .wheel-container {
+            position: relative;
+            width: 250px;
+            height: 250px;
+            margin: 0 auto 15px;
+        }
+
+        .wheel {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: conic-gradient(
+                #42a5f5 0deg 18deg, #ab47bc 18deg 36deg,
+                #66bb6a 36deg 54deg, #ffa726 54deg 72deg,
+                #ef5350 72deg 90deg, #26c6da 90deg 108deg,
+                #8d6e63 108deg 126deg, #78909c 126deg 144deg,
+                #ec407a 144deg 162deg, #5c6bc0 162deg 180deg,
+                #42a5f5 180deg 198deg, #ab47bc 198deg 216deg,
+                #66bb6a 216deg 234deg, #ffa726 234deg 252deg,
+                #ef5350 252deg 270deg, #26c6da 270deg 288deg,
+                #8d6e63 288deg 306deg, #78909c 306deg 324deg,
+                #ec407a 324deg 342deg, #5c6bc0 342deg 360deg
+            );
+            transition: transform 5s ease-out;
+            border: 4px solid #7e57c2;
+            box-shadow: 0 4px 12px rgba(126, 87, 194, 0.3);
+        }
+
+        .wheel-pointer {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 12px solid transparent;
+            border-right: 12px solid transparent;
+            border-top: 25px solid #7e57c2;
+        }
+
+        .wheel-btn {
+            background: linear-gradient(135deg, #42a5f5, #7e57c2);
+            color: white;
+            border: none;
+            padding: 10px 22px;
+            border-radius: 20px;
+            cursor: pointer;
+            margin: 0 5px;
+            font-size: 0.95em;
+            transition: all 0.3s;
+        }
+
+        .wheel-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .student-name {
+            font-size: 1.4em;
+            font-weight: bold;
+            color: #7e57c2;
+            margin: 15px 0;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .header h1 { font-size: 1.8em; }
+            .tab { font-size: 0.85em; padding: 12px 8px; }
+            .lesson-text { font-size: 1.1em; }
+            .wheel-container { width: 200px; height: 200px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <div class="header">
+            <h1>{课文标题}</h1>
+            <p>🌟 语文小课堂 · 快乐学习</p>
+        </div>
+
+        <!-- 进度条 -->
+        <div class="progress-section">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-text" id="progress-text">学习进度：0%</div>
+        </div>
+
+        <!-- 标签页导航 -->
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('lesson')">📖 课文</button>
+            <button class="tab" onclick="switchTab('reading')">🔊 朗读</button>
+            <button class="tab" onclick="switchTab('vocab')">📝 生字卡</button>
+            <button class="tab" onclick="switchTab('exercise')">✏️ 练习</button>
+            <button class="tab" onclick="switchTab('highlight')">⭐ 重点</button>
+            <button class="tab" onclick="switchTab('wheel')">🎡 点名</button>
+        </div>
+
+        <!-- 内容区域 -->
+        <div class="content">
+
+            <!-- 课文学习 -->
+            <div id="lesson" class="tab-content active">
+                <div class="tip-box">
+                    <p>💡 认真阅读课文，理解内容，点击重点词汇查看解释。</p>
+                </div>
+
+                <div class="image-container">
+                    <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='400'%3E%3Crect fill='%23ddd' width='800' height='400'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial' font-size='24' fill='%23666'%3E课文配图位置%3C/text%3E%3C/svg%3E" alt="课文配图">
+                    <p class="image-caption">课文配图</p>
+                </div>
+
+                <div class="lesson-text">
+                    <p>{课文段落1}</p>
+                    <p>{课文段落2}</p>
+                    <p>{课文段落3}</p>
+                </div>
+
+                <div class="tip-box">
+                    <p>📚 思考题：课文主要讲了什么？你从中学到了什么道理？</p>
+                </div>
+            </div>
+
+            <!-- 课文朗读 -->
+            <div id="reading" class="tab-content">
+                <div class="tip-box">
+                    <p>💡 朗读课文，注意语气和感情。有角色的课文，试着模仿人物说话的语气哦！</p>
+                </div>
+
+                <div class="lesson-text">
+                    <p><span class="role-text">【旁白】</span>{旁白内容1}</p>
+                    <p><span class="role-text">【角色A】</span>{角色A台词1}</p>
+                    <p><span class="role-text">【角色B】</span>{角色B台词1}</p>
+                    <p><span class="role-text">【旁白】</span>{旁白内容2}</p>
+                </div>
+
+                <div class="tip-box">
+                    <p>🎯 朗读目标：正确、流利、有感情地朗读课文，注意人物语气变化！</p>
+                </div>
+            </div>
+
+            <!-- 生字卡学习 -->
+            <div id="vocab" class="tab-content">
+                <div class="tip-box">
+                    <p>💡 点击生字卡翻转查看拼音、释义和组词，多读多写记得牢！</p>
+                </div>
+
+                <div class="vocab-grid">
+                    <div class="vocab-card" onclick="toggleVocab(this)">
+                        <div class="vocab-char">{生字1}</div>
+                        <div class="vocab-pinyin">{拼音1}</div>
+                        <div class="vocab-detail">
+                            <p>拼音：{拼音1}</p>
+                            <p>释义：{释义1}</p>
+                            <p>组词：{组词1}</p>
+                        </div>
+                    </div>
+
+                    <div class="vocab-card" onclick="toggleVocab(this)">
+                        <div class="vocab-char">{生字2}</div>
+                        <div class="vocab-pinyin">{拼音2}</div>
+                        <div class="vocab-detail">
+                            <p>拼音：{拼音2}</p>
+                            <p>释义：{释义2}</p>
+                            <p>组词：{组词2}</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tip-box">
+                    <p>✏️ 请在练习本上把这些生字每个写3遍，注意笔顺和结构！</p>
+                </div>
+            </div>
+
+            <!-- 练习题 -->
+            <div id="exercise" class="tab-content">
+                <div class="tip-box">
+                    <p>💡 先独立完成练习题，再点击"查看答案"检查自己。</p>
+                </div>
+
+                <div class="exercise-card">
+                    <div class="exercise-title">🌟 基础题</div>
+                    <div class="exercise-content">
+                        <p>1. {基础题1}</p>
+                        <p>2. {基础题2}</p>
+                        <p>3. {基础题3}</p>
+                    </div>
+                    <button class="show-answer-btn" onclick="toggleAnswer('basic-answer', this)">查看答案</button>
+                    <div id="basic-answer" class="answer-box">
+                        <p>1. {基础题答案1}</p>
+                        <p>2. {基础题答案2}</p>
+                        <p>3. {基础题答案3}</p>
+                    </div>
+                </div>
+
+                <div class="exercise-card">
+                    <div class="exercise-title">💪 提高题</div>
+                    <div class="exercise-content">
+                        <p>1. {提高题1}</p>
+                        <p>2. {提高题2}</p>
+                    </div>
+                    <button class="show-answer-btn" onclick="toggleAnswer('advanced-answer', this)">查看答案</button>
+                    <div id="advanced-answer" class="answer-box">
+                        <p>1. {提高题答案1}</p>
+                        <p>2. {提高题答案2}</p>
+                    </div>
+                </div>
+
+                <div class="exercise-card">
+                    <div class="exercise-title">🚀 拓展题</div>
+                    <div class="exercise-content">
+                        <p>1. {拓展题1}</p>
+                    </div>
+                    <button class="show-answer-btn" onclick="toggleAnswer('extend-answer', this)">查看答案</button>
+                    <div id="extend-answer" class="answer-box">
+                        <p>{拓展题答案1}</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 重点段落 -->
+            <div id="highlight" class="tab-content">
+                <div class="tip-box">
+                    <p>💡 重点段落是课文的精华，要重点理解、反复朗读！</p>
+                </div>
+
+                <div class="exercise-card">
+                    <div class="exercise-title">重点段落1</div>
+                    <div class="exercise-content">
+                        <p>{重点段落1内容}</p>
+                    </div>
+                    <button class="interactive-btn" onclick="alert('请反复朗读这段话，体会其中的情感！')">🔊 朗读提示</button>
+                </div>
+
+                <div class="exercise-card">
+                    <div class="exercise-title">重点段落2</div>
+                    <div class="exercise-content">
+                        <p>{重点段落2内容}</p>
+                    </div>
+                    <button class="interactive-btn" onclick="alert('这段话运用了什么修辞手法？试着分析一下！')">🤔 思考提示</button>
+                </div>
+
+                <div class="tip-box">
+                    <p>🎯 目标：能够背诵重点段落，理解其深层含义。</p>
+                </div>
+            </div>
+
+            <!-- 点名转盘 -->
+            <div id="wheel" class="tab-content">
+                <div class="wheel-section">
+                    <h3 style="margin-bottom: 15px; color: #7e57c2;">🎡 幸运点名转盘</h3>
+                    <div class="wheel-container">
+                        <div class="wheel" id="wheel"></div>
+                        <div class="wheel-pointer"></div>
+                    </div>
+                    <button class="wheel-btn" onclick="spinWheel()">🎯 开始点名</button>
+                    <button class="wheel-btn" onclick="spinWheel()">🔄 再抽一次</button>
+                    <div class="student-name" id="student-name"></div>
+                    <button class="wheel-btn" onclick="assignQuestion()">📝 为TA出题</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // 学生名单（可自定义）
+        const students = ['张宇轩', '李思涵', '王浩然', '陈雨桐', '刘子墨',
+            '赵一诺', '周嘉诚', '孙婉清', '黄梓涵', '林俊熙',
+            '徐可欣', '郭晨阳', '马语彤', '何沐辰', '高欣怡',
+            '唐子睿', '宋依然', '郑博文', '韩若曦', '蔡承泽'];
+
+        // 学习进度
+        let progress = 0;
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+            // 更新进度
+            updateProgress(10);
+        }
+
+        function toggleVocab(card) {
+            card.classList.toggle('show');
+            updateProgress(5);
+        }
+
+        function toggleAnswer(answerId, btn) {
+            const box = document.getElementById(answerId);
+            box.classList.toggle('show');
+            btn.textContent = box.classList.contains('show') ? '🙈 隐藏答案' : '查看答案';
+            updateProgress(10);
+        }
+
+        function updateProgress(amount) {
+            progress += amount;
+            if (progress > 100) progress = 100;
+            document.getElementById('progress-fill').style.width = progress + '%';
+            document.getElementById('progress-text').textContent = '学习进度：' + progress + '%';
+        }
+
+        function spinWheel() {
+            const wheel = document.getElementById('wheel');
+            const nameEl = document.getElementById('student-name');
+            const idx = Math.floor(Math.random() * students.length);
+            const rotation = 3600 + idx * (360 / students.length);
+            wheel.style.transform = 'rotate(' + rotation + 'deg)';
+            setTimeout(() => {
+                nameEl.textContent = '🎉 恭喜：' + students[idx];
+            }, 5000);
+        }
+
+        function assignQuestion() {
+            const name = document.getElementById('student-name').textContent;
+            if (name) {
+                alert(name + '，请回答：请说说这篇课文的主要内容是什么？你从中学到了什么？');
+            } else {
+                alert('请先点击"开始点名"，选择一名同学！');
+            }
+        }
+    </script>
+</body>
+</html>

@@ -3,8 +3,8 @@
 use crate::state::ConversationRouterState;
 use aionui_api_types::{
     AgentModeResponse, ApiResponse, GetConfigOptionsResponse, GetModelInfoResponse, SetConfigOptionRequest,
-    SetConfigOptionResponse, SetModeRequest, SetModelRequest, SideQuestionRequest, SideQuestionResponse,
-    SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
+    SetConfigOptionResponse, SetModeRequest, SetModelRequest, SideQuestionRequest,
+    SideQuestionResponse, SlashCommandItem, WorkspaceBrowseQuery, WorkspaceEntry,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;

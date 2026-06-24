@@ -12,9 +12,7 @@ use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
-use aionui_mcp::{
-    AcpMcpCapabilities, AcpSessionMcpServer, ImageGenConfig, build_builtin_image_gen_server, parse_acp_mcp_capabilities,
-};
+use aionui_mcp::{AcpMcpCapabilities, AcpSessionMcpServer, ImageGenConfig, build_builtin_image_gen_server, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, NativeCliToolId, ensure_managed_acp_tool_with_reporter, ensure_native_cli_tool_with_reporter,
     ensure_node_runtime_with_reporter, ensure_runtime_command, ensure_runtime_command_with_reporter,
@@ -233,7 +231,10 @@ pub(super) async fn build(
                             .args(args)
                             .env(env_vars),
                     ));
-                    info!(ctx.conversation_id, "image_gen_mcp: injected into session");
+                    info!(
+                        ctx.conversation_id,
+                        "image_gen_mcp: injected into session"
+                    );
                 }
                 _ => {
                     debug!(

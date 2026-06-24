@@ -1,0 +1,1 @@
+# aihot (ru-RU — placeholder)

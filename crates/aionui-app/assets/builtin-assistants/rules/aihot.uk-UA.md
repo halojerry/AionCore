@@ -1,0 +1,1 @@
+# aihot (uk-UA — placeholder)
