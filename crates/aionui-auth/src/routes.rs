@@ -436,8 +436,8 @@ async fn sync_credentials_handler(
         return Err(ApiError::BadRequest("Invalid password".into()));
     }
 
-    let password_hash = hash_password(&req.password)
-        .map_err(|e| ApiError::Internal(format!("Password hashing failed: {e}")))?;
+    let password_hash =
+        hash_password(&req.password).map_err(|e| ApiError::Internal(format!("Password hashing failed: {e}")))?;
 
     state
         .user_repo
