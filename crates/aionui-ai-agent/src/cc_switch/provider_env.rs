@@ -394,11 +394,10 @@ pub fn ensure_openclaw_live_config() {
             .get("gateway")
             .and_then(|g| g.get("auth"))
             .and_then(|a| a.get("token"))
+        && let serde_json::Value::Object(ref mut map) = merged
     {
-        if let serde_json::Value::Object(ref mut map) = merged {
-            map.entry("gateway".to_string())
-                .or_insert_with(|| serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"}));
-        }
+        map.entry("gateway".to_string())
+            .or_insert_with(|| serde_json::json!({"auth": {"token": existing_token.clone()}, "mode": "local"}));
     }
     // Always set gateway mode to local
     if let serde_json::Value::Object(ref mut map) = merged {
