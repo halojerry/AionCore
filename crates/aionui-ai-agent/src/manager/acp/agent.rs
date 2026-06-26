@@ -21,8 +21,10 @@ use agent_client_protocol::schema::{
     SetSessionModelRequest, UsageUpdate,
 };
 use aionui_api_types::{
-    AgentHandshake, GetConfigOptionsResponse, SetConfigOptionResponse, SlashCommandCompletionBehavior, SlashCommandItem,
+    AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentHandshake, ConfigOptionConfirmation, GetConfigOptionsResponse,
+    SetConfigOptionResponse, SlashCommandCompletionBehavior, SlashCommandItem,
 };
+use agent_client_protocol::schema::{SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions};
 use aionui_common::{
     AgentKillReason, AgentType, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
 };
@@ -703,13 +705,12 @@ impl AcpAgentManager {
 
     /// Return the current config options snapshot from the ACP session.
     pub(crate) async fn config_options(&self) -> Result<GetConfigOptionsResponse, AgentError> {
-        // TODO: read from ACP session config snapshot once full config-options
-        // infrastructure is backported from upstream (config_option_catalog,
-        // ConfigSnapshot, etc.). For now, return empty so the endpoint stops
-        // returning 404.
-        Ok(GetConfigOptionsResponse {
-            config_options: Vec::new(),
-        })
+        let session = self.session.read().await;
+        let config_options: Vec<AcpConfigOptionDto> = session
+            .config_options()
+            .map(|options| options.iter().map(session_config_option_to_dto).collect())
+            .unwrap_or_default();
+        Ok(GetConfigOptionsResponse { config_options })
     }
 
     /// Apply a config option change confirmed by the ACP runtime.
@@ -727,11 +728,15 @@ impl AcpAgentManager {
         self.ensure_protocol_connected_for_operation("set_config_option")?;
         // TODO: full implementation with session config set, resolve_set_path,
         // and actual ACP protocol dispatch. For now, accept the change so the
-        // endpoint stops returning 404.
-        use aionui_api_types::ConfigOptionConfirmation;
+        // endpoint stops returning 404, and return the current config_options
+        // snapshot so the frontend's hasObservedValue() passes.
+        let session = self.session.read().await;
+        let config_options: Option<Vec<AcpConfigOptionDto>> = session
+            .config_options()
+            .map(|options| options.iter().map(session_config_option_to_dto).collect());
         Ok(SetConfigOptionResponse {
             confirmation: ConfigOptionConfirmation::Observed,
-            config_options: None,
+            config_options,
         })
     }
 }
@@ -1106,6 +1111,62 @@ impl AcpAgentManager {
 
 // `augment_with_stderr` and `build_close_reason_from_error` live in
 // `agent_close.rs` to keep this file under the 1000-line budget.
+
+/// Convert an ACP `SessionConfigOption` into the API DTO shape consumed by
+/// the frontend. Maps `SessionConfigKind::Select` fields directly; other
+/// variants fall through with `option_type: "unknown"`.
+fn session_config_option_to_dto(opt: &SessionConfigOption) -> AcpConfigOptionDto {
+    let (option_type, current_value, options) = match &opt.kind {
+        SessionConfigKind::Select(select) => {
+            let select_options: Vec<AcpConfigSelectOptionDto> = match &select.options {
+                SessionConfigSelectOptions::Ungrouped(opts) => opts
+                    .iter()
+                    .map(|o| AcpConfigSelectOptionDto {
+                        value: o.value.to_string(),
+                        name: Some(o.name.clone()),
+                        label: None,
+                        description: o.description.clone(),
+                    })
+                    .collect(),
+                SessionConfigSelectOptions::Grouped(groups) => groups
+                    .iter()
+                    .flat_map(|g| {
+                        g.options.iter().map(|o| AcpConfigSelectOptionDto {
+                            value: o.value.to_string(),
+                            name: Some(o.name.clone()),
+                            label: None,
+                            description: o.description.clone(),
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            (
+                "select".to_owned(),
+                Some(select.current_value.to_string()),
+                select_options,
+            )
+        }
+        _ => ("unknown".to_owned(), None, Vec::new()),
+    };
+
+    AcpConfigOptionDto {
+        id: opt.id.to_string(),
+        name: Some(opt.name.clone()),
+        label: None,
+        description: opt.description.clone(),
+        category: opt.category.as_ref().map(|c| match c {
+            agent_client_protocol::schema::SessionConfigOptionCategory::Mode => "mode".to_owned(),
+            agent_client_protocol::schema::SessionConfigOptionCategory::Model => "model".to_owned(),
+            agent_client_protocol::schema::SessionConfigOptionCategory::ThoughtLevel => "thought_level".to_owned(),
+            agent_client_protocol::schema::SessionConfigOptionCategory::Other(s) => s.clone(),
+            _ => "unknown".to_owned(),
+        }),
+        option_type,
+        current_value,
+        options,
+    }
+}
 
 #[cfg(test)]
 mod tests {

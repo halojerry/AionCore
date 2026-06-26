@@ -264,16 +264,26 @@ impl ConversationService {
                 task.set_model_confirmed(&req.value)
                     .await
                     .map_err(ConversationError::from)?;
+                let config_options = task
+                    .get_config_options()
+                    .await
+                    .map(|r| r.config_options)
+                    .unwrap_or_default();
                 SetConfigOptionResponse {
                     confirmation: ConfigOptionConfirmation::Observed,
-                    config_options: None,
+                    config_options: Some(config_options),
                 }
             }
             "mode" => {
                 task.set_mode(&req.value).await.map_err(ConversationError::from)?;
+                let config_options = task
+                    .get_config_options()
+                    .await
+                    .map(|r| r.config_options)
+                    .unwrap_or_default();
                 SetConfigOptionResponse {
                     confirmation: ConfigOptionConfirmation::Observed,
-                    config_options: None,
+                    config_options: Some(config_options),
                 }
             }
             _ => match task.set_config_option(option_id, &req.value).await {
