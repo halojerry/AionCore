@@ -20,11 +20,11 @@ use agent_client_protocol::schema::{
     AvailableCommand, CancelNotification, SessionId, SessionModelState, SessionNotification, SetSessionModeRequest,
     SetSessionModelRequest, UsageUpdate,
 };
+use agent_client_protocol::schema::{SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions};
 use aionui_api_types::{
     AcpConfigOptionDto, AcpConfigSelectOptionDto, AgentHandshake, ConfigOptionConfirmation, GetConfigOptionsResponse,
     SetConfigOptionResponse, SlashCommandCompletionBehavior, SlashCommandItem,
 };
-use agent_client_protocol::schema::{SessionConfigKind, SessionConfigOption, SessionConfigSelectOptions};
 use aionui_common::{
     AgentKillReason, AgentType, ConversationStatus, ErrorChain, TimestampMs, normalize_keys_to_snake_case,
 };

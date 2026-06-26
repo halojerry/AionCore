@@ -214,15 +214,10 @@ pub(super) async fn build(
             style: None,
         };
 
-        let image_gen_script = deps
-            .data_dir
-            .join("builtin-mcp")
-            .join("image-gen-server.js");
+        let image_gen_script = deps.data_dir.join("builtin-mcp").join("image-gen-server.js");
         let image_gen_args = vec![image_gen_script.to_string_lossy().into_owned()];
 
-        if let Some(server) =
-            build_builtin_image_gen_server(&mcp_capabilities, "node", image_gen_args, &img_config)
-        {
+        if let Some(server) = build_builtin_image_gen_server(&mcp_capabilities, "node", image_gen_args, &img_config) {
             match server {
                 AcpSessionMcpServer::Stdio {
                     name,
@@ -1104,20 +1099,8 @@ mod tests {
             rows: vec![
                 make_row("user-enabled", "stdio", &stdio_config, true, false),
                 make_row("user-disabled", "stdio", &stdio_config, false, false),
-                make_row(
-                    "builtin-enabled",
-                    "stdio",
-                    &stdio_config,
-                    true,
-                    true,
-                ),
-                make_row(
-                    "builtin-disabled",
-                    "stdio",
-                    &stdio_config,
-                    false,
-                    true,
-                ),
+                make_row("builtin-enabled", "stdio", &stdio_config, true, true),
+                make_row("builtin-disabled", "stdio", &stdio_config, false, true),
             ],
             fail: false,
         });
@@ -1126,10 +1109,13 @@ mod tests {
         // unconditionally skipped). user-disabled and builtin-disabled are
         // skipped because they are not enabled.
         assert_eq!(servers.len(), 2);
-        let names: Vec<&str> = servers.iter().map(|s| match s {
-            McpServer::Stdio(s) => s.name.as_str(),
-            _ => "",
-        }).collect();
+        let names: Vec<&str> = servers
+            .iter()
+            .map(|s| match s {
+                McpServer::Stdio(s) => s.name.as_str(),
+                _ => "",
+            })
+            .collect();
         assert!(names.contains(&"user-enabled"));
         assert!(names.contains(&"builtin-enabled"));
     }
