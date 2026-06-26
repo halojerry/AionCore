@@ -194,12 +194,10 @@ pub(super) async fn build(
     // Injected when API credentials are available from the cc-switch
     // provider config or fallback defaults.
     //
-    // TODO: Replace "node" placeholder command with the actual image-gen
-    // MCP server script path. The TypeScript implementation at
-    // AionUi/packages/desktop/src/process/resources/builtinMcp/imageGenServer.ts
-    // compiles to builtin-mcp-image-gen.js. When bundled alongside the
-    // backend binary, pass the script path in args.
-    // Awaiting image-gen binary deployment.
+    // The image-gen MCP server script (builtin-mcp-image-gen.js) is
+    // compiled from AionUi/packages/desktop/src/process/resources/builtinMcp/imageGenServer.ts
+    // and bundled alongside the backend binary. When the script is
+    // materialized to the data dir, pass its path in args.
     if mcp_capabilities.stdio {
         let cc_env = crate::cc_switch::read_claude_provider_env();
         let api_key = cc_env
@@ -216,7 +214,15 @@ pub(super) async fn build(
             style: None,
         };
 
-        if let Some(server) = build_builtin_image_gen_server(&mcp_capabilities, "node", &img_config) {
+        let image_gen_script = deps
+            .data_dir
+            .join("builtin-mcp")
+            .join("image-gen-server.js");
+        let image_gen_args = vec![image_gen_script.to_string_lossy().into_owned()];
+
+        if let Some(server) =
+            build_builtin_image_gen_server(&mcp_capabilities, "node", image_gen_args, &img_config)
+        {
             match server {
                 AcpSessionMcpServer::Stdio {
                     name,

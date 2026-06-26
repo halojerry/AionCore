@@ -147,6 +147,7 @@ pub fn build_session_mcp_servers(servers: &[McpServer], capabilities: &AcpMcpCap
 pub fn build_builtin_image_gen_server(
     capabilities: &AcpMcpCapabilities,
     command: &str,
+    args: Vec<String>,
     config: &ImageGenConfig,
 ) -> Option<AcpSessionMcpServer> {
     if !capabilities.stdio || command.is_empty() {
@@ -158,7 +159,7 @@ pub fn build_builtin_image_gen_server(
     Some(AcpSessionMcpServer::Stdio {
         name: "aionui-image-generation".into(),
         command: command.to_owned(),
-        args: Vec::new(),
+        args,
         env,
     })
 }
@@ -527,7 +528,7 @@ mod tests {
             quality: Some("hd".into()),
             style: Some("natural".into()),
         };
-        let result = build_builtin_image_gen_server(&caps, "/usr/bin/img-gen", &config);
+        let result = build_builtin_image_gen_server(&caps, "/usr/bin/img-gen", vec![], &config);
         assert!(result.is_some());
         match result.unwrap() {
             AcpSessionMcpServer::Stdio {
@@ -555,7 +556,7 @@ mod tests {
             api_url: Some("https://api.openai.com".into()),
             ..Default::default()
         };
-        let result = build_builtin_image_gen_server(&caps, "img-gen", &config);
+        let result = build_builtin_image_gen_server(&caps, "img-gen", vec![], &config);
         assert!(result.is_some());
         match result.unwrap() {
             AcpSessionMcpServer::Stdio { env, .. } => {
@@ -581,21 +582,21 @@ mod tests {
             model: Some("dall-e-3".into()),
             ..Default::default()
         };
-        assert!(build_builtin_image_gen_server(&caps, "img-gen", &config).is_none());
+        assert!(build_builtin_image_gen_server(&caps, "img-gen", vec![], &config).is_none());
     }
 
     #[test]
     fn builtin_image_gen_empty_command_returns_none() {
         let caps = all_caps();
         let config = ImageGenConfig::default();
-        assert!(build_builtin_image_gen_server(&caps, "", &config).is_none());
+        assert!(build_builtin_image_gen_server(&caps, "", vec![], &config).is_none());
     }
 
     #[test]
     fn builtin_image_gen_empty_config() {
         let caps = all_caps();
         let config = ImageGenConfig::default();
-        let result = build_builtin_image_gen_server(&caps, "img-gen", &config);
+        let result = build_builtin_image_gen_server(&caps, "img-gen", vec![], &config);
         assert!(result.is_some());
         match result.unwrap() {
             AcpSessionMcpServer::Stdio { env, .. } => {
