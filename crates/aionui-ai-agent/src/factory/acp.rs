@@ -588,7 +588,7 @@ async fn load_user_mcp_servers(
         let selected = selected_ids
             .map(|ids| ids.iter().any(|id| id == &row.id))
             .unwrap_or(row.enabled);
-        if !selected || row.builtin {
+        if !selected {
             continue;
         }
         if !row_supported_by_capabilities(&row, capabilities) {
@@ -1087,7 +1087,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_user_mcp_servers_skips_disabled_and_builtin() {
+    async fn load_user_mcp_servers_skips_disabled_loads_builtin() {
         let stdio_config = stdio_config_for_existing_command();
         let caps = AcpMcpCapabilities {
             stdio: true,
@@ -1099,21 +1099,33 @@ mod tests {
                 make_row("user-enabled", "stdio", &stdio_config, true, false),
                 make_row("user-disabled", "stdio", &stdio_config, false, false),
                 make_row(
-                    "builtin",
+                    "builtin-enabled",
                     "stdio",
-                    r#"{"command":"img-gen","args":[],"env":{}}"#,
+                    &stdio_config,
                     true,
+                    true,
+                ),
+                make_row(
+                    "builtin-disabled",
+                    "stdio",
+                    &stdio_config,
+                    false,
                     true,
                 ),
             ],
             fail: false,
         });
         let servers = load_user_mcp_servers(repo.as_ref(), None, "conv-1", &caps).await;
-        assert_eq!(servers.len(), 1);
-        match &servers[0] {
-            McpServer::Stdio(s) => assert_eq!(s.name, "user-enabled"),
-            _ => panic!("expected stdio"),
-        }
+        // user-enabled + builtin-enabled (both enabled, builtin no longer
+        // unconditionally skipped). user-disabled and builtin-disabled are
+        // skipped because they are not enabled.
+        assert_eq!(servers.len(), 2);
+        let names: Vec<&str> = servers.iter().map(|s| match s {
+            McpServer::Stdio(s) => s.name.as_str(),
+            _ => "",
+        }).collect();
+        assert!(names.contains(&"user-enabled"));
+        assert!(names.contains(&"builtin-enabled"));
     }
 
     #[tokio::test]
