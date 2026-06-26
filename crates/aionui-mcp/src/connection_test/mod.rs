@@ -126,6 +126,13 @@ impl McpConnectionTestService {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
+        debug!(
+            command = %command,
+            args = ?args,
+            env_keys = ?env.keys().collect::<Vec<_>>(),
+            "Spawning MCP connection test process"
+        );
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => return spawn_error_result(command, &e),
@@ -136,7 +143,15 @@ impl McpConnectionTestService {
         let stderr = child.stderr.take().expect("stderr was piped");
         let result = match tokio::time::timeout(self.timeout, run_stdio_protocol(stdin, stdout, stderr)).await {
             Ok(r) => r,
-            Err(_) => timeout_result(self.timeout),
+            Err(_) => {
+                warn!(
+                    command = %command,
+                    args = ?args,
+                    timeout_secs = self.timeout.as_secs(),
+                    "MCP connection test timed out — process may be hanging during startup or handshake"
+                );
+                timeout_result(self.timeout)
+            }
         };
         if let Err(error) = kill_process_tree(&mut child).await {
             warn!(%error, "failed to clean up MCP stdio connection test process tree");
