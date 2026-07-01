@@ -253,21 +253,9 @@ pub(crate) async fn run_server(
             {
                 errors.push(e.to_string());
             }
-            if let Err(e) = runtime_prepare_service
-                .ensure_native_cli_tool(scope.clone(), "hermes")
-                .await
-            {
-                errors.push(e.to_string());
-            }
-            if let Err(e) = runtime_prepare_service
-                .ensure_native_cli_tool(scope.clone(), "opencode")
-                .await
-            {
-                errors.push(e.to_string());
-            }
-            if let Err(e) = runtime_prepare_service.ensure_native_cli_tool(scope, "openclaw").await {
-                errors.push(e.to_string());
-            }
+            // Native CLI tools (hermes, opencode, openclaw) are installed
+            // by the frontend's installManagedCliBatch via pip/npm/bun.
+            // Backend `which` detection finds them on PATH after install.
             if errors.is_empty() {
                 Ok(())
             } else {

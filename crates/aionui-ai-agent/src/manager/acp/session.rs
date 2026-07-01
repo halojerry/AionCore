@@ -419,7 +419,8 @@ impl AcpSession {
     /// the previous desired mode.
     pub fn confirm_mode(&mut self, mode: ModeId) {
         self.desired.mode_id = Some(mode.clone());
-        self.apply_observed_mode(mode);
+        self.apply_observed_mode(mode.clone());
+        self.update_advertised_config_option_value(&["mode", "modes"], mode.as_str());
     }
 
     /// Confirm a user command after the ACP backend accepted it.
@@ -429,7 +430,29 @@ impl AcpSession {
     /// the previous desired model.
     pub fn confirm_model(&mut self, model: ModelId) {
         self.desired.model_id = Some(model.clone());
-        self.apply_observed_model(model);
+        self.apply_observed_model(model.clone());
+        self.update_advertised_config_option_value(&["model", "models"], model.as_str());
+    }
+
+    /// Update the `current_value` in `advertised.config_options` for the first
+    /// config option whose id matches one of `candidate_ids`. This keeps the
+    /// config_options snapshot in sync with the three-layer mode/model state
+    /// after `confirm_mode` / `confirm_model`, so that subsequent reads via
+    /// `config_options()` (used by `set_config_option_confirmed`) return the
+    /// new value instead of stale handshake data.
+    fn update_advertised_config_option_value(&mut self, candidate_ids: &[&str], value: &str) {
+        let Some(ref mut options) = self.advertised.config_options else {
+            return;
+        };
+        for opt in options.iter_mut() {
+            let id_str = opt.id.to_string();
+            if candidate_ids.iter().any(|c| *c == id_str) {
+                if let SessionConfigKind::Select(sel) = &mut opt.kind {
+                    sel.current_value = value.to_owned().into();
+                }
+                break;
+            }
+        }
     }
 
     /// Record the CLI's current value for a single config option. Mirrors

@@ -374,7 +374,7 @@ fn si_7_builtin_image_gen_injection() {
     let mut session_servers = build_session_mcp_servers(&user_servers, &caps);
 
     // Inject builtin image gen server
-    if let Some(builtin) = build_builtin_image_gen_server(&caps, "/usr/local/bin/aionui-img-gen", &img_config) {
+    if let Some(builtin) = build_builtin_image_gen_server(&caps, "/usr/local/bin/aionui-img-gen", vec![], &img_config) {
         session_servers.push(builtin);
     }
 

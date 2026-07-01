@@ -6,6 +6,7 @@ use aionui_runtime::acp_tool_runtime::ManagedAcpToolId;
 use aionui_runtime::managed_resources::export_node_runtime_to_root;
 use aionui_runtime::native_cli_runtime::NativeCliToolId;
 use aionui_runtime::{ensure_native_cli_tool, ensure_node_runtime, prepare_managed_acp_tool_to_root};
+use serde::Serialize;
 
 const SUBCOMMAND: &str = "prepare-managed-resources";
 
@@ -60,6 +61,12 @@ pub async fn run_prepare_managed_resources(args: PrepareManagedResourcesArgs) ->
             .join(detect_platform_key());
         copy_directory(&resolved.root, &dest_dir)
             .map_err(|error| prepare_managed_resources_error_with_detail("native-cli.export", error))?;
+
+        // Generate manifest.json so the frontend's materializeFromBundled()
+        // can discover the entrypoint. The entrypoint is relative to dest_dir.
+        write_cli_manifest(&dest_dir, tool)
+            .map_err(|error| prepare_managed_resources_error_with_detail("native-cli.manifest", error))?;
+
         println!("  {:<6} -> {}", tool.slug(), dest_dir.display());
     }
 
@@ -93,6 +100,42 @@ fn copy_directory(src: &std::path::Path, dest: &std::path::Path) -> Result<(), S
             std::fs::copy(&src_path, &dest_path).map_err(|e| format!("copy file {src_path:?}: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// Manifest written alongside each bundled native CLI tool so the
+/// frontend's `materializeFromBundled()` can discover the entrypoint.
+#[derive(Debug, Serialize)]
+struct CliManifest {
+    entrypoint: String,
+}
+
+fn write_cli_manifest(dest_dir: &std::path::Path, tool: NativeCliToolId) -> Result<(), String> {
+    let entrypoint = match tool {
+        NativeCliToolId::Hermes => tool.binary_name().to_owned(),
+        NativeCliToolId::OpenCode => {
+            if cfg!(windows) {
+                format!("{}.exe", tool.binary_name())
+            } else {
+                tool.binary_name().to_owned()
+            }
+        }
+        NativeCliToolId::OpenClaw => {
+            // Node-kind: entrypoint is <binary>/<binary>.mjs
+            let bin = tool.binary_name();
+            format!("{bin}/{bin}.mjs")
+        }
+    };
+
+    let manifest = CliManifest { entrypoint };
+    let manifest_path = dest_dir.join("manifest.json");
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest)
+            .map_err(|e| format!("serialize manifest.json for {}: {e}", tool.slug()))?,
+    )
+    .map_err(|e| format!("write manifest.json for {}: {e}", tool.slug()))?;
+
     Ok(())
 }
 
